@@ -105,7 +105,8 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS guild_config (
             guild_id INTEGER PRIMARY KEY,
             mission_channel_id INTEGER,
-            ignored_channels TEXT
+            ignored_channels TEXT,
+            maintenance_mode INTEGER DEFAULT 0
         )
         """
     )
@@ -154,6 +155,7 @@ async def init_db():
     await _ensure_column(db, "user_daily", "mission_count", "INTEGER DEFAULT 0")
     await _ensure_column(db, "user_daily", "last_mission_reset", "INTEGER")
     await _ensure_column(db, "user_daily", "used_invite", "INTEGER DEFAULT 0")
+    await _ensure_column(db, "guild_config", "maintenance_mode", "INTEGER DEFAULT 0")
 
     # Migrate legacy infinitydust column if present.
     if await _column_exists(db, "user_karten", "infinitydust"):

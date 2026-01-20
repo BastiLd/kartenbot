@@ -1,9 +1,11 @@
 ﻿import asyncio
 import json
 import logging
+import sys
 import random
 import time
-from datetime import datetime
+from pathlib import Path
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import discord
@@ -11,12 +13,31 @@ from discord import app_commands, ui, SelectOption
 from discord.ext import commands
 
 from config import get_bot_token
-from db import close_db, db_context, init_db
+from db import DB_PATH, close_db, db_context, init_db
 from karten import karten
 from services.battle import STATUS_CIRCLE_MAP, STATUS_PRIORITY_MAP, _presence_to_color, calculate_damage, create_battle_embed, create_battle_log_embed, update_battle_log
 import secrets
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+LOG_PATH = Path("bot.log")
+ERROR_COUNT = 0
+
+class ErrorCounter(logging.Handler):
+    def emit(self, record):
+        global ERROR_COUNT
+        if record.levelno >= logging.ERROR:
+            ERROR_COUNT += 1
+
+error_counter = ErrorCounter()
+logging.getLogger().addHandler(error_counter)
+
+file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+logging.getLogger().addHandler(file_handler)
+
+BOT_START_TIME = time.time()
 
 
 intents = discord.Intents.default()
@@ -30,6 +51,9 @@ def create_bot() -> commands.Bot:
 
 
 # Rollen-IDs für Admin/Owner (vom Nutzer bestätigt)
+BASTI_USER_ID = 965593518745731152
+DEV_ROLE_ID = 1463304167421513961  # Bot_Developer/Tester role ID
+
 MFU_ADMIN_ROLE_ID = 889559991437119498
 OWNER_ROLE_ROLE_ID = 1272827906032402464
 
@@ -66,6 +90,10 @@ async def on_message(message: discord.Message):
     # Nur in Guilds relevant
     if not message.guild:
         return
+    # Wartungsmodus: Nur Owner/Dev reagieren lassen
+    if await is_maintenance_enabled(message.guild.id):
+        if not is_owner_or_dev_member(message.author):
+            return
     # Nur in erlaubten Kanälen reagieren (ohne Interactions)
     if not await is_channel_allowed_ids(message.guild.id, message.channel.id):
         return
@@ -101,10 +129,19 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 # Kanal-Restriktion: Only respond in configured channel
-async def is_channel_allowed(interaction: discord.Interaction) -> bool:
+async def is_channel_allowed(interaction: discord.Interaction, *, bypass_maintenance: bool = False) -> bool:
     # DMs erlauben
     if interaction.guild is None:
         return True
+    # Wartungsmodus: Nur Owner/Dev dürfen Commands nutzen
+    if not bypass_maintenance and await is_maintenance_enabled(interaction.guild_id):
+        if not await is_owner_or_dev(interaction):
+            message = "⛔ Der Bot ist gerade im Wartungsmodus. Bitte später erneut versuchen."
+            if not interaction.response.is_done():
+                await interaction.response.send_message(message, ephemeral=True)
+            else:
+                await interaction.followup.send(message, ephemeral=True)
+            return False
     configured_channel_id = None
     allowed_channels = set()
     async with db_context() as db:
@@ -240,6 +277,44 @@ async def add_karte(user_id, karten_name):
         )
         await db.commit()
 
+async def add_karte_amount(user_id, karten_name, amount: int):
+    if amount <= 0:
+        return
+    async with db_context() as db:
+        await db.execute(
+            "INSERT INTO user_karten (user_id, karten_name, anzahl) VALUES (?, ?, ?) "
+            "ON CONFLICT(user_id, karten_name) DO UPDATE SET anzahl = anzahl + excluded.anzahl",
+            (user_id, karten_name, amount),
+        )
+        await db.commit()
+
+async def remove_karte_amount(user_id, karten_name, amount: int) -> int:
+    if amount <= 0:
+        return 0
+    async with db_context() as db:
+        cursor = await db.execute(
+            "SELECT anzahl FROM user_karten WHERE user_id = ? AND karten_name = ?",
+            (user_id, karten_name),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return 0
+        current = row[0] or 0
+        new_amount = current - amount
+        if new_amount <= 0:
+            await db.execute(
+                "DELETE FROM user_karten WHERE user_id = ? AND karten_name = ?",
+                (user_id, karten_name),
+            )
+            await db.commit()
+            return 0
+        await db.execute(
+            "UPDATE user_karten SET anzahl = ? WHERE user_id = ? AND karten_name = ?",
+            (new_amount, user_id, karten_name),
+        )
+        await db.commit()
+        return new_amount
+
 # Hilfsfunktion: Missionsfortschritt speichern
 async def add_mission_reward(user_id):
     karte = random.choice(karten)
@@ -306,6 +381,17 @@ async def get_last_karte(user_id):
         cursor = await db.execute("SELECT karten_name FROM user_karten WHERE user_id = ? ORDER BY rowid DESC LIMIT 1", (user_id,))
         row = await cursor.fetchone()
         return row[0] if row else None
+
+async def delete_user_data(user_id: int) -> None:
+    async with db_context() as db:
+        await db.execute("DELETE FROM user_karten WHERE user_id = ?", (user_id,))
+        await db.execute("DELETE FROM user_teams WHERE user_id = ?", (user_id,))
+        await db.execute("DELETE FROM user_daily WHERE user_id = ?", (user_id,))
+        await db.execute("DELETE FROM user_infinitydust WHERE user_id = ?", (user_id,))
+        await db.execute("DELETE FROM user_card_buffs WHERE user_id = ?", (user_id,))
+        await db.execute("DELETE FROM user_seen_channels WHERE user_id = ?", (user_id,))
+        await db.execute("DELETE FROM tradingpost WHERE seller_id = ?", (user_id,))
+        await db.commit()
 
 # View für Buttons beim Kartenziehen
 class ZieheKarteView(ui.View):
@@ -1709,6 +1795,54 @@ async def is_admin(interaction):
     except Exception:
         logging.exception("Unexpected error")
     return False
+
+def _has_dev_role(member: discord.Member) -> bool:
+    if DEV_ROLE_ID == 0:
+        return False
+    try:
+        role_ids = {role.id for role in (member.roles or [])}
+        return DEV_ROLE_ID in role_ids
+    except Exception:
+        logging.exception("Failed to read member roles")
+        return False
+
+def is_owner_or_dev_member(member) -> bool:
+    if member.id == BASTI_USER_ID:
+        return True
+    return _has_dev_role(member)
+
+async def is_owner_or_dev(interaction: discord.Interaction) -> bool:
+    if interaction.user.id == BASTI_USER_ID:
+        return True
+    if interaction.guild is None:
+        return False
+    return _has_dev_role(interaction.user)
+
+async def require_owner_or_dev(interaction: discord.Interaction) -> bool:
+    if not await is_owner_or_dev(interaction):
+        await interaction.response.send_message(
+            "? Nur Basti oder die Developer-Rolle d?rfen diesen Command nutzen.",
+            ephemeral=True,
+        )
+        return False
+    return True
+
+async def is_maintenance_enabled(guild_id: int) -> bool:
+    if not guild_id:
+        return False
+    async with db_context() as db:
+        cursor = await db.execute("SELECT maintenance_mode FROM guild_config WHERE guild_id = ?", (guild_id,))
+        row = await cursor.fetchone()
+        return bool(row[0]) if row and row[0] else False
+
+async def set_maintenance_mode(guild_id: int, enabled: bool) -> None:
+    async with db_context() as db:
+        await db.execute(
+            "INSERT INTO guild_config (guild_id, maintenance_mode) VALUES (?, ?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET maintenance_mode = excluded.maintenance_mode",
+            (guild_id, 1 if enabled else 0),
+        )
+        await db.commit()
 
 # Slash-Command: Tägliche Belohnung
 @bot.tree.command(name="täglich", description="Hole deine tägliche Belohnung ab")
@@ -3689,6 +3823,435 @@ class MissionBattleView(ui.View):
             
             await interaction.followup.edit_message(interaction.message.id, embed=embed, view=self)
 
+# =========================
+# Owner/Dev Commands
+# =========================
+
+class ConfirmDeleteUserView(ui.View):
+    def __init__(self, requester_id: int, target_id: int, target_name: str):
+        super().__init__(timeout=60)
+        self.requester_id = requester_id
+        self.target_id = target_id
+        self.target_name = target_name
+
+    @ui.button(label="L?schen", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nur der Anforderer kann best?tigen.", ephemeral=True)
+            return
+        await delete_user_data(self.target_id)
+        self.stop()
+        await interaction.response.edit_message(
+            content=f"? Daten von **{self.target_name}** gel?scht.", view=None
+        )
+
+    @ui.button(label="Abbrechen", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nur der Anforderer kann abbrechen.", ephemeral=True)
+            return
+        self.stop()
+        await interaction.response.edit_message(content="Abgebrochen.", view=None)
+
+
+@bot.tree.command(name="maintenance", description="Wartungsmodus an/aus (nur Basti/Dev)")
+@app_commands.choices(
+    mode=[
+        app_commands.Choice(name="on", value="on"),
+        app_commands.Choice(name="off", value="off"),
+    ]
+)
+async def maintenance(interaction: discord.Interaction, mode: str):
+    if not await require_owner_or_dev(interaction):
+        return
+    if not await is_channel_allowed(interaction):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("Nur in Servern verf?gbar.", ephemeral=True)
+        return
+    enabled = mode == "on"
+    await set_maintenance_mode(interaction.guild_id, enabled)
+    state = "aktiviert" if enabled else "deaktiviert"
+    await interaction.response.send_message(f"? Wartungsmodus {state}.", ephemeral=True)
+
+
+@bot.tree.command(name="delete_user_data", description="L?scht alle Bot-Daten eines Users (nur Basti/Dev)")
+@app_commands.describe(user="Der Nutzer, dessen Daten gel?scht werden sollen")
+async def delete_user_data_command(interaction: discord.Interaction, user: discord.Member):
+    if not await require_owner_or_dev(interaction):
+        return
+    if not await is_channel_allowed(interaction):
+        return
+    view = ConfirmDeleteUserView(interaction.user.id, user.id, user.display_name)
+    await interaction.response.send_message(
+        f"?? Wirklich alle Bot-Daten von **{user.display_name}** l?schen?",
+        view=view,
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="health", description="Status anzeigen (nur Basti/Dev)")
+async def health(interaction: discord.Interaction):
+    if not await require_owner_or_dev(interaction):
+        return
+    if not await is_channel_allowed(interaction):
+        return
+    uptime = timedelta(seconds=int(time.time() - BOT_START_TIME))
+    latency_ms = int(bot.latency * 1000)
+    guild_count = len(bot.guilds)
+    embed = discord.Embed(title="Bot Health", color=0x2b90ff)
+    embed.add_field(name="Uptime", value=str(uptime), inline=True)
+    embed.add_field(name="Latency", value=f"{latency_ms} ms", inline=True)
+    embed.add_field(name="Guilds", value=str(guild_count), inline=True)
+    embed.add_field(name="Python", value=sys.version.split()[0], inline=True)
+    embed.add_field(name="DB Path", value=str(DB_PATH), inline=True)
+    embed.add_field(name="Error Count", value=str(ERROR_COUNT), inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="give_dust", description="Gib einem Nutzer Infinitydust (nur Basti/Dev)")
+@app_commands.describe(user="Zielnutzer", amount="Menge Infinitydust")
+async def give_dust(interaction: discord.Interaction, user: discord.Member, amount: app_commands.Range[int, 1, 1000]):
+    if not await require_owner_or_dev(interaction):
+        return
+    if not await is_channel_allowed(interaction):
+        return
+    await add_infinitydust(user.id, int(amount))
+    await interaction.response.send_message(
+        f"? {user.mention} hat **{amount}x Infinitydust** erhalten.",
+        ephemeral=True,
+    )
+
+
+# /db backup
+DB_GROUP = app_commands.Group(name="db", description="DB-Tools (nur Basti/Dev)")
+
+@DB_GROUP.command(name="backup", description="DB als Attachment senden (nur Basti/Dev)")
+async def db_backup(interaction: discord.Interaction):
+    if not await require_owner_or_dev(interaction):
+        return
+    if not await is_channel_allowed(interaction):
+        return
+    db_path = Path(DB_PATH)
+    if not db_path.exists():
+        await interaction.response.send_message("? DB-Datei nicht gefunden.", ephemeral=True)
+        return
+    await interaction.response.send_message(
+        content="? DB-Backup:",
+        file=discord.File(str(db_path), filename=db_path.name),
+        ephemeral=True,
+    )
+
+bot.tree.add_command(DB_GROUP)
+
+
+# /grant card
+GRANT_GROUP = app_commands.Group(name="grant", description="Karten vergeben (nur Basti/Dev)")
+
+@GRANT_GROUP.command(name="card", description="Gib einem Nutzer Karten in Menge (nur Basti/Dev)")
+@app_commands.describe(user="Zielnutzer", kartenname="Kartenname", amount="Anzahl")
+async def grant_card(interaction: discord.Interaction, user: discord.Member, kartenname: str, amount: app_commands.Range[int, 1, 1000]):
+    if not await require_owner_or_dev(interaction):
+        return
+    if not await is_channel_allowed(interaction):
+        return
+    karte = await get_karte_by_name(kartenname)
+    if not karte:
+        await interaction.response.send_message("? Karte nicht gefunden.", ephemeral=True)
+        return
+    await add_karte_amount(user.id, karte["name"], int(amount))
+    await interaction.response.send_message(
+        f"? {user.mention} hat **{amount}x {karte['name']}** erhalten.",
+        ephemeral=True,
+    )
+
+bot.tree.add_command(GRANT_GROUP)
+
+
+# /revoke card
+REVOKE_GROUP = app_commands.Group(name="revoke", description="Karten abziehen (nur Basti/Dev)")
+
+@REVOKE_GROUP.command(name="card", description="Ziehe einem Nutzer Karten ab (nur Basti/Dev)")
+@app_commands.describe(user="Zielnutzer", kartenname="Kartenname", amount="Anzahl")
+async def revoke_card(interaction: discord.Interaction, user: discord.Member, kartenname: str, amount: app_commands.Range[int, 1, 1000]):
+    if not await require_owner_or_dev(interaction):
+        return
+    if not await is_channel_allowed(interaction):
+        return
+    karte = await get_karte_by_name(kartenname)
+    if not karte:
+        await interaction.response.send_message("? Karte nicht gefunden.", ephemeral=True)
+        return
+    new_amount = await remove_karte_amount(user.id, karte["name"], int(amount))
+    await interaction.response.send_message(
+        f"? Neue Menge f?r **{karte['name']}** bei {user.mention}: **{new_amount}**",
+        ephemeral=True,
+    )
+
+bot.tree.add_command(REVOKE_GROUP)
+
+
+# /set daily reset & /set mission reset
+SET_GROUP = app_commands.Group(name="set", description="Support-Tools (nur Basti/Dev)")
+SET_DAILY_GROUP = app_commands.Group(name="daily", description="Daily-Tools")
+SET_MISSION_GROUP = app_commands.Group(name="mission", description="Mission-Tools")
+
+@SET_DAILY_GROUP.command(name="reset", description="Daily-Cooldown zur?cksetzen (nur Basti/Dev)")
+@app_commands.describe(user="Zielnutzer")
+async def set_daily_reset(interaction: discord.Interaction, user: discord.Member):
+    if not await require_owner_or_dev(interaction):
+        return
+    if not await is_channel_allowed(interaction):
+        return
+    async with db_context() as db:
+        await db.execute(
+            "INSERT INTO user_daily (user_id, last_daily) VALUES (?, 0) "
+            "ON CONFLICT(user_id) DO UPDATE SET last_daily = 0",
+            (user.id,),
+        )
+        await db.commit()
+    await interaction.response.send_message(
+        f"? Daily f?r {user.mention} zur?ckgesetzt.",
+        ephemeral=True,
+    )
+
+@SET_MISSION_GROUP.command(name="reset", description="Mission-Counter zur?cksetzen (nur Basti/Dev)")
+@app_commands.describe(user="Zielnutzer")
+async def set_mission_reset(interaction: discord.Interaction, user: discord.Member):
+    if not await require_owner_or_dev(interaction):
+        return
+    if not await is_channel_allowed(interaction):
+        return
+    today_start = berlin_midnight_epoch()
+    async with db_context() as db:
+        await db.execute(
+            "INSERT INTO user_daily (user_id, mission_count, last_mission_reset) VALUES (?, 0, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET mission_count = 0, last_mission_reset = ?",
+            (user.id, today_start, today_start),
+        )
+        await db.commit()
+    await interaction.response.send_message(
+        f"? Mission-Counter f?r {user.mention} zur?ckgesetzt.",
+        ephemeral=True,
+    )
+
+SET_GROUP.add_command(SET_DAILY_GROUP)
+SET_GROUP.add_command(SET_MISSION_GROUP)
+bot.tree.add_command(SET_GROUP)
+
+
+# /debug commands
+DEBUG_GROUP = app_commands.Group(name="debug", description="Debug-Tools (nur Basti/Dev)")
+
+@DEBUG_GROUP.command(name="db", description="DB-Check (nur Basti/Dev)")
+async def debug_db(interaction: discord.Interaction):
+    if not await require_owner_or_dev(interaction):
+        return
+    if not await is_channel_allowed(interaction):
+        return
+    async with db_context() as db:
+        cursor = await db.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+        tables = [row[0] for row in await cursor.fetchall()]
+        cursor = await db.execute("PRAGMA integrity_check")
+        integrity = await cursor.fetchone()
+    embed = discord.Embed(title="DB Debug", color=0x2b90ff)
+    embed.add_field(name="Tables", value=str(len(tables)), inline=True)
+    embed.add_field(name="Integrity", value=str(integrity[0] if integrity else "unknown"), inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@DEBUG_GROUP.command(name="user", description="User-Debug (nur Basti/Dev)")
+@app_commands.describe(user="Zielnutzer")
+async def debug_user(interaction: discord.Interaction, user: discord.Member):
+    if not await require_owner_or_dev(interaction):
+        return
+    if not await is_channel_allowed(interaction):
+        return
+    async with db_context() as db:
+        cursor = await db.execute("SELECT team FROM user_teams WHERE user_id = ?", (user.id,))
+        row = await cursor.fetchone()
+        team_raw = row[0] if row and row[0] else "[]"
+        try:
+            team = json.loads(team_raw)
+        except Exception:
+            team = team_raw
+
+        cursor = await db.execute("SELECT COUNT(*), SUM(anzahl) FROM user_karten WHERE user_id = ?", (user.id,))
+        row = await cursor.fetchone()
+        unique_cards = row[0] if row and row[0] else 0
+        total_cards = row[1] if row and row[1] else 0
+
+        cursor = await db.execute("SELECT amount FROM user_infinitydust WHERE user_id = ?", (user.id,))
+        row = await cursor.fetchone()
+        infinitydust = row[0] if row and row[0] else 0
+
+        cursor = await db.execute("SELECT COUNT(*) FROM user_card_buffs WHERE user_id = ?", (user.id,))
+        row = await cursor.fetchone()
+        buffs = row[0] if row and row[0] else 0
+
+        cursor = await db.execute("SELECT last_daily, mission_count, last_mission_reset FROM user_daily WHERE user_id = ?", (user.id,))
+        row = await cursor.fetchone()
+        last_daily = row[0] if row else None
+        mission_count = row[1] if row and row[1] else 0
+        last_mission_reset = row[2] if row else None
+
+    team_text = str(team)
+    if len(team_text) > 900:
+        team_text = team_text[:900] + "..."
+
+    embed = discord.Embed(title=f"Debug User: {user.display_name}", color=0x2b90ff)
+    embed.add_field(name="Team", value=team_text, inline=False)
+    embed.add_field(name="Karten", value=f"Unique: {unique_cards} | Total: {total_cards}", inline=True)
+    embed.add_field(name="Infinitydust", value=str(infinitydust), inline=True)
+    embed.add_field(name="Buffs", value=str(buffs), inline=True)
+    embed.add_field(name="Daily", value=str(last_daily), inline=True)
+    embed.add_field(name="Mission Count", value=str(mission_count), inline=True)
+    embed.add_field(name="Mission Reset", value=str(last_mission_reset), inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@DEBUG_GROUP.command(name="sync", description="Manuelles tree.sync() (nur Basti/Dev)")
+async def debug_sync(interaction: discord.Interaction):
+    if not await require_owner_or_dev(interaction):
+        return
+    if not await is_channel_allowed(interaction):
+        return
+    synced = await bot.tree.sync()
+    await interaction.response.send_message(f"? Sync abgeschlossen: {len(synced)} Commands.", ephemeral=True)
+
+bot.tree.add_command(DEBUG_GROUP)
+
+
+# /logs last
+LOGS_GROUP = app_commands.Group(name="logs", description="Logs anzeigen (nur Basti/Dev)")
+
+@LOGS_GROUP.command(name="last", description="Letzte Log-Zeilen anzeigen (nur Basti/Dev)")
+@app_commands.describe(count="Anzahl Zeilen")
+async def logs_last(interaction: discord.Interaction, count: app_commands.Range[int, 1, 200] = 20):
+    if not await require_owner_or_dev(interaction):
+        return
+    if not await is_channel_allowed(interaction):
+        return
+    if not LOG_PATH.exists():
+        await interaction.response.send_message("? Log-Datei nicht gefunden.", ephemeral=True)
+        return
+    content = LOG_PATH.read_text(encoding="utf-8", errors="ignore").splitlines()
+    tail = "\n".join(content[-int(count):])
+    if not tail:
+        await interaction.response.send_message("Keine Logs vorhanden.", ephemeral=True)
+        return
+    if len(tail) > 1900:
+        tail = tail[-1900:]
+    await interaction.response.send_message(f"```text\n{tail}\n```", ephemeral=True)
+
+bot.tree.add_command(LOGS_GROUP)
+
+
+# /karten validate
+KARTEN_GROUP = app_commands.Group(name="karten", description="Karten-Tools (nur Basti/Dev)")
+
+@KARTEN_GROUP.command(name="validate", description="Validiert karten.py (nur Basti/Dev)")
+async def karten_validate(interaction: discord.Interaction):
+    if not await require_owner_or_dev(interaction):
+        return
+    if not await is_channel_allowed(interaction):
+        return
+    issues = []
+    for idx, card in enumerate(karten, start=1):
+        name = card.get("name")
+        beschreibung = card.get("beschreibung")
+        bild = card.get("bild")
+        seltenheit = card.get("seltenheit")
+        if not name:
+            issues.append(f"{idx}: fehlt name")
+        if not beschreibung:
+            issues.append(f"{idx}: fehlt beschreibung")
+        if not bild or not isinstance(bild, str) or not bild.startswith("http"):
+            issues.append(f"{idx}: bild ist ung?ltig")
+        if not seltenheit:
+            issues.append(f"{idx}: fehlt seltenheit")
+        hp = card.get("hp")
+        if hp is not None and not isinstance(hp, int):
+            issues.append(f"{idx}: hp ist kein int")
+        attacks = card.get("attacks")
+        if attacks is not None:
+            if not isinstance(attacks, list):
+                issues.append(f"{idx}: attacks ist keine Liste")
+            else:
+                for a_i, atk in enumerate(attacks, start=1):
+                    if not isinstance(atk, dict):
+                        issues.append(f"{idx}.{a_i}: attack ist kein dict")
+                        continue
+                    if "name" not in atk or "damage" not in atk:
+                        issues.append(f"{idx}.{a_i}: attack fehlt name/damage")
+                        continue
+                    dmg = atk.get("damage")
+                    if isinstance(dmg, list):
+                        if len(dmg) != 2 or not all(isinstance(x, int) for x in dmg):
+                            issues.append(f"{idx}.{a_i}: damage list ung?ltig")
+                    elif not isinstance(dmg, int):
+                        issues.append(f"{idx}.{a_i}: damage ist kein int")
+    if not issues:
+        await interaction.response.send_message("? karten.py ist valide.", ephemeral=True)
+        return
+    preview = "\n".join(issues[:20])
+    more = len(issues) - 20
+    if more > 0:
+        preview += f"\n... +{more} weitere"
+    await interaction.response.send_message(f"?? Probleme gefunden:\n{preview}", ephemeral=True)
+
+bot.tree.add_command(KARTEN_GROUP)
+
+
+# /balance stats (?ffentlich)
+BALANCE_GROUP = app_commands.Group(name="balance", description="Balance-Statistiken")
+
+@BALANCE_GROUP.command(name="stats", description="Zeigt Balance-Statistiken")
+async def balance_stats(interaction: discord.Interaction):
+    if not await is_channel_allowed(interaction, bypass_maintenance=True):
+        return
+    total_cards = len(karten)
+    rarity_counts = {}
+    hp_values = []
+    attack_max_values = []
+    for card in karten:
+        rarity = (card.get("seltenheit") or "unbekannt").lower()
+        rarity_counts[rarity] = rarity_counts.get(rarity, 0) + 1
+        hp_values.append(card.get("hp", 100))
+        attacks = card.get("attacks", [])
+        for atk in attacks:
+            if not isinstance(atk, dict):
+                continue
+            dmg = atk.get("damage")
+            if isinstance(dmg, list) and len(dmg) == 2:
+                attack_max_values.append(max(dmg))
+            elif isinstance(dmg, int):
+                attack_max_values.append(dmg)
+
+    avg_hp = sum(hp_values) / len(hp_values) if hp_values else 0
+    avg_atk = sum(attack_max_values) / len(attack_max_values) if attack_max_values else 0
+
+    rarity_lines = []
+    for rarity, count in sorted(rarity_counts.items(), key=lambda x: x[1], reverse=True):
+        pct = (count / total_cards * 100) if total_cards else 0
+        rarity_lines.append(f"{rarity}: {count} ({pct:.1f}%)")
+
+    top_cards = []
+    async with db_context() as db:
+        cursor = await db.execute(
+            "SELECT karten_name, SUM(anzahl) as total FROM user_karten "
+            "GROUP BY karten_name ORDER BY total DESC LIMIT 5"
+        )
+        rows = await cursor.fetchall()
+        for row in rows:
+            top_cards.append(f"{row[0]} ({row[1]})")
+
+    embed = discord.Embed(title="Balance Stats", color=0x2b90ff)
+    embed.add_field(name="Rarity", value="\n".join(rarity_lines) or "-", inline=False)
+    embed.add_field(name="Avg HP", value=f"{avg_hp:.1f}", inline=True)
+    embed.add_field(name="Avg Max Damage", value=f"{avg_atk:.1f}", inline=True)
+    embed.add_field(name="Top Karten (DB)", value="\n".join(top_cards) or "Keine Daten", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+bot.tree.add_command(BALANCE_GROUP)
 # =========================
 # Präsenz-Status Kreise + Live-User-Picker (wiederverwendbar für /fight und /vaultlook)
 # =========================

@@ -7,3 +7,4 @@ env.env
 venv/
 .vscode/
 *.db
+bot.log

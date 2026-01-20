@@ -2,7 +2,7 @@ import asyncio
 import random
 import unittest
 
-from bot import calculate_damage
+from services.battle import calculate_damage
 from db import close_db, init_db
 
 
