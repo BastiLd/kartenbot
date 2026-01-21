@@ -161,7 +161,7 @@ async def is_channel_allowed(interaction: discord.Interaction, *, bypass_mainten
             await interaction.followup.send(message, ephemeral=True)
         return False
     # Wenn anderer Kanal
-    # Kanal pr?fen: erlaubt wenn gleich configured_channel_id oder in allowed_channels
+    # Kanal prüfen: erlaubt wenn gleich configured_channel_id oder in allowed_channels
     if (configured_channel_id and interaction.channel_id == configured_channel_id) or (interaction.channel_id in allowed_channels):
         return True
 
@@ -507,6 +507,15 @@ class BattleView(ui.View):
                 self.active_effects[player_id] = [e for e in self.active_effects.get(player_id, []) if e.get('type') != 'confusion']
             except Exception:
                 logging.exception("Unexpected error")
+
+    def _status_icons(self, player_id: int) -> str:
+        effects = self.active_effects.get(player_id, [])
+        icons = []
+        if any(e.get("type") == "burning" for e in effects):
+            icons.append("\U0001f525")
+        if any(e.get("type") == "confusion" for e in effects):
+            icons.append("\U0001f300")
+        return f" {' '.join(icons)}" if icons else ""
     
     def is_attack_on_cooldown(self, player_id, attack_index):
         """Prüft ob eine Attacke auf Cooldown ist"""
@@ -870,7 +879,9 @@ class BattleView(ui.View):
                 defender_remaining_hp,
                 pre_effect_damage=pre_burn_total,
                 confusion_applied=confusion_applied,
-                self_hit_damage=(self_damage if not attack_hits_enemy and 'self_damage' in locals() else 0)
+                self_hit_damage=(self_damage if not attack_hits_enemy and 'self_damage' in locals() else 0),
+                attacker_status_icons=self._status_icons(self.current_turn),
+                defender_status_icons=self._status_icons(defender_id),
             )
             await self.battle_log_message.edit(embed=log_embed)
 
@@ -1025,7 +1036,9 @@ class BattleView(ui.View):
                 self.player1_hp,
                 pre_effect_damage=pre_burn_total,
                 confusion_applied=False,
-                self_hit_damage=(self_damage if not bot_hits_enemy and 'self_damage' in locals() else 0)
+                self_hit_damage=(self_damage if not bot_hits_enemy and 'self_damage' in locals() else 0),
+                attacker_status_icons=self._status_icons(0),
+                defender_status_icons=self._status_icons(self.player1_id),
             )
             await self.battle_log_message.edit(embed=log_embed)
 
@@ -1830,7 +1843,7 @@ async def is_owner_or_dev(interaction: discord.Interaction) -> bool:
 async def require_owner_or_dev(interaction: discord.Interaction) -> bool:
     if not await is_owner_or_dev(interaction):
         await interaction.response.send_message(
-            "? Nur Basti oder die Developer-Rolle d?rfen diesen Command nutzen.",
+            "⛔ Nur Basti oder die Developer-Rolle dürfen diesen Command nutzen.",
             ephemeral=True,
         )
         return False
@@ -2016,8 +2029,10 @@ async def execute_mission_wave(interaction, wave_num, total_waves, player_card, 
     # Erstelle Kampf-Embed nach Anwendung der Buffs
     embed = discord.Embed(title=f"⚔️ Welle {wave_num}/{total_waves}", 
                          description=f"Du kämpfst gegen **{bot_card['name']}**!")
-    embed.add_field(name="🟥 Deine Karte", value=f"{player_card['name']}\nHP: {mission_battle_view.player_hp}", inline=True)
-    embed.add_field(name="🟦 Bot Karte", value=f"{bot_card['name']}\nHP: {mission_battle_view.bot_hp}", inline=True)
+    player_label = f"🟥 Deine Karte{mission_battle_view._status_icons(interaction.user.id)}"
+    bot_label = f"🟦 Bot Karte{mission_battle_view._status_icons(0)}"
+    embed.add_field(name=player_label, value=f"{player_card['name']}\nHP: {mission_battle_view.player_hp}", inline=True)
+    embed.add_field(name=bot_label, value=f"{bot_card['name']}\nHP: {mission_battle_view.bot_hp}", inline=True)
     embed.set_image(url=player_card["bild"])
     embed.set_thumbnail(url=bot_card["bild"])
     
@@ -3470,6 +3485,15 @@ class MissionBattleView(ui.View):
         max_damage = self.mission_get_attack_max_damage(attack_damage, damage_buff)
         return min_damage > 90 and max_damage > 99
 
+    def _status_icons(self, target_id: int) -> str:
+        effects = self.active_effects.get(target_id, [])
+        icons = []
+        if any(e.get("type") == "burning" for e in effects):
+            icons.append("\U0001f525")
+        if any(e.get("type") == "confusion" for e in effects):
+            icons.append("\U0001f300")
+        return f" {' '.join(icons)}" if icons else ""
+
     def is_attack_on_cooldown_user(self, attack_index: int) -> bool:
         return self.user_attack_cooldowns.get(attack_index, 0) > 0
 
@@ -3681,7 +3705,9 @@ class MissionBattleView(ui.View):
                 self.bot_hp,
                 pre_effect_damage=pre_burn_total,
                 confusion_applied=confusion_applied,
-                self_hit_damage=(self_damage if not hits_enemy and 'self_damage' in locals() else 0)
+                self_hit_damage=(self_damage if not hits_enemy and 'self_damage' in locals() else 0),
+                attacker_status_icons=self._status_icons(self.user_id),
+                defender_status_icons=self._status_icons(0),
             )
             await self.battle_log_message.edit(embed=log_embed)
         
@@ -3774,7 +3800,9 @@ class MissionBattleView(ui.View):
                     interaction.user,
                     self.round_counter,
                     self.player_hp,
-                    pre_effect_damage=pre_burn_total_player
+                    pre_effect_damage=pre_burn_total_player,
+                    attacker_status_icons=self._status_icons(0),
+                    defender_status_icons=self._status_icons(self.user_id),
                 )
                 await self.battle_log_message.edit(embed=log_embed)
     
@@ -3819,8 +3847,10 @@ class MissionBattleView(ui.View):
             # Update UI für nächsten Spieler-Zug
             embed = discord.Embed(title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
                                   description=f"Bot hat **{attack['name']}** verwendet! Dein HP: {self.player_hp}\nDu bist wieder an der Reihe!")
-            embed.add_field(name="🟥 Deine Karte", value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
-            embed.add_field(name="🟦 Bot Karte", value=f"{self.bot_card['name']}\nHP: {self.bot_hp}", inline=True)
+            player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
+            bot_label = f"🟦 Bot Karte{self._status_icons(0)}"
+            embed.add_field(name=player_label, value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
+            embed.add_field(name=bot_label, value=f"{self.bot_card['name']}\nHP: {self.bot_hp}", inline=True)
             embed.set_image(url=self.player_card["bild"])
             embed.set_thumbnail(url=self.bot_card["bild"])
 
@@ -3835,8 +3865,10 @@ class MissionBattleView(ui.View):
             
             embed = discord.Embed(title=f"⚔️ Welle {self.wave_num}/{self.total_waves}", 
                                   description=f"🤖 Bot hat keine Attacken verfügbar! Du bist wieder an der Reihe!")
-            embed.add_field(name="🟥 Deine Karte", value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
-            embed.add_field(name="🟦 Bot Karte", value=f"{self.bot_card['name']}\nHP: {self.bot_hp}", inline=True)
+            player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
+            bot_label = f"🟦 Bot Karte{self._status_icons(0)}"
+            embed.add_field(name=player_label, value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
+            embed.add_field(name=bot_label, value=f"{self.bot_card['name']}\nHP: {self.bot_hp}", inline=True)
             embed.set_image(url=self.player_card["bild"])
             embed.set_thumbnail(url=self.bot_card["bild"])
             
@@ -3847,9 +3879,12 @@ class MissionBattleView(ui.View):
 # =========================
 
 async def _send_ephemeral(interaction: discord.Interaction, *, content: str | None = None, embed=None, view=None, file=None):
+    kwargs = {"content": content, "embed": embed, "view": view, "ephemeral": True}
+    if file is not None:
+        kwargs["file"] = file
     if interaction.response.is_done():
-        return await interaction.followup.send(content=content, embed=embed, view=view, file=file, ephemeral=True)
-    return await interaction.response.send_message(content=content, embed=embed, view=view, file=file, ephemeral=True)
+        return await interaction.followup.send(**kwargs)
+    return await interaction.response.send_message(**kwargs)
 
 async def _edit_panel_message(interaction: discord.Interaction, *, content: str | None = None, embed=None, view=None):
     try:
@@ -3859,7 +3894,7 @@ async def _edit_panel_message(interaction: discord.Interaction, *, content: str 
 
 async def _select_user(interaction: discord.Interaction, prompt: str):
     if interaction.guild is None:
-        await _send_ephemeral(interaction, content="Nur in Servern verfuegbar.")
+        await _send_ephemeral(interaction, content="Nur in Servern verfügbar.")
         return None, None
     view = AdminUserSelectView(interaction.user.id, interaction.guild)
     await _send_ephemeral(interaction, content=prompt, view=view)
@@ -3900,7 +3935,7 @@ class NumberSelectView(ui.View):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         self.value = int(self.select.values[0])
         self.stop()
@@ -3913,9 +3948,9 @@ class CardSelectPagerView(ui.View):
         self.cards = cards
         self.page = 0
         self.value = None
-        self.select = ui.Select(placeholder="Waehle eine Karte...", min_values=1, max_values=1, options=[])
+        self.select = ui.Select(placeholder="Wähle eine Karte...", min_values=1, max_values=1, options=[])
         self.select.callback = self.select_callback
-        self.prev_button = ui.Button(label="< Zurueck", style=discord.ButtonStyle.secondary)
+        self.prev_button = ui.Button(label="< Zurück", style=discord.ButtonStyle.secondary)
         self.prev_button.callback = self.prev_page
         self.next_button = ui.Button(label="Weiter >", style=discord.ButtonStyle.secondary)
         self.next_button.callback = self.next_page
@@ -3937,7 +3972,7 @@ class CardSelectPagerView(ui.View):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         self.value = self.select.values[0]
         self.stop()
@@ -3945,7 +3980,7 @@ class CardSelectPagerView(ui.View):
 
     async def prev_page(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         if self.page > 0:
             self.page -= 1
@@ -3954,7 +3989,7 @@ class CardSelectPagerView(ui.View):
 
     async def next_page(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         if (self.page + 1) * 25 < len(self.cards):
             self.page += 1
@@ -3963,7 +3998,7 @@ class CardSelectPagerView(ui.View):
 
     async def cancel(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         self.stop()
         await interaction.response.edit_message(content="Abgebrochen.", view=None)
@@ -3975,15 +4010,16 @@ class ConfirmDeleteUserView(ui.View):
         self.target_id = target_id
         self.target_name = target_name
 
-    @ui.button(label="Loeschen", style=discord.ButtonStyle.danger)
+    @ui.button(label="Löschen", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nur der Anforderer kann bestaetigen.", ephemeral=True)
+            await interaction.response.send_message("Nur der Anforderer kann bestätigen.", ephemeral=True)
             return
         await delete_user_data(self.target_id)
+        logging.info("Delete user data: actor=%s target=%s", interaction.user.id, self.target_id)
         self.stop()
         await interaction.response.edit_message(
-            content=f"Daten von {self.target_name} geloescht.", view=None
+            content=f"Daten von {self.target_name} gelöscht.", view=None
         )
 
     @ui.button(label="Abbrechen", style=discord.ButtonStyle.secondary)
@@ -4192,11 +4228,11 @@ class DevActionSelect(ui.Select):
             SelectOption(label="Logs last", value="logs_last"),
             SelectOption(label="Karten validate", value="karten_validate"),
         ]
-        super().__init__(placeholder="Dev-Tools waehlen...", min_values=1, max_values=1, options=options)
+        super().__init__(placeholder="Dev-Tools wählen...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         if not await require_owner_or_dev(interaction):
             return
@@ -4206,66 +4242,72 @@ class DevActionSelect(ui.Select):
         action = self.values[0]
         if action == "maintenance_on":
             if interaction.guild is None:
-                await _send_ephemeral(interaction, content="Nur in Servern verfuegbar.")
+                await _send_ephemeral(interaction, content="Nur in Servern verfügbar.")
                 return
             await set_maintenance_mode(interaction.guild_id, True)
+            logging.info("Maintenance ON by %s in guild %s", interaction.user.id, interaction.guild_id)
             await _send_ephemeral(interaction, content="Wartungsmodus aktiviert.")
             return
         if action == "maintenance_off":
             if interaction.guild is None:
-                await _send_ephemeral(interaction, content="Nur in Servern verfuegbar.")
+                await _send_ephemeral(interaction, content="Nur in Servern verfügbar.")
                 return
             await set_maintenance_mode(interaction.guild_id, False)
+            logging.info("Maintenance OFF by %s in guild %s", interaction.user.id, interaction.guild_id)
             await _send_ephemeral(interaction, content="Wartungsmodus deaktiviert.")
             return
         if action == "delete_user":
-            user_id, user_name = await _select_user(interaction, "Waehle den Nutzer fuer Loeschen:")
+            user_id, user_name = await _select_user(interaction, "Wähle den Nutzer für Löschen:")
             if not user_id:
                 return
             view = ConfirmDeleteUserView(interaction.user.id, user_id, user_name)
-            await _send_ephemeral(interaction, content=f"Wirklich alle Bot-Daten von {user_name} loeschen?", view=view)
+            await _send_ephemeral(interaction, content=f"Wirklich alle Bot-Daten von {user_name} löschen?", view=view)
             return
         if action == "db_backup":
+            logging.info("DB backup requested by %s", interaction.user.id)
             await send_db_backup(interaction)
             return
         if action == "give_dust":
-            user_id, user_name = await _select_user(interaction, "Waehle Nutzer fuer Dust:")
+            user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Dust:")
             if not user_id:
                 return
-            amount = await _select_number(interaction, "Menge waehlen", [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000])
+            amount = await _select_number(interaction, "Menge wählen", [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000])
             if not amount:
                 return
             await add_infinitydust(user_id, int(amount))
-            await _send_ephemeral(interaction, content=f"{user_name} erhaelt {amount}x Infinitydust.")
+            logging.info("Give dust: actor=%s target=%s amount=%s", interaction.user.id, user_id, amount)
+            await _send_ephemeral(interaction, content=f"{user_name} erhält {amount}x Infinitydust.")
             return
         if action == "grant_card":
-            user_id, user_name = await _select_user(interaction, "Waehle Nutzer fuer Karte vergeben:")
+            user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Karte vergeben:")
             if not user_id:
                 return
-            card_name = await _select_card(interaction, "Karte auswaehlen:")
+            card_name = await _select_card(interaction, "Karte auswählen:")
             if not card_name:
                 return
-            amount = await _select_number(interaction, "Anzahl waehlen", [1, 2, 5, 10, 20, 50, 100])
+            amount = await _select_number(interaction, "Anzahl wählen", [1, 2, 5, 10, 20, 50, 100])
             if not amount:
                 return
             await add_karte_amount(user_id, card_name, int(amount))
-            await _send_ephemeral(interaction, content=f"{user_name} erhaelt {amount}x {card_name}.")
+            logging.info("Grant card: actor=%s target=%s card=%s amount=%s", interaction.user.id, user_id, card_name, amount)
+            await _send_ephemeral(interaction, content=f"{user_name} erhält {amount}x {card_name}.")
             return
         if action == "revoke_card":
-            user_id, user_name = await _select_user(interaction, "Waehle Nutzer fuer Karte abziehen:")
+            user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Karte abziehen:")
             if not user_id:
                 return
-            card_name = await _select_card(interaction, "Karte auswaehlen:")
+            card_name = await _select_card(interaction, "Karte auswählen:")
             if not card_name:
                 return
-            amount = await _select_number(interaction, "Anzahl waehlen", [1, 2, 5, 10, 20, 50, 100])
+            amount = await _select_number(interaction, "Anzahl wählen", [1, 2, 5, 10, 20, 50, 100])
             if not amount:
                 return
             new_amount = await remove_karte_amount(user_id, card_name, int(amount))
+            logging.info("Revoke card: actor=%s target=%s card=%s amount=%s new_total=%s", interaction.user.id, user_id, card_name, amount, new_amount)
             await _send_ephemeral(interaction, content=f"Neue Menge {card_name} bei {user_name}: {new_amount}.")
             return
         if action == "set_daily":
-            user_id, user_name = await _select_user(interaction, "Waehle Nutzer fuer Daily-Reset:")
+            user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Daily-Reset:")
             if not user_id:
                 return
             async with db_context() as db:
@@ -4275,10 +4317,11 @@ class DevActionSelect(ui.Select):
                     (user_id,),
                 )
                 await db.commit()
-            await _send_ephemeral(interaction, content=f"Daily fuer {user_name} zurueckgesetzt.")
+            logging.info("Daily reset: actor=%s target=%s", interaction.user.id, user_id)
+            await _send_ephemeral(interaction, content=f"Daily für {user_name} zurückgesetzt.")
             return
         if action == "set_mission":
-            user_id, user_name = await _select_user(interaction, "Waehle Nutzer fuer Mission-Reset:")
+            user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Mission-Reset:")
             if not user_id:
                 return
             today_start = berlin_midnight_epoch()
@@ -4289,22 +4332,27 @@ class DevActionSelect(ui.Select):
                     (user_id, today_start, today_start),
                 )
                 await db.commit()
-            await _send_ephemeral(interaction, content=f"Mission-Reset fuer {user_name} gesetzt.")
+            logging.info("Mission reset: actor=%s target=%s", interaction.user.id, user_id)
+            await _send_ephemeral(interaction, content=f"Mission-Reset für {user_name} gesetzt.")
             return
         if action == "health":
+            logging.info("Health requested by %s", interaction.user.id)
             await send_health(interaction)
             return
         if action == "debug_db":
+            logging.info("Debug DB requested by %s", interaction.user.id)
             await send_db_debug(interaction)
             return
         if action == "debug_user":
-            user_id, user_name = await _select_user(interaction, "Waehle Nutzer fuer Debug:")
+            user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Debug:")
             if not user_id:
                 return
+            logging.info("Debug user requested by %s target=%s", interaction.user.id, user_id)
             await send_debug_user(interaction, user_id, user_name)
             return
         if action == "debug_sync":
             synced = await bot.tree.sync()
+            logging.info("Debug sync by %s; synced=%s", interaction.user.id, len(synced))
             await _send_ephemeral(interaction, content=f"Sync abgeschlossen: {len(synced)} Commands.")
             return
         if action == "logs_last":
@@ -4312,9 +4360,11 @@ class DevActionSelect(ui.Select):
             if not count:
                 return
             await send_logs_last(interaction, int(count))
+            logging.info("Logs last requested by %s count=%s", interaction.user.id, count)
             return
         if action == "karten_validate":
             await send_karten_validate(interaction)
+            logging.info("Karten validate requested by %s", interaction.user.id)
             return
 
 class DevPanelView(ui.View):
@@ -4323,12 +4373,12 @@ class DevPanelView(ui.View):
         self.requester_id = requester_id
         self.add_item(DevActionSelect(requester_id))
 
-    @ui.button(label="Zurueck", style=discord.ButtonStyle.secondary)
+    @ui.button(label="Zurück", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
-        embed = discord.Embed(title="Panel", description="Hauptmenue")
+        embed = discord.Embed(title="Panel", description="Hauptmenü")
         await _edit_panel_message(interaction, embed=embed, view=PanelHomeView(self.requester_id))
 
 class StatsPanelView(ui.View):
@@ -4339,16 +4389,16 @@ class StatsPanelView(ui.View):
     @ui.button(label="Balance Stats anzeigen", style=discord.ButtonStyle.primary)
     async def show_stats(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         await send_balance_stats(interaction)
 
-    @ui.button(label="Zurueck", style=discord.ButtonStyle.secondary)
+    @ui.button(label="Zurück", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
-        embed = discord.Embed(title="Panel", description="Hauptmenue")
+        embed = discord.Embed(title="Panel", description="Hauptmenü")
         await _edit_panel_message(interaction, embed=embed, view=PanelHomeView(self.requester_id))
 
 class PanelHomeView(ui.View):
@@ -4359,15 +4409,15 @@ class PanelHomeView(ui.View):
     @ui.button(label="Dev/Tools", style=discord.ButtonStyle.primary)
     async def dev_tools(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
-        embed = discord.Embed(title="Dev/Tools", description="Aktionen waehlen")
+        embed = discord.Embed(title="Dev/Tools", description="Aktionen wählen")
         await _edit_panel_message(interaction, embed=embed, view=DevPanelView(self.requester_id))
 
     @ui.button(label="Stats", style=discord.ButtonStyle.secondary)
     async def stats(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         embed = discord.Embed(title="Stats", description="Statistik-Tools")
         await _edit_panel_message(interaction, embed=embed, view=StatsPanelView(self.requester_id))
@@ -4375,7 +4425,7 @@ class PanelHomeView(ui.View):
     @ui.button(label="Schliessen", style=discord.ButtonStyle.danger)
     async def close(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         await _edit_panel_message(interaction, content="Panel geschlossen.", embed=None, view=None)
 
@@ -4385,7 +4435,7 @@ async def panel(interaction: discord.Interaction):
         return
     if not await is_channel_allowed(interaction):
         return
-    embed = discord.Embed(title="Panel", description="Hauptmenue")
+    embed = discord.Embed(title="Panel", description="Hauptmenü")
     await interaction.response.send_message(embed=embed, view=PanelHomeView(interaction.user.id), ephemeral=True)
 
 # /balance stats (oeffentlich)

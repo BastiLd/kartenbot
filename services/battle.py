@@ -83,6 +83,8 @@ def update_battle_log(
     pre_effect_damage: int = 0,
     confusion_applied: bool = False,
     self_hit_damage: int = 0,
+    attacker_status_icons: str = "",
+    defender_status_icons: str = "",
 ):
     critical_text = "\U0001f4a5 **VOLLTREFFER!**" if is_critical else ""
 
@@ -90,6 +92,10 @@ def update_battle_log(
 
     attacker_display = attacker_user.display_name if isinstance(attacker_user, discord.Member) else "Bot"
     defender_display = defender_user.display_name if isinstance(defender_user, discord.Member) else "Bot"
+    if attacker_status_icons:
+        attacker_display = f"{attacker_display}{attacker_status_icons}"
+    if defender_status_icons:
+        defender_display = f"{defender_display}{defender_status_icons}"
 
     burn_suffix = f" (+{pre_effect_damage} \U0001f525)" if pre_effect_damage and pre_effect_damage > 0 else ""
     confusion_suffix = " (+Verwirrung)" if confusion_applied else ""
