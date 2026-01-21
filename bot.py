@@ -49,6 +49,24 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 def create_bot() -> commands.Bot:
     return bot
 
+ADMIN_SLASH_COMMANDS = {
+    "configure",
+    "reset-intro",
+    "vaultlook",
+    "test-bericht",
+    "give",
+    "bot_status",
+}
+
+def prune_admin_slash_commands() -> None:
+    removed = []
+    for name in sorted(ADMIN_SLASH_COMMANDS):
+        cmd = bot.tree.remove_command(name)
+        if cmd is not None:
+            removed.append(name)
+    if removed:
+        logging.info("Pruned admin/dev slash commands: %s", ", ".join(removed))
+
 
 # Rollen-IDs für Admin/Owner (vom Nutzer bestätigt)
 BASTI_USER_ID = 965593518745731152
@@ -76,6 +94,7 @@ async def on_ready():
     await init_db()
     logging.info("Bot ist online als %s", bot.user)
     try:
+        prune_admin_slash_commands()
         synced = await bot.tree.sync()
         logging.info("Slash-Commands synchronisiert: %s", len(synced))
     except Exception:
@@ -4162,6 +4181,136 @@ async def send_karten_validate(interaction: discord.Interaction):
         preview += f"\n... +{more} weitere"
     await _send_ephemeral(interaction, content=f"Probleme gefunden:\n{preview}")
 
+async def send_configure_add(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await _send_ephemeral(interaction, content="Nur in Servern verfügbar.")
+        return
+    async with db_context() as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO guild_allowed_channels (guild_id, channel_id) VALUES (?, ?)",
+            (interaction.guild_id, interaction.channel_id),
+        )
+        await db.commit()
+    logging.info("Configure add channel: actor=%s guild=%s channel=%s", interaction.user.id, interaction.guild_id, interaction.channel_id)
+    await _send_ephemeral(interaction, content=f"✅ Hinzugefügt: {interaction.channel.mention}")
+
+async def send_configure_remove(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await _send_ephemeral(interaction, content="Nur in Servern verfügbar.")
+        return
+    async with db_context() as db:
+        await db.execute(
+            "DELETE FROM guild_allowed_channels WHERE guild_id = ? AND channel_id = ?",
+            (interaction.guild_id, interaction.channel_id),
+        )
+        await db.commit()
+    logging.info("Configure remove channel: actor=%s guild=%s channel=%s", interaction.user.id, interaction.guild_id, interaction.channel_id)
+    await _send_ephemeral(interaction, content=f"🗑️ Entfernt: {interaction.channel.mention}")
+
+async def send_configure_list(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await _send_ephemeral(interaction, content="Nur in Servern verfügbar.")
+        return
+    async with db_context() as db:
+        cursor = await db.execute(
+            "SELECT channel_id FROM guild_allowed_channels WHERE guild_id = ?",
+            (interaction.guild_id,),
+        )
+        rows = await cursor.fetchall()
+    if not rows:
+        await _send_ephemeral(interaction, content="ℹ️ Es sind noch keine Kanäle erlaubt.")
+        return
+    mentions = "\n".join(f"• <#{r[0]}>" for r in rows)
+    await _send_ephemeral(interaction, content=f"✅ Erlaubte Kanäle:\n{mentions}")
+
+async def send_reset_intro(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await _send_ephemeral(interaction, content="Nur in Servern verfügbar.")
+        return
+    async with db_context() as db:
+        await db.execute(
+            "DELETE FROM user_seen_channels WHERE guild_id = ? AND channel_id = ?",
+            (interaction.guild.id, interaction.channel.id),
+        )
+        await db.commit()
+    logging.info("Reset intro: actor=%s guild=%s channel=%s", interaction.user.id, interaction.guild_id, interaction.channel_id)
+    await _send_ephemeral(
+        interaction,
+        content="✅ Intro-Status für ALLE in diesem Kanal zurückgesetzt. Schreibe eine Nachricht, um den Prompt erneut zu sehen.",
+    )
+
+async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_name: str):
+    if interaction.guild is None:
+        await _send_ephemeral(interaction, content="Nur in Servern verfügbar.")
+        return
+    target_user = interaction.guild.get_member(user_id)
+    mention = target_user.mention if target_user else f"<@{user_id}>"
+    user_karten = await get_user_karten(user_id)
+    infinitydust = await get_infinitydust(user_id)
+    if not user_karten and infinitydust == 0:
+        await _send_ephemeral(interaction, content=f"❌ {mention} hat noch keine Karten in seiner Sammlung.")
+        return
+    embed = discord.Embed(
+        title=f"🔍 Vault von {user_name}",
+        description=f"**{mention}** besitzt **{len(user_karten)}** verschiedene Karten:",
+    )
+    if infinitydust > 0:
+        embed.add_field(name="💎 Infinitydust", value=f"Anzahl: {infinitydust}x", inline=True)
+        embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+    for kartenname, anzahl in user_karten:
+        karte = await get_karte_by_name(kartenname)
+        if karte:
+            embed.add_field(name=f"{karte['name']} (x{anzahl})", value=karte['beschreibung'][:100] + "...", inline=False)
+    embed.set_footer(text=f"Vault-Lookup durch {interaction.user.display_name}")
+    embed.color = 0xff6b6b
+    logging.info("Vault look: actor=%s target=%s", interaction.user.id, user_id)
+    await _send_ephemeral(interaction, embed=embed)
+
+async def send_test_report(interaction: discord.Interaction):
+    def flatten_commands(cmds, prefix=""):
+        flat = []
+        for c in cmds:
+            if isinstance(c, app_commands.Group):
+                new_prefix = f"{prefix}{c.name} "
+                flat.extend(flatten_commands(c.commands, new_prefix))
+            else:
+                flat.append((f"{prefix}{c.name}", c))
+        return flat
+
+    try:
+        all_cmds = bot.tree.get_commands()
+    except Exception:
+        all_cmds = []
+    flat_cmds = flatten_commands(all_cmds)
+    lines = [f"• /{name} — registriert" for name, _ in flat_cmds]
+    description = "Alle registrierten Slash-Commands (inkl. Unterbefehle):\n" + "\n".join(lines) if lines else "Keine Commands registriert."
+    embed = discord.Embed(
+        title="🤖 Verfügbare Commands",
+        description=description,
+        color=0x2b90ff,
+    )
+    embed.add_field(
+        name="Hinweis",
+        value=(
+            "Dieser Bericht ist nur für dich sichtbar. Ein automatisches Ausführen einzelner Slash-Commands "
+            "ist nicht möglich, daher wird hier die Registrierung angezeigt."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=f"Angefordert von {interaction.user.display_name} | {time.strftime('%d.%m.%Y %H:%M:%S')}")
+    logging.info("Test report requested by %s", interaction.user.id)
+    await _send_ephemeral(interaction, embed=embed)
+
+async def send_bot_status(interaction: discord.Interaction):
+    view = BotStatusView(interaction.user.id)
+    embed = discord.Embed(
+        title="🤖 Bot-Status setzen",
+        description="Wähle den gewünschten Status:\n• Online\n• Abwesend\n• Bitte nicht stören\n• Unsichtbar",
+        color=0x2b90ff,
+    )
+    logging.info("Bot status requested by %s", interaction.user.id)
+    await _send_ephemeral(interaction, embed=embed, view=view)
+
 async def send_balance_stats(interaction: discord.Interaction):
     if not await is_channel_allowed(interaction, bypass_maintenance=True):
         return
@@ -4227,6 +4376,13 @@ class DevActionSelect(ui.Select):
             SelectOption(label="Debug sync", value="debug_sync"),
             SelectOption(label="Logs last", value="logs_last"),
             SelectOption(label="Karten validate", value="karten_validate"),
+            SelectOption(label="Kanal erlauben (hier)", value="cfg_add"),
+            SelectOption(label="Kanal entfernen (hier)", value="cfg_remove"),
+            SelectOption(label="Erlaubte Kanäle anzeigen", value="cfg_list"),
+            SelectOption(label="Intro zurücksetzen (Kanal)", value="reset_intro"),
+            SelectOption(label="Vault ansehen", value="vault_look"),
+            SelectOption(label="Bot-Status setzen", value="bot_status"),
+            SelectOption(label="Command-Report", value="test_report"),
         ]
         super().__init__(placeholder="Dev-Tools wählen...", min_values=1, max_values=1, options=options)
 
@@ -4365,6 +4521,30 @@ class DevActionSelect(ui.Select):
         if action == "karten_validate":
             await send_karten_validate(interaction)
             logging.info("Karten validate requested by %s", interaction.user.id)
+            return
+        if action == "cfg_add":
+            await send_configure_add(interaction)
+            return
+        if action == "cfg_remove":
+            await send_configure_remove(interaction)
+            return
+        if action == "cfg_list":
+            await send_configure_list(interaction)
+            return
+        if action == "reset_intro":
+            await send_reset_intro(interaction)
+            return
+        if action == "vault_look":
+            user_id, user_name = await _select_user(interaction, "Wähle einen User für Vault-Look:")
+            if not user_id:
+                return
+            await send_vaultlook(interaction, user_id, user_name)
+            return
+        if action == "bot_status":
+            await send_bot_status(interaction)
+            return
+        if action == "test_report":
+            await send_test_report(interaction)
             return
 
 class DevPanelView(ui.View):
