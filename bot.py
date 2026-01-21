@@ -530,19 +530,6 @@ class BattleView(ui.View):
         min_damage = self.get_attack_min_damage(attack_damage, damage_buff)
         max_damage = self.get_attack_max_damage(attack_damage, damage_buff)
         return min_damage > 90 and max_damage > 99
-    
-    def get_attack_min_damage(self, attack_damage, damage_buff=0):
-        """Berechnet den minimalen Schaden einer Attacke"""
-        if isinstance(attack_damage, list) and len(attack_damage) == 2:
-            return attack_damage[0] + damage_buff
-        return attack_damage + damage_buff
-
-    def is_strong_attack(self, attack_damage, damage_buff=0):
-        """Starke Attacke: min > 90 UND max > 99 (inkl. Buffs)"""
-        min_damage = self.get_attack_min_damage(attack_damage, damage_buff)
-        max_damage = self.get_attack_max_damage(attack_damage, damage_buff)
-        return min_damage > 90 and max_damage > 99
-    
     def start_attack_cooldown(self, player_id, attack_index):
         """Startet Cooldown für eine starke Attacke (2 Züge)"""
         self.attack_cooldowns[player_id][attack_index] = 2
