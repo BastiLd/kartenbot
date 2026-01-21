@@ -475,7 +475,7 @@ class BattleView(ui.View):
         self.player2_hp = base_hp2
         self.hp_view = hp_view
 
-        # COOLDOWN-SYSTEM: Tracking für starke Attacken (>90 Schaden)
+        # COOLDOWN-SYSTEM: Tracking for strong attacks (min>90, max>99)
         # Format: {player_id: {attack_index: turns_remaining}}
         self.attack_cooldowns = {player1_id: {}, player2_id: {}}
 
@@ -518,6 +518,18 @@ class BattleView(ui.View):
             return attack_damage[1] + damage_buff
         else:
             return attack_damage + damage_buff
+
+    def get_attack_min_damage(self, attack_damage, damage_buff=0):
+        """Return min damage for cooldown checks."""
+        if isinstance(attack_damage, list) and len(attack_damage) == 2:
+            return attack_damage[0] + damage_buff
+        return attack_damage + damage_buff
+
+    def is_strong_attack(self, attack_damage, damage_buff=0):
+        """Return True when attack should use cooldown."""
+        min_damage = self.get_attack_min_damage(attack_damage, damage_buff)
+        max_damage = self.get_attack_max_damage(attack_damage, damage_buff)
+        return min_damage > 90 and max_damage > 99
     
     def start_attack_cooldown(self, player_id, attack_index):
         """Startet Cooldown für eine starke Attacke (2 Züge)"""
@@ -837,8 +849,7 @@ class BattleView(ui.View):
             return
         
         # COOLDOWN-SYSTEM: Starte Cooldown für starke Attacken
-        max_damage = max_damage_threshold
-        if max_damage > 90:
+        if self.is_strong_attack(base_damage, damage_buff):
             # Starke Attacke - 2 Züge Cooldown
             previous_turn = self.current_turn
             self.start_attack_cooldown(previous_turn, attack_index)
@@ -1045,8 +1056,7 @@ class BattleView(ui.View):
         # Kein separater Log-Eintrag – Effekte werden inline in der Angriffszeile angezeigt
 
         # Cooldown für Bot-Attacke
-        max_damage = self.get_attack_max_damage(base_damage, 0)
-        if max_damage > 90:
+        if self.is_strong_attack(base_damage, 0):
             self.start_attack_cooldown(0, attack_index)
 
         # Wechsle zu Spieler
@@ -3451,6 +3461,16 @@ class MissionBattleView(ui.View):
             return attack_damage[1] + damage_buff
         return attack_damage + damage_buff
 
+    def mission_get_attack_min_damage(self, attack_damage, damage_buff: int = 0):
+        if isinstance(attack_damage, list) and len(attack_damage) == 2:
+            return attack_damage[0] + damage_buff
+        return attack_damage + damage_buff
+
+    def mission_is_strong_attack(self, attack_damage, damage_buff: int = 0) -> bool:
+        min_damage = self.mission_get_attack_min_damage(attack_damage, damage_buff)
+        max_damage = self.mission_get_attack_max_damage(attack_damage, damage_buff)
+        return min_damage > 90 and max_damage > 99
+
     def is_attack_on_cooldown_user(self, attack_index: int) -> bool:
         return self.user_attack_cooldowns.get(attack_index, 0) > 0
 
@@ -3669,7 +3689,7 @@ class MissionBattleView(ui.View):
         # Starte Cooldown für starke Attacken (für nächsten Zug)
         # In Missionen soll die stärkste Attacke im nächsten eigenen Zug gesperrt sein.
         # Darum KEINE sofortige Reduktion hier – die Reduktion passiert nach dem Bot-Zug.
-        if self.mission_get_attack_max_damage(damage, dmg_buff) > 90:
+        if self.mission_is_strong_attack(damage, dmg_buff):
             self.start_attack_cooldown_user(attack_index, 2)
         
         # Prüfen ob Kampf vorbei nach Spieler-Angriff
@@ -3789,7 +3809,7 @@ class MissionBattleView(ui.View):
                 return
 
             # Cooldown für Bot wenn stark (2 Züge)
-            if self.mission_get_attack_max_damage(damage) > 90:
+            if self.mission_is_strong_attack(damage):
                 self.start_attack_cooldown_bot(best_index, 2)
                 # Reduziere Cooldowns für den Bot direkt nach seinem Zug (entspricht /fight)
                 self.reduce_cooldowns_bot()
