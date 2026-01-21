@@ -475,7 +475,7 @@ class BattleView(ui.View):
         self.player2_hp = base_hp2
         self.hp_view = hp_view
 
-        # COOLDOWN-SYSTEM: Tracking for strong attacks (min>90, max>99)
+        # COOLDOWN-SYSTEM: Tracking für starke Attacken (min>90 und max>99 Schaden inkl. Buffs)
         # Format: {player_id: {attack_index: turns_remaining}}
         self.attack_cooldowns = {player1_id: {}, player2_id: {}}
 
@@ -527,6 +527,18 @@ class BattleView(ui.View):
 
     def is_strong_attack(self, attack_damage, damage_buff=0):
         """Return True when attack should use cooldown."""
+        min_damage = self.get_attack_min_damage(attack_damage, damage_buff)
+        max_damage = self.get_attack_max_damage(attack_damage, damage_buff)
+        return min_damage > 90 and max_damage > 99
+    
+    def get_attack_min_damage(self, attack_damage, damage_buff=0):
+        """Berechnet den minimalen Schaden einer Attacke"""
+        if isinstance(attack_damage, list) and len(attack_damage) == 2:
+            return attack_damage[0] + damage_buff
+        return attack_damage + damage_buff
+
+    def is_strong_attack(self, attack_damage, damage_buff=0):
+        """Starke Attacke: min > 90 UND max > 99 (inkl. Buffs)"""
         min_damage = self.get_attack_min_damage(attack_damage, damage_buff)
         max_damage = self.get_attack_max_damage(attack_damage, damage_buff)
         return min_damage > 90 and max_damage > 99
@@ -848,7 +860,7 @@ class BattleView(ui.View):
             self.stop()
             return
         
-        # COOLDOWN-SYSTEM: Starte Cooldown für starke Attacken
+        # COOLDOWN-SYSTEM: Starte Cooldown für starke Attacken (min>90 UND max>99 inkl. Buffs)
         if self.is_strong_attack(base_damage, damage_buff):
             # Starke Attacke - 2 Züge Cooldown
             previous_turn = self.current_turn
@@ -3686,7 +3698,7 @@ class MissionBattleView(ui.View):
             )
             await self.battle_log_message.edit(embed=log_embed)
         
-        # Starte Cooldown für starke Attacken (für nächsten Zug)
+        # Starte Cooldown für starke Attacken (min>90 UND max>99 inkl. Buffs) für nächsten Zug.
         # In Missionen soll die stärkste Attacke im nächsten eigenen Zug gesperrt sein.
         # Darum KEINE sofortige Reduktion hier – die Reduktion passiert nach dem Bot-Zug.
         if self.mission_is_strong_attack(damage, dmg_buff):
@@ -3808,7 +3820,7 @@ class MissionBattleView(ui.View):
                 self.stop()
                 return
 
-            # Cooldown für Bot wenn stark (2 Züge)
+            # Cooldown für Bot wenn stark (min>90 UND max>99)
             if self.mission_is_strong_attack(damage):
                 self.start_attack_cooldown_bot(best_index, 2)
                 # Reduziere Cooldowns für den Bot direkt nach seinem Zug (entspricht /fight)
@@ -3844,8 +3856,130 @@ class MissionBattleView(ui.View):
             await interaction.followup.edit_message(interaction.message.id, embed=embed, view=self)
 
 # =========================
-# Owner/Dev Commands
+# Owner/Dev Panel
 # =========================
+
+async def _send_ephemeral(interaction: discord.Interaction, *, content: str | None = None, embed=None, view=None, file=None):
+    if interaction.response.is_done():
+        return await interaction.followup.send(content=content, embed=embed, view=view, file=file, ephemeral=True)
+    return await interaction.response.send_message(content=content, embed=embed, view=view, file=file, ephemeral=True)
+
+async def _edit_panel_message(interaction: discord.Interaction, *, content: str | None = None, embed=None, view=None):
+    try:
+        await interaction.response.edit_message(content=content, embed=embed, view=view)
+    except discord.InteractionResponded:
+        await interaction.followup.edit_message(interaction.message.id, content=content, embed=embed, view=view)
+
+async def _select_user(interaction: discord.Interaction, prompt: str):
+    if interaction.guild is None:
+        await _send_ephemeral(interaction, content="Nur in Servern verfuegbar.")
+        return None, None
+    view = AdminUserSelectView(interaction.user.id, interaction.guild)
+    await _send_ephemeral(interaction, content=prompt, view=view)
+    await view.wait()
+    if not view.value:
+        return None, None
+    user_id = int(view.value)
+    member = interaction.guild.get_member(user_id)
+    if member:
+        return user_id, member.display_name
+    try:
+        user = await interaction.client.fetch_user(user_id)
+        return user_id, user.display_name
+    except Exception:
+        return user_id, str(user_id)
+
+async def _select_number(interaction: discord.Interaction, prompt: str, options: list[int]):
+    view = NumberSelectView(interaction.user.id, options, prompt)
+    await _send_ephemeral(interaction, content=prompt, view=view)
+    await view.wait()
+    return view.value
+
+async def _select_card(interaction: discord.Interaction, prompt: str):
+    view = CardSelectPagerView(interaction.user.id, karten)
+    await _send_ephemeral(interaction, content=prompt, view=view)
+    await view.wait()
+    return view.value
+
+class NumberSelectView(ui.View):
+    def __init__(self, requester_id: int, options: list[int], placeholder: str):
+        super().__init__(timeout=60)
+        self.requester_id = requester_id
+        self.value = None
+        select_options = [SelectOption(label=str(n), value=str(n)) for n in options][:25]
+        self.select = ui.Select(placeholder=placeholder, min_values=1, max_values=1, options=select_options)
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            return
+        self.value = int(self.select.values[0])
+        self.stop()
+        await interaction.response.defer()
+
+class CardSelectPagerView(ui.View):
+    def __init__(self, requester_id: int, cards: list[dict]):
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        self.cards = cards
+        self.page = 0
+        self.value = None
+        self.select = ui.Select(placeholder="Waehle eine Karte...", min_values=1, max_values=1, options=[])
+        self.select.callback = self.select_callback
+        self.prev_button = ui.Button(label="< Zurueck", style=discord.ButtonStyle.secondary)
+        self.prev_button.callback = self.prev_page
+        self.next_button = ui.Button(label="Weiter >", style=discord.ButtonStyle.secondary)
+        self.next_button.callback = self.next_page
+        self.cancel_button = ui.Button(label="Abbrechen", style=discord.ButtonStyle.danger)
+        self.cancel_button.callback = self.cancel
+        self._render()
+
+    def _render(self):
+        self.clear_items()
+        start = self.page * 25
+        subset = self.cards[start:start + 25]
+        self.select.options = [SelectOption(label=c.get("name", "?")[:100], value=c.get("name", "")) for c in subset]
+        self.add_item(self.select)
+        self.prev_button.disabled = self.page == 0
+        self.next_button.disabled = start + 25 >= len(self.cards)
+        self.add_item(self.prev_button)
+        self.add_item(self.next_button)
+        self.add_item(self.cancel_button)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            return
+        self.value = self.select.values[0]
+        self.stop()
+        await interaction.response.defer()
+
+    async def prev_page(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            return
+        if self.page > 0:
+            self.page -= 1
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def next_page(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            return
+        if (self.page + 1) * 25 < len(self.cards):
+            self.page += 1
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def cancel(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            return
+        self.stop()
+        await interaction.response.edit_message(content="Abgebrochen.", view=None)
 
 class ConfirmDeleteUserView(ui.View):
     def __init__(self, requester_id: int, target_id: int, target_name: str):
@@ -3854,15 +3988,15 @@ class ConfirmDeleteUserView(ui.View):
         self.target_id = target_id
         self.target_name = target_name
 
-    @ui.button(label="L?schen", style=discord.ButtonStyle.danger)
+    @ui.button(label="Loeschen", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nur der Anforderer kann best?tigen.", ephemeral=True)
+            await interaction.response.send_message("Nur der Anforderer kann bestaetigen.", ephemeral=True)
             return
         await delete_user_data(self.target_id)
         self.stop()
         await interaction.response.edit_message(
-            content=f"? Daten von **{self.target_name}** gel?scht.", view=None
+            content=f"Daten von {self.target_name} geloescht.", view=None
         )
 
     @ui.button(label="Abbrechen", style=discord.ButtonStyle.secondary)
@@ -3873,49 +4007,7 @@ class ConfirmDeleteUserView(ui.View):
         self.stop()
         await interaction.response.edit_message(content="Abgebrochen.", view=None)
 
-
-@bot.tree.command(name="maintenance", description="Wartungsmodus an/aus (nur Basti/Dev)")
-@app_commands.choices(
-    mode=[
-        app_commands.Choice(name="on", value="on"),
-        app_commands.Choice(name="off", value="off"),
-    ]
-)
-async def maintenance(interaction: discord.Interaction, mode: str):
-    if not await require_owner_or_dev(interaction):
-        return
-    if not await is_channel_allowed(interaction):
-        return
-    if interaction.guild is None:
-        await interaction.response.send_message("Nur in Servern verf?gbar.", ephemeral=True)
-        return
-    enabled = mode == "on"
-    await set_maintenance_mode(interaction.guild_id, enabled)
-    state = "aktiviert" if enabled else "deaktiviert"
-    await interaction.response.send_message(f"? Wartungsmodus {state}.", ephemeral=True)
-
-
-@bot.tree.command(name="delete_user_data", description="L?scht alle Bot-Daten eines Users (nur Basti/Dev)")
-@app_commands.describe(user="Der Nutzer, dessen Daten gel?scht werden sollen")
-async def delete_user_data_command(interaction: discord.Interaction, user: discord.Member):
-    if not await require_owner_or_dev(interaction):
-        return
-    if not await is_channel_allowed(interaction):
-        return
-    view = ConfirmDeleteUserView(interaction.user.id, user.id, user.display_name)
-    await interaction.response.send_message(
-        f"?? Wirklich alle Bot-Daten von **{user.display_name}** l?schen?",
-        view=view,
-        ephemeral=True,
-    )
-
-
-@bot.tree.command(name="health", description="Status anzeigen (nur Basti/Dev)")
-async def health(interaction: discord.Interaction):
-    if not await require_owner_or_dev(interaction):
-        return
-    if not await is_channel_allowed(interaction):
-        return
+async def send_health(interaction: discord.Interaction):
     uptime = timedelta(seconds=int(time.time() - BOT_START_TIME))
     latency_ms = int(bot.latency * 1000)
     guild_count = len(bot.guilds)
@@ -3926,149 +4018,16 @@ async def health(interaction: discord.Interaction):
     embed.add_field(name="Python", value=sys.version.split()[0], inline=True)
     embed.add_field(name="DB Path", value=str(DB_PATH), inline=True)
     embed.add_field(name="Error Count", value=str(ERROR_COUNT), inline=True)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await _send_ephemeral(interaction, embed=embed)
 
-
-@bot.tree.command(name="give_dust", description="Gib einem Nutzer Infinitydust (nur Basti/Dev)")
-@app_commands.describe(user="Zielnutzer", amount="Menge Infinitydust")
-async def give_dust(interaction: discord.Interaction, user: discord.Member, amount: app_commands.Range[int, 1, 1000]):
-    if not await require_owner_or_dev(interaction):
-        return
-    if not await is_channel_allowed(interaction):
-        return
-    await add_infinitydust(user.id, int(amount))
-    await interaction.response.send_message(
-        f"? {user.mention} hat **{amount}x Infinitydust** erhalten.",
-        ephemeral=True,
-    )
-
-
-# /db backup
-DB_GROUP = app_commands.Group(name="db", description="DB-Tools (nur Basti/Dev)")
-
-@DB_GROUP.command(name="backup", description="DB als Attachment senden (nur Basti/Dev)")
-async def db_backup(interaction: discord.Interaction):
-    if not await require_owner_or_dev(interaction):
-        return
-    if not await is_channel_allowed(interaction):
-        return
+async def send_db_backup(interaction: discord.Interaction):
     db_path = Path(DB_PATH)
     if not db_path.exists():
-        await interaction.response.send_message("? DB-Datei nicht gefunden.", ephemeral=True)
+        await _send_ephemeral(interaction, content="DB-Datei nicht gefunden.")
         return
-    await interaction.response.send_message(
-        content="? DB-Backup:",
-        file=discord.File(str(db_path), filename=db_path.name),
-        ephemeral=True,
-    )
+    await _send_ephemeral(interaction, content="DB-Backup:", file=discord.File(str(db_path), filename=db_path.name))
 
-bot.tree.add_command(DB_GROUP)
-
-
-# /grant card
-GRANT_GROUP = app_commands.Group(name="grant", description="Karten vergeben (nur Basti/Dev)")
-
-@GRANT_GROUP.command(name="card", description="Gib einem Nutzer Karten in Menge (nur Basti/Dev)")
-@app_commands.describe(user="Zielnutzer", kartenname="Kartenname", amount="Anzahl")
-async def grant_card(interaction: discord.Interaction, user: discord.Member, kartenname: str, amount: app_commands.Range[int, 1, 1000]):
-    if not await require_owner_or_dev(interaction):
-        return
-    if not await is_channel_allowed(interaction):
-        return
-    karte = await get_karte_by_name(kartenname)
-    if not karte:
-        await interaction.response.send_message("? Karte nicht gefunden.", ephemeral=True)
-        return
-    await add_karte_amount(user.id, karte["name"], int(amount))
-    await interaction.response.send_message(
-        f"? {user.mention} hat **{amount}x {karte['name']}** erhalten.",
-        ephemeral=True,
-    )
-
-bot.tree.add_command(GRANT_GROUP)
-
-
-# /revoke card
-REVOKE_GROUP = app_commands.Group(name="revoke", description="Karten abziehen (nur Basti/Dev)")
-
-@REVOKE_GROUP.command(name="card", description="Ziehe einem Nutzer Karten ab (nur Basti/Dev)")
-@app_commands.describe(user="Zielnutzer", kartenname="Kartenname", amount="Anzahl")
-async def revoke_card(interaction: discord.Interaction, user: discord.Member, kartenname: str, amount: app_commands.Range[int, 1, 1000]):
-    if not await require_owner_or_dev(interaction):
-        return
-    if not await is_channel_allowed(interaction):
-        return
-    karte = await get_karte_by_name(kartenname)
-    if not karte:
-        await interaction.response.send_message("? Karte nicht gefunden.", ephemeral=True)
-        return
-    new_amount = await remove_karte_amount(user.id, karte["name"], int(amount))
-    await interaction.response.send_message(
-        f"? Neue Menge f?r **{karte['name']}** bei {user.mention}: **{new_amount}**",
-        ephemeral=True,
-    )
-
-bot.tree.add_command(REVOKE_GROUP)
-
-
-# /set daily reset & /set mission reset
-SET_GROUP = app_commands.Group(name="set", description="Support-Tools (nur Basti/Dev)")
-SET_DAILY_GROUP = app_commands.Group(name="daily", description="Daily-Tools")
-SET_MISSION_GROUP = app_commands.Group(name="mission", description="Mission-Tools")
-
-@SET_DAILY_GROUP.command(name="reset", description="Daily-Cooldown zur?cksetzen (nur Basti/Dev)")
-@app_commands.describe(user="Zielnutzer")
-async def set_daily_reset(interaction: discord.Interaction, user: discord.Member):
-    if not await require_owner_or_dev(interaction):
-        return
-    if not await is_channel_allowed(interaction):
-        return
-    async with db_context() as db:
-        await db.execute(
-            "INSERT INTO user_daily (user_id, last_daily) VALUES (?, 0) "
-            "ON CONFLICT(user_id) DO UPDATE SET last_daily = 0",
-            (user.id,),
-        )
-        await db.commit()
-    await interaction.response.send_message(
-        f"? Daily f?r {user.mention} zur?ckgesetzt.",
-        ephemeral=True,
-    )
-
-@SET_MISSION_GROUP.command(name="reset", description="Mission-Counter zur?cksetzen (nur Basti/Dev)")
-@app_commands.describe(user="Zielnutzer")
-async def set_mission_reset(interaction: discord.Interaction, user: discord.Member):
-    if not await require_owner_or_dev(interaction):
-        return
-    if not await is_channel_allowed(interaction):
-        return
-    today_start = berlin_midnight_epoch()
-    async with db_context() as db:
-        await db.execute(
-            "INSERT INTO user_daily (user_id, mission_count, last_mission_reset) VALUES (?, 0, ?) "
-            "ON CONFLICT(user_id) DO UPDATE SET mission_count = 0, last_mission_reset = ?",
-            (user.id, today_start, today_start),
-        )
-        await db.commit()
-    await interaction.response.send_message(
-        f"? Mission-Counter f?r {user.mention} zur?ckgesetzt.",
-        ephemeral=True,
-    )
-
-SET_GROUP.add_command(SET_DAILY_GROUP)
-SET_GROUP.add_command(SET_MISSION_GROUP)
-bot.tree.add_command(SET_GROUP)
-
-
-# /debug commands
-DEBUG_GROUP = app_commands.Group(name="debug", description="Debug-Tools (nur Basti/Dev)")
-
-@DEBUG_GROUP.command(name="db", description="DB-Check (nur Basti/Dev)")
-async def debug_db(interaction: discord.Interaction):
-    if not await require_owner_or_dev(interaction):
-        return
-    if not await is_channel_allowed(interaction):
-        return
+async def send_db_debug(interaction: discord.Interaction):
     async with db_context() as db:
         cursor = await db.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
         tables = [row[0] for row in await cursor.fetchall()]
@@ -4077,17 +4036,11 @@ async def debug_db(interaction: discord.Interaction):
     embed = discord.Embed(title="DB Debug", color=0x2b90ff)
     embed.add_field(name="Tables", value=str(len(tables)), inline=True)
     embed.add_field(name="Integrity", value=str(integrity[0] if integrity else "unknown"), inline=True)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await _send_ephemeral(interaction, embed=embed)
 
-@DEBUG_GROUP.command(name="user", description="User-Debug (nur Basti/Dev)")
-@app_commands.describe(user="Zielnutzer")
-async def debug_user(interaction: discord.Interaction, user: discord.Member):
-    if not await require_owner_or_dev(interaction):
-        return
-    if not await is_channel_allowed(interaction):
-        return
+async def send_debug_user(interaction: discord.Interaction, user_id: int, user_name: str):
     async with db_context() as db:
-        cursor = await db.execute("SELECT team FROM user_teams WHERE user_id = ?", (user.id,))
+        cursor = await db.execute("SELECT team FROM user_teams WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
         team_raw = row[0] if row and row[0] else "[]"
         try:
@@ -4095,20 +4048,20 @@ async def debug_user(interaction: discord.Interaction, user: discord.Member):
         except Exception:
             team = team_raw
 
-        cursor = await db.execute("SELECT COUNT(*), SUM(anzahl) FROM user_karten WHERE user_id = ?", (user.id,))
+        cursor = await db.execute("SELECT COUNT(*), SUM(anzahl) FROM user_karten WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
         unique_cards = row[0] if row and row[0] else 0
         total_cards = row[1] if row and row[1] else 0
 
-        cursor = await db.execute("SELECT amount FROM user_infinitydust WHERE user_id = ?", (user.id,))
+        cursor = await db.execute("SELECT amount FROM user_infinitydust WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
         infinitydust = row[0] if row and row[0] else 0
 
-        cursor = await db.execute("SELECT COUNT(*) FROM user_card_buffs WHERE user_id = ?", (user.id,))
+        cursor = await db.execute("SELECT COUNT(*) FROM user_card_buffs WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
         buffs = row[0] if row and row[0] else 0
 
-        cursor = await db.execute("SELECT last_daily, mission_count, last_mission_reset FROM user_daily WHERE user_id = ?", (user.id,))
+        cursor = await db.execute("SELECT last_daily, mission_count, last_mission_reset FROM user_daily WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
         last_daily = row[0] if row else None
         mission_count = row[1] if row and row[1] else 0
@@ -4118,7 +4071,7 @@ async def debug_user(interaction: discord.Interaction, user: discord.Member):
     if len(team_text) > 900:
         team_text = team_text[:900] + "..."
 
-    embed = discord.Embed(title=f"Debug User: {user.display_name}", color=0x2b90ff)
+    embed = discord.Embed(title=f"Debug User: {user_name}", color=0x2b90ff)
     embed.add_field(name="Team", value=team_text, inline=False)
     embed.add_field(name="Karten", value=f"Unique: {unique_cards} | Total: {total_cards}", inline=True)
     embed.add_field(name="Infinitydust", value=str(infinitydust), inline=True)
@@ -4126,54 +4079,22 @@ async def debug_user(interaction: discord.Interaction, user: discord.Member):
     embed.add_field(name="Daily", value=str(last_daily), inline=True)
     embed.add_field(name="Mission Count", value=str(mission_count), inline=True)
     embed.add_field(name="Mission Reset", value=str(last_mission_reset), inline=True)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await _send_ephemeral(interaction, embed=embed)
 
-@DEBUG_GROUP.command(name="sync", description="Manuelles tree.sync() (nur Basti/Dev)")
-async def debug_sync(interaction: discord.Interaction):
-    if not await require_owner_or_dev(interaction):
-        return
-    if not await is_channel_allowed(interaction):
-        return
-    synced = await bot.tree.sync()
-    await interaction.response.send_message(f"? Sync abgeschlossen: {len(synced)} Commands.", ephemeral=True)
-
-bot.tree.add_command(DEBUG_GROUP)
-
-
-# /logs last
-LOGS_GROUP = app_commands.Group(name="logs", description="Logs anzeigen (nur Basti/Dev)")
-
-@LOGS_GROUP.command(name="last", description="Letzte Log-Zeilen anzeigen (nur Basti/Dev)")
-@app_commands.describe(count="Anzahl Zeilen")
-async def logs_last(interaction: discord.Interaction, count: app_commands.Range[int, 1, 200] = 20):
-    if not await require_owner_or_dev(interaction):
-        return
-    if not await is_channel_allowed(interaction):
-        return
+async def send_logs_last(interaction: discord.Interaction, count: int):
     if not LOG_PATH.exists():
-        await interaction.response.send_message("? Log-Datei nicht gefunden.", ephemeral=True)
+        await _send_ephemeral(interaction, content="Log-Datei nicht gefunden.")
         return
     content = LOG_PATH.read_text(encoding="utf-8", errors="ignore").splitlines()
     tail = "\n".join(content[-int(count):])
     if not tail:
-        await interaction.response.send_message("Keine Logs vorhanden.", ephemeral=True)
+        await _send_ephemeral(interaction, content="Keine Logs vorhanden.")
         return
     if len(tail) > 1900:
         tail = tail[-1900:]
-    await interaction.response.send_message(f"```text\n{tail}\n```", ephemeral=True)
+    await _send_ephemeral(interaction, content=f"```text\n{tail}\n```")
 
-bot.tree.add_command(LOGS_GROUP)
-
-
-# /karten validate
-KARTEN_GROUP = app_commands.Group(name="karten", description="Karten-Tools (nur Basti/Dev)")
-
-@KARTEN_GROUP.command(name="validate", description="Validiert karten.py (nur Basti/Dev)")
-async def karten_validate(interaction: discord.Interaction):
-    if not await require_owner_or_dev(interaction):
-        return
-    if not await is_channel_allowed(interaction):
-        return
+async def send_karten_validate(interaction: discord.Interaction):
     issues = []
     for idx, card in enumerate(karten, start=1):
         name = card.get("name")
@@ -4185,7 +4106,7 @@ async def karten_validate(interaction: discord.Interaction):
         if not beschreibung:
             issues.append(f"{idx}: fehlt beschreibung")
         if not bild or not isinstance(bild, str) or not bild.startswith("http"):
-            issues.append(f"{idx}: bild ist ung?ltig")
+            issues.append(f"{idx}: bild ist ungueltig")
         if not seltenheit:
             issues.append(f"{idx}: fehlt seltenheit")
         hp = card.get("hp")
@@ -4206,26 +4127,19 @@ async def karten_validate(interaction: discord.Interaction):
                     dmg = atk.get("damage")
                     if isinstance(dmg, list):
                         if len(dmg) != 2 or not all(isinstance(x, int) for x in dmg):
-                            issues.append(f"{idx}.{a_i}: damage list ung?ltig")
+                            issues.append(f"{idx}.{a_i}: damage list ungueltig")
                     elif not isinstance(dmg, int):
                         issues.append(f"{idx}.{a_i}: damage ist kein int")
     if not issues:
-        await interaction.response.send_message("? karten.py ist valide.", ephemeral=True)
+        await _send_ephemeral(interaction, content="karten.py ist valide.")
         return
     preview = "\n".join(issues[:20])
     more = len(issues) - 20
     if more > 0:
         preview += f"\n... +{more} weitere"
-    await interaction.response.send_message(f"?? Probleme gefunden:\n{preview}", ephemeral=True)
+    await _send_ephemeral(interaction, content=f"Probleme gefunden:\n{preview}")
 
-bot.tree.add_command(KARTEN_GROUP)
-
-
-# /balance stats (?ffentlich)
-BALANCE_GROUP = app_commands.Group(name="balance", description="Balance-Statistiken")
-
-@BALANCE_GROUP.command(name="stats", description="Zeigt Balance-Statistiken")
-async def balance_stats(interaction: discord.Interaction):
+async def send_balance_stats(interaction: discord.Interaction):
     if not await is_channel_allowed(interaction, bypass_maintenance=True):
         return
     total_cards = len(karten)
@@ -4269,7 +4183,230 @@ async def balance_stats(interaction: discord.Interaction):
     embed.add_field(name="Avg HP", value=f"{avg_hp:.1f}", inline=True)
     embed.add_field(name="Avg Max Damage", value=f"{avg_atk:.1f}", inline=True)
     embed.add_field(name="Top Karten (DB)", value="\n".join(top_cards) or "Keine Daten", inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await _send_ephemeral(interaction, embed=embed)
+
+class DevActionSelect(ui.Select):
+    def __init__(self, requester_id: int):
+        self.requester_id = requester_id
+        options = [
+            SelectOption(label="Maintenance ON", value="maintenance_on"),
+            SelectOption(label="Maintenance OFF", value="maintenance_off"),
+            SelectOption(label="Delete user data", value="delete_user"),
+            SelectOption(label="DB backup", value="db_backup"),
+            SelectOption(label="Give dust", value="give_dust"),
+            SelectOption(label="Grant card", value="grant_card"),
+            SelectOption(label="Revoke card", value="revoke_card"),
+            SelectOption(label="Set daily reset", value="set_daily"),
+            SelectOption(label="Set mission reset", value="set_mission"),
+            SelectOption(label="Health", value="health"),
+            SelectOption(label="Debug DB", value="debug_db"),
+            SelectOption(label="Debug user", value="debug_user"),
+            SelectOption(label="Debug sync", value="debug_sync"),
+            SelectOption(label="Logs last", value="logs_last"),
+            SelectOption(label="Karten validate", value="karten_validate"),
+        ]
+        super().__init__(placeholder="Dev-Tools waehlen...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            return
+        if not await require_owner_or_dev(interaction):
+            return
+        if not await is_channel_allowed(interaction):
+            return
+
+        action = self.values[0]
+        if action == "maintenance_on":
+            if interaction.guild is None:
+                await _send_ephemeral(interaction, content="Nur in Servern verfuegbar.")
+                return
+            await set_maintenance_mode(interaction.guild_id, True)
+            await _send_ephemeral(interaction, content="Wartungsmodus aktiviert.")
+            return
+        if action == "maintenance_off":
+            if interaction.guild is None:
+                await _send_ephemeral(interaction, content="Nur in Servern verfuegbar.")
+                return
+            await set_maintenance_mode(interaction.guild_id, False)
+            await _send_ephemeral(interaction, content="Wartungsmodus deaktiviert.")
+            return
+        if action == "delete_user":
+            user_id, user_name = await _select_user(interaction, "Waehle den Nutzer fuer Loeschen:")
+            if not user_id:
+                return
+            view = ConfirmDeleteUserView(interaction.user.id, user_id, user_name)
+            await _send_ephemeral(interaction, content=f"Wirklich alle Bot-Daten von {user_name} loeschen?", view=view)
+            return
+        if action == "db_backup":
+            await send_db_backup(interaction)
+            return
+        if action == "give_dust":
+            user_id, user_name = await _select_user(interaction, "Waehle Nutzer fuer Dust:")
+            if not user_id:
+                return
+            amount = await _select_number(interaction, "Menge waehlen", [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000])
+            if not amount:
+                return
+            await add_infinitydust(user_id, int(amount))
+            await _send_ephemeral(interaction, content=f"{user_name} erhaelt {amount}x Infinitydust.")
+            return
+        if action == "grant_card":
+            user_id, user_name = await _select_user(interaction, "Waehle Nutzer fuer Karte vergeben:")
+            if not user_id:
+                return
+            card_name = await _select_card(interaction, "Karte auswaehlen:")
+            if not card_name:
+                return
+            amount = await _select_number(interaction, "Anzahl waehlen", [1, 2, 5, 10, 20, 50, 100])
+            if not amount:
+                return
+            await add_karte_amount(user_id, card_name, int(amount))
+            await _send_ephemeral(interaction, content=f"{user_name} erhaelt {amount}x {card_name}.")
+            return
+        if action == "revoke_card":
+            user_id, user_name = await _select_user(interaction, "Waehle Nutzer fuer Karte abziehen:")
+            if not user_id:
+                return
+            card_name = await _select_card(interaction, "Karte auswaehlen:")
+            if not card_name:
+                return
+            amount = await _select_number(interaction, "Anzahl waehlen", [1, 2, 5, 10, 20, 50, 100])
+            if not amount:
+                return
+            new_amount = await remove_karte_amount(user_id, card_name, int(amount))
+            await _send_ephemeral(interaction, content=f"Neue Menge {card_name} bei {user_name}: {new_amount}.")
+            return
+        if action == "set_daily":
+            user_id, user_name = await _select_user(interaction, "Waehle Nutzer fuer Daily-Reset:")
+            if not user_id:
+                return
+            async with db_context() as db:
+                await db.execute(
+                    "INSERT INTO user_daily (user_id, last_daily) VALUES (?, 0) "
+                    "ON CONFLICT(user_id) DO UPDATE SET last_daily = 0",
+                    (user_id,),
+                )
+                await db.commit()
+            await _send_ephemeral(interaction, content=f"Daily fuer {user_name} zurueckgesetzt.")
+            return
+        if action == "set_mission":
+            user_id, user_name = await _select_user(interaction, "Waehle Nutzer fuer Mission-Reset:")
+            if not user_id:
+                return
+            today_start = berlin_midnight_epoch()
+            async with db_context() as db:
+                await db.execute(
+                    "INSERT INTO user_daily (user_id, mission_count, last_mission_reset) VALUES (?, 0, ?) "
+                    "ON CONFLICT(user_id) DO UPDATE SET mission_count = 0, last_mission_reset = ?",
+                    (user_id, today_start, today_start),
+                )
+                await db.commit()
+            await _send_ephemeral(interaction, content=f"Mission-Reset fuer {user_name} gesetzt.")
+            return
+        if action == "health":
+            await send_health(interaction)
+            return
+        if action == "debug_db":
+            await send_db_debug(interaction)
+            return
+        if action == "debug_user":
+            user_id, user_name = await _select_user(interaction, "Waehle Nutzer fuer Debug:")
+            if not user_id:
+                return
+            await send_debug_user(interaction, user_id, user_name)
+            return
+        if action == "debug_sync":
+            synced = await bot.tree.sync()
+            await _send_ephemeral(interaction, content=f"Sync abgeschlossen: {len(synced)} Commands.")
+            return
+        if action == "logs_last":
+            count = await _select_number(interaction, "Anzahl Log-Zeilen", [10, 20, 50, 100, 200])
+            if not count:
+                return
+            await send_logs_last(interaction, int(count))
+            return
+        if action == "karten_validate":
+            await send_karten_validate(interaction)
+            return
+
+class DevPanelView(ui.View):
+    def __init__(self, requester_id: int):
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        self.add_item(DevActionSelect(requester_id))
+
+    @ui.button(label="Zurueck", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            return
+        embed = discord.Embed(title="Panel", description="Hauptmenue")
+        await _edit_panel_message(interaction, embed=embed, view=PanelHomeView(self.requester_id))
+
+class StatsPanelView(ui.View):
+    def __init__(self, requester_id: int):
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+
+    @ui.button(label="Balance Stats anzeigen", style=discord.ButtonStyle.primary)
+    async def show_stats(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            return
+        await send_balance_stats(interaction)
+
+    @ui.button(label="Zurueck", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            return
+        embed = discord.Embed(title="Panel", description="Hauptmenue")
+        await _edit_panel_message(interaction, embed=embed, view=PanelHomeView(self.requester_id))
+
+class PanelHomeView(ui.View):
+    def __init__(self, requester_id: int):
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+
+    @ui.button(label="Dev/Tools", style=discord.ButtonStyle.primary)
+    async def dev_tools(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            return
+        embed = discord.Embed(title="Dev/Tools", description="Aktionen waehlen")
+        await _edit_panel_message(interaction, embed=embed, view=DevPanelView(self.requester_id))
+
+    @ui.button(label="Stats", style=discord.ButtonStyle.secondary)
+    async def stats(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            return
+        embed = discord.Embed(title="Stats", description="Statistik-Tools")
+        await _edit_panel_message(interaction, embed=embed, view=StatsPanelView(self.requester_id))
+
+    @ui.button(label="Schliessen", style=discord.ButtonStyle.danger)
+    async def close(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menue.", ephemeral=True)
+            return
+        await _edit_panel_message(interaction, content="Panel geschlossen.", embed=None, view=None)
+
+@bot.tree.command(name="panel", description="Dev-Panel (nur Basti/Dev)")
+async def panel(interaction: discord.Interaction):
+    if not await require_owner_or_dev(interaction):
+        return
+    if not await is_channel_allowed(interaction):
+        return
+    embed = discord.Embed(title="Panel", description="Hauptmenue")
+    await interaction.response.send_message(embed=embed, view=PanelHomeView(interaction.user.id), ephemeral=True)
+
+# /balance stats (oeffentlich)
+BALANCE_GROUP = app_commands.Group(name="balance", description="Balance-Statistiken")
+
+@BALANCE_GROUP.command(name="stats", description="Zeigt Balance-Statistiken")
+async def balance_stats(interaction: discord.Interaction):
+    await send_balance_stats(interaction)
 
 bot.tree.add_command(BALANCE_GROUP)
 # =========================
