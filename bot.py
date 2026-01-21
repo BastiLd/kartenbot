@@ -501,6 +501,7 @@ class BattleView(ui.View):
         # KAMPF-LOG SYSTEM: Tracking für Log-Nachrichten
         self.battle_log_message = None
         self.round_counter = 0
+        self._last_log_edit_ts = 0.0
 
         # SIDE EFFECTS SYSTEM: Tracking für aktive Effekte
         # Format: {player_id: [{'type': 'burning', 'duration': 3, 'damage': 15, 'applier': player_id}]}
@@ -535,6 +536,28 @@ class BattleView(ui.View):
         if any(e.get("type") == "confusion" for e in effects):
             icons.append("\U0001f300")
         return f" {' '.join(icons)}" if icons else ""
+
+    async def _safe_edit_battle_log(self, embed) -> None:
+        if not self.battle_log_message:
+            return
+        try:
+            last_ts = float(getattr(self, "_last_log_edit_ts", 0.0) or 0.0)
+        except Exception:
+            last_ts = 0.0
+        now = time.monotonic()
+        if now - last_ts < 0.9:
+            await asyncio.sleep(0.9 - (now - last_ts))
+        for attempt in range(2):
+            try:
+                await self.battle_log_message.edit(embed=embed)
+                self._last_log_edit_ts = time.monotonic()
+                return
+            except Exception as e:
+                if getattr(e, "status", None) == 429:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                logging.exception("Failed to edit battle log")
+                return
     
     def is_attack_on_cooldown(self, player_id, attack_index):
         """Prüft ob eine Attacke auf Cooldown ist"""
@@ -902,7 +925,7 @@ class BattleView(ui.View):
                 attacker_status_icons=self._status_icons(self.current_turn),
                 defender_status_icons=self._status_icons(defender_id),
             )
-            await self.battle_log_message.edit(embed=log_embed)
+            await self._safe_edit_battle_log(log_embed)
 
         # Defer die Interaction für weitere Updates
         await interaction.response.defer()
@@ -1059,7 +1082,7 @@ class BattleView(ui.View):
                 attacker_status_icons=self._status_icons(0),
                 defender_status_icons=self._status_icons(self.player1_id),
             )
-            await self.battle_log_message.edit(embed=log_embed)
+            await self._safe_edit_battle_log(log_embed)
 
         # SIDE EFFECTS: Apply new effects from bot attack (nur wenn Treffer)
         effects = attack.get("effects", [])
@@ -3453,6 +3476,7 @@ class MissionBattleView(ui.View):
         ])
         self.round_counter = 0
         self.battle_log_message = None
+        self._last_log_edit_ts = 0.0
 
         # Buff-Speicher
         self.health_bonus = 0
@@ -3512,6 +3536,28 @@ class MissionBattleView(ui.View):
         if any(e.get("type") == "confusion" for e in effects):
             icons.append("\U0001f300")
         return f" {' '.join(icons)}" if icons else ""
+
+    async def _safe_edit_battle_log(self, embed) -> None:
+        if not self.battle_log_message:
+            return
+        try:
+            last_ts = float(getattr(self, "_last_log_edit_ts", 0.0) or 0.0)
+        except Exception:
+            last_ts = 0.0
+        now = time.monotonic()
+        if now - last_ts < 0.9:
+            await asyncio.sleep(0.9 - (now - last_ts))
+        for attempt in range(2):
+            try:
+                await self.battle_log_message.edit(embed=embed)
+                self._last_log_edit_ts = time.monotonic()
+                return
+            except Exception as e:
+                if getattr(e, "status", None) == 429:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                logging.exception("Failed to edit battle log")
+                return
 
     def is_attack_on_cooldown_user(self, attack_index: int) -> bool:
         return self.user_attack_cooldowns.get(attack_index, 0) > 0
@@ -3728,7 +3774,7 @@ class MissionBattleView(ui.View):
                 attacker_status_icons=self._status_icons(self.user_id),
                 defender_status_icons=self._status_icons(0),
             )
-            await self.battle_log_message.edit(embed=log_embed)
+            await self._safe_edit_battle_log(log_embed)
         
         # Starte Cooldown für starke Attacken (min>90 UND max>99 inkl. Buffs) für nächsten Zug.
         # In Missionen soll die stärkste Attacke im nächsten eigenen Zug gesperrt sein.
@@ -3823,7 +3869,7 @@ class MissionBattleView(ui.View):
                     attacker_status_icons=self._status_icons(0),
                     defender_status_icons=self._status_icons(self.user_id),
                 )
-                await self.battle_log_message.edit(embed=log_embed)
+                await self._safe_edit_battle_log(log_embed)
     
             # SIDE EFFECTS: Apply new effects from bot attack (nur wenn Treffer)
             effects = attack.get("effects", [])
@@ -3898,7 +3944,13 @@ class MissionBattleView(ui.View):
 # =========================
 
 async def _send_ephemeral(interaction: discord.Interaction, *, content: str | None = None, embed=None, view=None, file=None):
-    kwargs = {"content": content, "embed": embed, "view": view, "ephemeral": True}
+    kwargs = {"ephemeral": True}
+    if content is not None:
+        kwargs["content"] = content
+    if embed is not None:
+        kwargs["embed"] = embed
+    if view is not None:
+        kwargs["view"] = view
     if file is not None:
         kwargs["file"] = file
     if interaction.response.is_done():

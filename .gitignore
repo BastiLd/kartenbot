@@ -3,6 +3,8 @@ __pycache__/
 .env
 .env.*
 env.env
+bot_token.txt
+token.txt
 .venv/
 venv/
 .vscode/
