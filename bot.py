@@ -2188,6 +2188,21 @@ class StoryPlayerView(ui.View):
 # Slash-Command-Group: Konfiguration
 configure_group = app_commands.Group(name="configure", description="Bot-Konfiguration (Nur für Admins)")
 
+@bot.tree.command(name="ad", description="Fügt den aktuellen Kanal zur Liste erlaubter Bot-Kanäle hinzu")
+async def add_channel_shortcut(interaction: discord.Interaction):
+    if not await require_owner_or_dev(interaction):
+        return
+    if not interaction.guild_id or not interaction.channel_id:
+        await interaction.response.send_message("❌ Dieser Command funktioniert nur in einem Server-Kanal.", ephemeral=True)
+        return
+    async with db_context() as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO guild_allowed_channels (guild_id, channel_id) VALUES (?, ?)",
+            (interaction.guild_id, interaction.channel_id),
+        )
+        await db.commit()
+    await interaction.response.send_message(f"✅ Hinzugefügt: {interaction.channel.mention}", ephemeral=True)
+
 @configure_group.command(name="add", description="Fügt den aktuellen Kanal zur Liste erlaubter Bot-Kanäle hinzu")
 async def configure_add(interaction: discord.Interaction):
     if not await is_admin(interaction):
