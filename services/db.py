@@ -121,6 +121,16 @@ async def init_db():
     )
     await db.execute(
         """
+        CREATE TABLE IF NOT EXISTS guild_message_visibility (
+            guild_id INTEGER,
+            message_key TEXT,
+            visibility TEXT,
+            PRIMARY KEY (guild_id, message_key)
+        )
+        """
+    )
+    await db.execute(
+        """
         CREATE TABLE IF NOT EXISTS user_seen_channels (
             user_id INTEGER,
             guild_id INTEGER,
