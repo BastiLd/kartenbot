@@ -5,6 +5,7 @@ import sys
 import random
 import sqlite3
 import time
+import os
 from pathlib import Path
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -75,6 +76,8 @@ DEV_ROLE_ID = 1463304167421513961  # Bot_Developer/Tester role ID
 
 MFU_ADMIN_ROLE_ID = 889559991437119498
 OWNER_ROLE_ROLE_ID = 1272827906032402464
+
+BUG_REPORT_TALLY_URL = os.getenv("BUG_REPORT_TALLY_URL", "https://tally.so/r/7RNo8z")
 
 def berlin_midnight_epoch() -> int:
     """Gibt den Unix-Timestamp für den heutigen Tagesbeginn in Europe/Berlin zurück."""
@@ -718,10 +721,9 @@ class BattleView(ui.View):
             embed = discord.Embed(title="⚔️ Kampf abgebrochen", description="Der Kampf wurde abgebrochen.")
             await interaction.response.edit_message(embed=embed, view=None)
             try:
-                if isinstance(interaction.channel, discord.Thread):
-                    allowed = {self.player1_id, self.player2_id}
-                    view = FightFeedbackView(interaction.channel, interaction.guild, allowed, reporter_id=interaction.user.id)
-                    await interaction.channel.send("Gab es einen Bug/Fehler?", view=view)
+                allowed = {self.player1_id, self.player2_id}
+                view = FightFeedbackView(interaction.channel, interaction.guild, allowed)
+                await interaction.channel.send("Gab es einen Bug/Fehler?", view=view)
             except Exception:
                 logging.exception("Unexpected error")
             self.stop()
@@ -888,12 +890,11 @@ class BattleView(ui.View):
                 await interaction.message.edit(embed=winner_embed, view=None)
             except Exception:
                 await interaction.channel.send(embed=winner_embed)
-            # Feedback im Thread anbieten (falls in Thread)
+            # Feedback nach jedem Kampf anbieten
             try:
-                if isinstance(interaction.channel, discord.Thread):
-                    allowed = {self.player1_id, self.player2_id}
-                    view = FightFeedbackView(interaction.channel, interaction.guild, allowed, reporter_id=interaction.user.id)
-                    await interaction.channel.send("Gab es einen Bug/Fehler?", view=view)
+                allowed = {self.player1_id, self.player2_id}
+                view = FightFeedbackView(interaction.channel, interaction.guild, allowed)
+                await interaction.channel.send("Gab es einen Bug/Fehler?", view=view)
             except Exception:
                 logging.exception("Unexpected error")
             self.stop()
@@ -1802,36 +1803,37 @@ class AdminCloseView(ui.View):
             logging.exception("Unexpected error")
 
 class FightFeedbackView(ui.View):
-    def __init__(self, thread: discord.Thread, guild: discord.Guild, allowed_user_ids: set[int], reporter_id: int = None):
+    def __init__(self, channel, guild: discord.Guild, allowed_user_ids: set[int]):
         super().__init__(timeout=600)  # 10 minutes timeout
-        self.thread = thread
+        self.channel = channel
         self.guild = guild
         self.allowed_user_ids = allowed_user_ids
-        self.reporter_id = reporter_id
 
     @ui.button(label="Ja", style=discord.ButtonStyle.success)
     async def yes_btn(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id not in self.allowed_user_ids and not await is_admin(interaction):
             await interaction.response.send_message("Nur Teilnehmer oder Admins können antworten.", ephemeral=True)
             return
-        # Ping only Basti and MFU Admin role (not Montrigor)
-        mentions = []
+        if not BUG_REPORT_TALLY_URL or "REPLACE_ME" in BUG_REPORT_TALLY_URL:
+            await interaction.response.send_message("❌ Bug-Formular ist noch nicht konfiguriert.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            f"🐞 Danke! Bitte fülle dieses Formular aus:\n{BUG_REPORT_TALLY_URL}",
+            ephemeral=True,
+        )
+
         try:
-            # Always mention Basti
-            mentions.append(f"<@{965593518745731152}>")
-
-            # Mention MFU Admin role
-            role_admin = self.guild.get_role(MFU_ADMIN_ROLE_ID)
-            if role_admin:
-                mentions.append(role_admin.mention)
-
+            await interaction.message.edit(view=None)
         except Exception:
             logging.exception("Unexpected error")
-        mention_text = " ".join(mentions) if mentions else "Admins/Owner"
 
-        await interaction.response.send_message(f"⚠️ Bug gemeldet! {mention_text}", ephemeral=False)
-        # Ersetze Buttons mit Admin-Only Close
-        await self.thread.send("Ein Admin/Owner kann den Thread jetzt schließen.", view=AdminCloseView(self.thread))
+        try:
+            if isinstance(self.channel, discord.Thread):
+                await self.channel.send("Ein Admin/Owner kann den Thread jetzt schließen.", view=AdminCloseView(self.channel))
+        except Exception:
+            logging.exception("Unexpected error")
+
         self.stop()
 
     @ui.button(label="Nein", style=discord.ButtonStyle.danger)
@@ -1839,10 +1841,17 @@ class FightFeedbackView(ui.View):
         if interaction.user.id not in self.allowed_user_ids and not await is_admin(interaction):
             await interaction.response.send_message("Nur Teilnehmer oder Admins können antworten.", ephemeral=True)
             return
-        await interaction.response.send_message("✅ Danke! Thread wird geschlossen.", ephemeral=True)
+        await interaction.response.send_message("✅ Danke!", ephemeral=True)
+
+        try:
+            await interaction.message.edit(view=None)
+        except Exception:
+            logging.exception("Unexpected error")
+
         self.stop()
         try:
-            await self.thread.delete()
+            if isinstance(self.channel, discord.Thread):
+                await self.channel.delete()
         except Exception:
             logging.exception("Unexpected error")
 
