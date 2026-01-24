@@ -166,6 +166,7 @@ async def init_db():
     await _ensure_column(db, "user_daily", "last_mission_reset", "INTEGER")
     await _ensure_column(db, "user_daily", "used_invite", "INTEGER DEFAULT 0")
     await _ensure_column(db, "guild_config", "maintenance_mode", "INTEGER DEFAULT 0")
+    await _ensure_column(db, "guild_config", "public_channel_id", "INTEGER")
 
     # Migrate legacy infinitydust column if present.
     if await _column_exists(db, "user_karten", "infinitydust"):
