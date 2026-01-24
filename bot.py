@@ -1802,6 +1802,12 @@ class AdminCloseView(ui.View):
         except Exception:
             logging.exception("Unexpected error")
 
+class BugReportLinkView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        if BUG_REPORT_TALLY_URL:
+            self.add_item(ui.Button(label="Formular öffnen", style=discord.ButtonStyle.link, url=BUG_REPORT_TALLY_URL))
+
 class FightFeedbackView(ui.View):
     def __init__(self, channel, guild: discord.Guild, allowed_user_ids: set[int]):
         super().__init__(timeout=600)  # 10 minutes timeout
@@ -1809,7 +1815,7 @@ class FightFeedbackView(ui.View):
         self.guild = guild
         self.allowed_user_ids = allowed_user_ids
 
-    @ui.button(label="Ja", style=discord.ButtonStyle.success)
+    @ui.button(label="Es gab einen Bug", style=discord.ButtonStyle.success)
     async def yes_btn(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id not in self.allowed_user_ids and not await is_admin(interaction):
             await interaction.response.send_message("Nur Teilnehmer oder Admins können antworten.", ephemeral=True)
@@ -1819,7 +1825,8 @@ class FightFeedbackView(ui.View):
             return
 
         await interaction.response.send_message(
-            f"🐞 Danke! Bitte fülle dieses Formular aus:\n{BUG_REPORT_TALLY_URL}",
+            content="🐞 Danke! Bitte fülle dieses Formular aus:",
+            view=BugReportLinkView(),
             ephemeral=True,
         )
 
@@ -1921,13 +1928,18 @@ async def set_maintenance_mode(guild_id: int, enabled: bool) -> None:
 # Slash-Command: Tägliche Belohnung
 @bot.tree.command(name="täglich", description="Hole deine tägliche Belohnung ab")
 async def täglich(interaction: discord.Interaction):
+    public = await is_public_channel(interaction)
     now = int(time.time())
     async with db_context() as db:
         cursor = await db.execute("SELECT last_daily FROM user_daily WHERE user_id = ?", (interaction.user.id,))
         row = await cursor.fetchone()
         if row and row[0] and now - row[0] < 86400:
             stunden = int((86400 - (now - row[0])) / 3600)
-            await interaction.response.send_message(f"Du kannst deine tägliche Belohnung erst in {stunden} Stunden abholen.", ephemeral=True)
+            await _send_public_or_private(
+                interaction,
+                public,
+                content=f"Du kannst deine tägliche Belohnung erst in {stunden} Stunden abholen.",
+            )
             return
         await db.execute("INSERT OR REPLACE INTO user_daily (user_id, last_daily) VALUES (?, ?)", (interaction.user.id, now))
         await db.commit()
@@ -1939,19 +1951,24 @@ async def täglich(interaction: discord.Interaction):
     is_new_card = await check_and_add_karte(user_id, karte)
     
     if is_new_card:
-        await interaction.response.send_message(f"Du hast eine tägliche Belohnung erhalten: **{karte['name']}**!", ephemeral=True)
+        await _send_public_or_private(
+            interaction,
+            public,
+            content=f"Du hast eine tägliche Belohnung erhalten: **{karte['name']}**!",
+        )
     else:
         # Karte wurde zu Infinitydust umgewandelt
         embed = discord.Embed(title="💎 Tägliche Belohnung - Infinitydust!", description=f"Du hattest **{karte['name']}** bereits!")
         embed.add_field(name="Umwandlung", value="Die Karte wurde zu **Infinitydust** umgewandelt!", inline=False)
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await _send_public_or_private(interaction, public, embed=embed)
 
 # Slash-Command: Mission starten
 @bot.tree.command(name="mission", description="Schicke dein Team auf eine Mission und erhalte eine Belohnung")
 async def mission(interaction: discord.Interaction):
     if not await is_channel_allowed(interaction):
         return
+    public = await is_public_channel(interaction)
     # Prüfe Admin-Berechtigung
     is_admin_user = await is_admin(interaction)
     
@@ -1959,7 +1976,11 @@ async def mission(interaction: discord.Interaction):
         # Prüfe tägliche Mission-Limits für normale Nutzer
         mission_count = await get_mission_count(interaction.user.id)
         if mission_count >= 2:
-            await interaction.response.send_message("❌ Du hast heute bereits deine 2 Missionen aufgebraucht! Komme morgen wieder.", ephemeral=True)
+            await _send_public_or_private(
+                interaction,
+                public,
+                content="❌ Du hast heute bereits deine 2 Missionen aufgebraucht! Komme morgen wieder.",
+            )
             return
     
     # Generiere Mission-Daten
@@ -1983,20 +2004,20 @@ async def mission(interaction: discord.Interaction):
     }
     
     mission_view = MissionAcceptView(interaction.user.id, mission_data)
-    await interaction.response.send_message(embed=embed, view=mission_view, ephemeral=True)
+    await _send_public_or_private(interaction, public, embed=embed, view=mission_view)
     await mission_view.wait()
     
     if not mission_view.value:
-        await interaction.followup.send("Mission abgelehnt.", ephemeral=True)
+        await _followup_public_or_private(interaction, public, content="Mission abgelehnt.")
         return
     
     # Mission angenommen - starte Wellen-System
     # Erhöhe Zähler beim Start (nur Nicht-Admins)
     if not is_admin_user:
         await increment_mission_count(interaction.user.id)
-    await start_mission_waves(interaction, mission_data, is_admin_user)
+    await start_mission_waves(interaction, mission_data, is_admin_user, public)
 
-async def start_mission_waves(interaction, mission_data, is_admin):
+async def start_mission_waves(interaction, mission_data, is_admin, public: bool):
     """Startet das Wellen-System für die Mission"""
     waves = mission_data["waves"]
     reward_card = mission_data["reward_card"]
@@ -2004,15 +2025,15 @@ async def start_mission_waves(interaction, mission_data, is_admin):
     # Nutzer wählt seine Karte für die Mission
     user_karten = await get_user_karten(interaction.user.id)
     if not user_karten:
-        await interaction.followup.send("❌ Du hast keine Karten für die Mission!", ephemeral=True)
+        await _followup_public_or_private(interaction, public, content="❌ Du hast keine Karten für die Mission!")
         return
     
     card_select_view = CardSelectView(interaction.user.id, user_karten, 1)
-    await interaction.followup.send("Wähle deine Karte für die Mission:", view=card_select_view, ephemeral=True)
+    await _followup_public_or_private(interaction, public, content="Wähle deine Karte für die Mission:", view=card_select_view)
     await card_select_view.wait()
     
     if not card_select_view.value:
-        await interaction.followup.send("❌ Keine Karte gewählt. Mission abgebrochen.", ephemeral=True)
+        await _followup_public_or_private(interaction, public, content="❌ Keine Karte gewählt. Mission abgebrochen.")
         return
     
     selected_card_name = card_select_view.value[0]
@@ -2024,16 +2045,20 @@ async def start_mission_waves(interaction, mission_data, is_admin):
     while current_wave <= waves:
         # Prüfe Pause bei >4 Wellen nach der 3. Welle
         if waves > 4 and current_wave == 4:
-            await interaction.followup.send("⏸️ **Pause nach der 3. Welle!** Möchtest du deine Karte wechseln?", ephemeral=True)
+            await _followup_public_or_private(
+                interaction,
+                public,
+                content="⏸️ **Pause nach der 3. Welle!** Möchtest du deine Karte wechseln?",
+            )
             
             pause_view = MissionCardSelectView(interaction.user.id, selected_card_name)
-            await interaction.followup.send("Was möchtest du tun?", view=pause_view, ephemeral=True)
+            await _followup_public_or_private(interaction, public, content="Was möchtest du tun?", view=pause_view)
             await pause_view.wait()
             
             if pause_view.value == "change":
                 # Neue Karte wählen
                 new_card_view = MissionNewCardSelectView(interaction.user.id, user_karten)
-                await interaction.followup.send("Wähle eine neue Karte:", view=new_card_view, ephemeral=True)
+                await _followup_public_or_private(interaction, public, content="Wähle eine neue Karte:", view=new_card_view)
                 await new_card_view.wait()
                 
                 if new_card_view.value:
@@ -2042,13 +2067,26 @@ async def start_mission_waves(interaction, mission_data, is_admin):
                     mission_data["player_card"] = player_card
         
         # Starte Welle mit konsistenter Karte
-        wave_result = await execute_mission_wave(interaction, current_wave, waves, player_card, reward_card)
+        wave_result = await execute_mission_wave(interaction, current_wave, waves, player_card, reward_card, public)
         
         if not wave_result:  # Niederlage
-            await interaction.followup.send(f"❌ **Mission fehlgeschlagen!** Du hast in Welle {current_wave} verloren.", ephemeral=True)
+            await _followup_public_or_private(
+                interaction,
+                public,
+                content=f"❌ **Mission fehlgeschlagen!** Du hast in Welle {current_wave} verloren.",
+            )
+            try:
+                view = FightFeedbackView(interaction.channel, interaction.guild, {interaction.user.id})
+                await _followup_public_or_private(interaction, public, content="Gab es einen Bug/Fehler?", view=view)
+            except Exception:
+                logging.exception("Unexpected error")
             return
         
-        await interaction.followup.send(f"🏆 Welle {current_wave} gewonnen! Starte Welle {current_wave + 1}...", ephemeral=True)
+        await _followup_public_or_private(
+            interaction,
+            public,
+            content=f"🏆 Welle {current_wave} gewonnen! Starte Welle {current_wave + 1}...",
+        )
         current_wave += 1
     
     # Mission erfolgreich abgeschlossen (Zähler wurde bereits beim Start erhöht)
@@ -2060,16 +2098,22 @@ async def start_mission_waves(interaction, mission_data, is_admin):
         success_embed = discord.Embed(title="🏆 Mission erfolgreich!", 
                                      description=f"Du hast alle {waves} Wellen überstanden und **{reward_card['name']}** erhalten!")
         success_embed.set_image(url=reward_card["bild"])
-        await interaction.followup.send(embed=success_embed, ephemeral=True)
+        await _followup_public_or_private(interaction, public, embed=success_embed)
     else:
         # Karte wurde zu Infinitydust umgewandelt
         success_embed = discord.Embed(title="💎 Mission erfolgreich - Infinitydust!", 
                                       description=f"Du hast alle {waves} Wellen überstanden!")
         success_embed.add_field(name="Belohnung", value=f"Du hattest **{reward_card['name']}** bereits - wurde zu **Infinitydust** umgewandelt!", inline=False)
         success_embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
-        await interaction.followup.send(embed=success_embed, ephemeral=True)
+        await _followup_public_or_private(interaction, public, embed=success_embed)
 
-async def execute_mission_wave(interaction, wave_num, total_waves, player_card, reward_card):
+    try:
+        view = FightFeedbackView(interaction.channel, interaction.guild, {interaction.user.id})
+        await _followup_public_or_private(interaction, public, content="Gab es einen Bug/Fehler?", view=view)
+    except Exception:
+        logging.exception("Unexpected error")
+
+async def execute_mission_wave(interaction, wave_num, total_waves, player_card, reward_card, public: bool):
     """Führt eine einzelne Mission-Welle aus"""
     # Bot-Karte für diese Welle
     bot_card = random.choice(karten)
@@ -2090,11 +2134,11 @@ async def execute_mission_wave(interaction, wave_num, total_waves, player_card, 
     
     # Erstelle Kampf-Log ZUERST (über dem Kampf)
     log_embed = create_battle_log_embed()
-    log_message = await interaction.followup.send(embed=log_embed, ephemeral=True)
+    log_message = await _followup_public_or_private(interaction, public, embed=log_embed)
     mission_battle_view.battle_log_message = log_message
     
     # Dann den Kampf (unter dem Log)
-    battle_message = await interaction.followup.send(embed=embed, view=mission_battle_view, ephemeral=True)
+    battle_message = await _followup_public_or_private(interaction, public, embed=embed, view=mission_battle_view)
     
     # Warte auf Kampf-Ende
     await mission_battle_view.wait()
@@ -2104,23 +2148,24 @@ async def execute_mission_wave(interaction, wave_num, total_waves, player_card, 
 # Entfernt: /team Command (auf Wunsch des Nutzers)
 
 # Slash-Command: Story spielen
-@bot.tree.command(name="story", description="Starte eine interaktive Story (nur für dich sichtbar)")
+@bot.tree.command(name="story", description="Starte eine interaktive Story")
 async def story(interaction: discord.Interaction):
     if not await is_channel_allowed(interaction):
         return
+    public = await is_public_channel(interaction)
     # Auswahl der Story (aktuell nur "text")
     view = StorySelectView(interaction.user.id)
     embed = discord.Embed(title="📖 Story auswählen", description="Wähle eine Story aus der Liste. Aktuell verfügbar: **text**")
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    await _send_public_or_private(interaction, public, embed=embed, view=view)
     await view.wait()
     if not view.value:
-        await interaction.followup.send("⏰ Keine Story gewählt. Abgebrochen.", ephemeral=True)
+        await _followup_public_or_private(interaction, public, content="⏰ Keine Story gewählt. Abgebrochen.")
         return
 
     # Starte den Story-Player (Schritt 0)
     story_view = StoryPlayerView(interaction.user.id, view.value)
     start_embed = story_view.render_step_embed()
-    await interaction.followup.send(embed=start_embed, view=story_view, ephemeral=True)
+    await _followup_public_or_private(interaction, public, embed=start_embed, view=story_view)
 
 
 class StorySelectView(ui.View):
