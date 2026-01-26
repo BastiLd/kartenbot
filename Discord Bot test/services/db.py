@@ -121,27 +121,6 @@ async def init_db():
     )
     await db.execute(
         """
-        CREATE TABLE IF NOT EXISTS guild_message_visibility (
-            guild_id INTEGER,
-            message_key TEXT,
-            visibility TEXT,
-            PRIMARY KEY (guild_id, message_key)
-        )
-        """
-    )
-    await db.execute(
-        """
-        CREATE TABLE IF NOT EXISTS guild_anfang_message (
-            guild_id INTEGER PRIMARY KEY,
-            channel_id INTEGER,
-            message_id INTEGER,
-            author_id INTEGER,
-            updated_at INTEGER
-        )
-        """
-    )
-    await db.execute(
-        """
         CREATE TABLE IF NOT EXISTS user_seen_channels (
             user_id INTEGER,
             guild_id INTEGER,
@@ -177,7 +156,6 @@ async def init_db():
     await _ensure_column(db, "user_daily", "last_mission_reset", "INTEGER")
     await _ensure_column(db, "user_daily", "used_invite", "INTEGER DEFAULT 0")
     await _ensure_column(db, "guild_config", "maintenance_mode", "INTEGER DEFAULT 0")
-    await _ensure_column(db, "guild_config", "public_channel_id", "INTEGER")
 
     # Migrate legacy infinitydust column if present.
     if await _column_exists(db, "user_karten", "infinitydust"):

@@ -3,10 +3,7 @@ import json
 import logging
 import sys
 import random
-import sqlite3
 import time
-import os
-from collections import deque
 from pathlib import Path
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -41,57 +38,13 @@ file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message
 logging.getLogger().addHandler(file_handler)
 
 BOT_START_TIME = time.time()
-KATABUMP_MAX_INTERACTIONS_PER_MIN = 200
-KATABUMP_INTERACTION_WINDOW_SEC = 60
-_interaction_timestamps = deque()
-_persistent_views_registered = False
-
-class KatabumpCommandTree(app_commands.CommandTree):
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.type == discord.InteractionType.autocomplete:
-            return True
-        if interaction.guild is None or interaction.channel_id is None:
-            return False
-        command_name = ""
-        if interaction.command:
-            command_name = getattr(interaction.command, "qualified_name", interaction.command.name)
-        allow_unconfigured = command_name in {"configure add", "ad"}
-        channel_allowed = await is_channel_allowed_ids(
-            interaction.guild_id,
-            interaction.channel_id,
-            getattr(interaction.channel, "parent_id", None),
-        )
-        if not allow_unconfigured and not channel_allowed:
-            return False
-        if await is_maintenance_enabled(interaction.guild_id):
-            if not await is_owner_or_dev(interaction):
-                if channel_allowed:
-                    message = "⛔ Der Bot ist gerade im Wartungsmodus. Bitte später erneut versuchen."
-                    if not interaction.response.is_done():
-                        await interaction.response.send_message(message, ephemeral=True)
-                    else:
-                        await interaction.followup.send(message, ephemeral=True)
-                return False
-        now = time.monotonic()
-        while _interaction_timestamps and now - _interaction_timestamps[0] > KATABUMP_INTERACTION_WINDOW_SEC:
-            _interaction_timestamps.popleft()
-        if len(_interaction_timestamps) >= KATABUMP_MAX_INTERACTIONS_PER_MIN:
-            if channel_allowed:
-                message = "⏳ Zu viele Anfragen. Bitte in einer Minute erneut versuchen (Katabump-Limit)."
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(message, ephemeral=True)
-                else:
-                    await interaction.followup.send(message, ephemeral=True)
-            return False
-        _interaction_timestamps.append(now)
-        return True
 
 
 intents = discord.Intents.default()
 intents.message_content = False
 intents.members = True
 intents.presences = True
-bot = commands.Bot(command_prefix="!", intents=intents, tree_cls=KatabumpCommandTree)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 def create_bot() -> commands.Bot:
     return bot
@@ -122,8 +75,6 @@ DEV_ROLE_ID = 1463304167421513961  # Bot_Developer/Tester role ID
 MFU_ADMIN_ROLE_ID = 889559991437119498
 OWNER_ROLE_ROLE_ID = 1272827906032402464
 
-BUG_REPORT_TALLY_URL = os.getenv("BUG_REPORT_TALLY_URL", "https://tally.so/r/7RNo8z")
-
 def berlin_midnight_epoch() -> int:
     """Gibt den Unix-Timestamp für den heutigen Tagesbeginn in Europe/Berlin zurück."""
     try:
@@ -140,26 +91,16 @@ def berlin_midnight_epoch() -> int:
 # Volltreffer-System Funktionen
 @bot.event
 async def on_ready():
-    if bot.user is not None and not bot.user.bot:
-        logging.error("Self-bot erkannt. Bot-Tokens sind erforderlich. Shutdown.")
-        await bot.close()
-        return
     await init_db()
     logging.info("Bot ist online als %s", bot.user)
     try:
+        prune_admin_slash_commands()
         synced = await bot.tree.sync()
         logging.info("Slash-Commands synchronisiert: %s", len(synced))
     except Exception:
         logging.exception("Slash-Command sync failed")
-    global _persistent_views_registered
-    if not _persistent_views_registered:
-        try:
-            bot.add_view(AnfangView())
-            _persistent_views_registered = True
-        except Exception:
-            logging.exception("Failed to register persistent views")
 
-# Event: On Message – bei erster Nachricht im Kanal Intro zeigen (ephemeral)
+# Event: On Message – bei erster Nachricht im erlaubten Kanal Intro zeigen (ephemeral)
 @bot.event
 async def on_message(message: discord.Message):
     # Ignoriere Bot-Nachrichten
@@ -172,8 +113,10 @@ async def on_message(message: discord.Message):
     if await is_maintenance_enabled(message.guild.id):
         if not is_owner_or_dev_member(message.author):
             return
-    if not await is_channel_allowed_ids(message.guild.id, message.channel.id, getattr(message.channel, "parent_id", None)):
+    # Nur in erlaubten Kanälen reagieren (ohne Interactions)
+    if not await is_channel_allowed_ids(message.guild.id, message.channel.id):
         return
+
     # Prüfe, ob User in diesem Kanal das Intro schon gesehen hat
     async with db_context() as db:
         cursor = await db.execute(
@@ -206,11 +149,10 @@ async def on_message(message: discord.Message):
 
 # Kanal-Restriktion: Only respond in configured channel
 async def is_channel_allowed(interaction: discord.Interaction, *, bypass_maintenance: bool = False) -> bool:
-    if interaction.guild is None or interaction.channel_id is None:
-        return False
-    parent_id = getattr(interaction.channel, "parent_id", None)
-    if not await is_channel_allowed_ids(interaction.guild_id, interaction.channel_id, parent_id):
-        return False
+    # DMs erlauben
+    if interaction.guild is None:
+        return True
+    # Wartungsmodus: Nur Owner/Dev dürfen Commands nutzen
     if not bypass_maintenance and await is_maintenance_enabled(interaction.guild_id):
         if not await is_owner_or_dev(interaction):
             message = "⛔ Der Bot ist gerade im Wartungsmodus. Bitte später erneut versuchen."
@@ -219,30 +161,56 @@ async def is_channel_allowed(interaction: discord.Interaction, *, bypass_mainten
             else:
                 await interaction.followup.send(message, ephemeral=True)
             return False
-    return True
-
-# Kanal-Check ohne Nachrichten-Seiteneffekte (für on_message)
-async def is_channel_allowed_ids(
-    guild_id: int | None,
-    channel_id: int | None,
-    parent_channel_id: int | None = None,
-) -> bool:
-    if not guild_id or not channel_id:
-        return False
+    configured_channel_id = None
+    allowed_channels = set()
     async with db_context() as db:
-        cursor = await db.execute("SELECT channel_id FROM guild_allowed_channels WHERE guild_id = ?", (guild_id,))
+        cursor = await db.execute("SELECT mission_channel_id FROM guild_config WHERE guild_id = ?", (interaction.guild_id,))
+        row = await cursor.fetchone()
+        if row:
+            configured_channel_id = row[0]
+        # Mehrere erlaubte Kanäle lesen
+        cursor = await db.execute("SELECT channel_id FROM guild_allowed_channels WHERE guild_id = ?", (interaction.guild_id,))
         allowed_channels = {r[0] for r in await cursor.fetchall()}
-    if not allowed_channels:
+    # Wenn nicht konfiguriert
+    if not configured_channel_id and not allowed_channels:
+        message = "❌ Dieser Server ist noch nicht konfiguriert. Nutze `/configure` in dem Kanal, in dem der Bot aktiv sein soll."
+        if not interaction.response.is_done():
+            await interaction.response.send_message(message, ephemeral=True)
+        else:
+            await interaction.followup.send(message, ephemeral=True)
         return False
-    if channel_id in allowed_channels:
+    # Wenn anderer Kanal
+    # Kanal prüfen: erlaubt wenn gleich configured_channel_id oder in allowed_channels
+    if (configured_channel_id and interaction.channel_id == configured_channel_id) or (interaction.channel_id in allowed_channels):
         return True
-    if parent_channel_id and parent_channel_id in allowed_channels:
-        return True
+
+    # Falscher Kanal: Hinweis senden
+    if configured_channel_id:
+        channel_mention = f"<#{configured_channel_id}>"
+    else:
+        # Wenn kein Hauptkanal gesetzt, aber Liste existiert, nimm den ersten als Hinweis
+        channel_mention = f"<#{next(iter(allowed_channels))}>" if allowed_channels else "(nicht gesetzt)"
+    message = f"? Der Bot reagiert nur im konfigurierten Kanal {channel_mention}. Nutze die Commands bitte dort."
+    if not interaction.response.is_done():
+        await interaction.response.send_message(message, ephemeral=True)
+    else:
+        await interaction.followup.send(message, ephemeral=True)
     return False
 
-class RestrictedView(ui.View):
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return await is_channel_allowed(interaction)
+# Kanal-Check ohne Nachrichten-Seiteneffekte (für on_message)
+async def is_channel_allowed_ids(guild_id: int, channel_id: int) -> bool:
+    configured_channel_id = None
+    allowed_channels = set()
+    async with db_context() as db:
+        cursor = await db.execute("SELECT mission_channel_id FROM guild_config WHERE guild_id = ?", (guild_id,))
+        row = await cursor.fetchone()
+        if row:
+            configured_channel_id = row[0]
+        cursor = await db.execute("SELECT channel_id FROM guild_allowed_channels WHERE guild_id = ?", (guild_id,))
+        allowed_channels = {r[0] for r in await cursor.fetchall()}
+    if not configured_channel_id and not allowed_channels:
+        return False
+    return (configured_channel_id and channel_id == configured_channel_id) or (channel_id in allowed_channels)
 
 # Infinitydust-System
 async def add_infinitydust(user_id, amount=1):
@@ -445,7 +413,7 @@ async def delete_user_data(user_id: int) -> None:
         await db.commit()
 
 # View für Buttons beim Kartenziehen
-class ZieheKarteView(RestrictedView):
+class ZieheKarteView(ui.View):
     def __init__(self, user_id):
         super().__init__(timeout=60)
         self.user_id = user_id
@@ -462,7 +430,7 @@ class ZieheKarteView(RestrictedView):
         await interaction.response.send_message(embed=embed, view=ZieheKarteView(self.user_id))
 
 # View für Missions-Buttons
-class MissionView(RestrictedView):
+class MissionView(ui.View):
     def __init__(self, user_id):
         super().__init__(timeout=60)
         self.user_id = user_id
@@ -486,7 +454,7 @@ class MissionView(RestrictedView):
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # View für HP-Button (über der Karte)
-class HPView(RestrictedView):
+class HPView(ui.View):
     def __init__(self, player_card, player_hp):
         super().__init__(timeout=120)
         self.player_card = player_card
@@ -508,7 +476,7 @@ class HPView(RestrictedView):
                 break
 
 # View für Kampf-Buttons (unter der Karte)
-class BattleView(RestrictedView):
+class BattleView(ui.View):
     def __init__(self, player1_card, player2_card, player1_id, player2_id, hp_view):
         super().__init__(timeout=120)
         self.player1_card = player1_card
@@ -533,7 +501,6 @@ class BattleView(RestrictedView):
         # KAMPF-LOG SYSTEM: Tracking für Log-Nachrichten
         self.battle_log_message = None
         self.round_counter = 0
-        self._last_log_edit_ts = 0.0
 
         # SIDE EFFECTS SYSTEM: Tracking für aktive Effekte
         # Format: {player_id: [{'type': 'burning', 'duration': 3, 'damage': 15, 'applier': player_id}]}
@@ -568,28 +535,6 @@ class BattleView(RestrictedView):
         if any(e.get("type") == "confusion" for e in effects):
             icons.append("\U0001f300")
         return f" {' '.join(icons)}" if icons else ""
-
-    async def _safe_edit_battle_log(self, embed) -> None:
-        if not self.battle_log_message:
-            return
-        try:
-            last_ts = float(getattr(self, "_last_log_edit_ts", 0.0) or 0.0)
-        except Exception:
-            last_ts = 0.0
-        now = time.monotonic()
-        if now - last_ts < 0.9:
-            await asyncio.sleep(0.9 - (now - last_ts))
-        for attempt in range(2):
-            try:
-                await self.battle_log_message.edit(embed=embed)
-                self._last_log_edit_ts = time.monotonic()
-                return
-            except Exception as e:
-                if getattr(e, "status", None) == 429:
-                    await asyncio.sleep(1.5 * (attempt + 1))
-                    continue
-                logging.exception("Failed to edit battle log")
-                return
     
     def is_attack_on_cooldown(self, player_id, attack_index):
         """Prüft ob eine Attacke auf Cooldown ist"""
@@ -749,9 +694,10 @@ class BattleView(RestrictedView):
             embed = discord.Embed(title="⚔️ Kampf abgebrochen", description="Der Kampf wurde abgebrochen.")
             await interaction.response.edit_message(embed=embed, view=None)
             try:
-                allowed = {self.player1_id, self.player2_id}
-                view = FightFeedbackView(interaction.channel, interaction.guild, allowed)
-                await interaction.channel.send("Gab es einen Bug/Fehler?", view=view)
+                if isinstance(interaction.channel, discord.Thread):
+                    allowed = {self.player1_id, self.player2_id}
+                    view = FightFeedbackView(interaction.channel, interaction.guild, allowed, reporter_id=interaction.user.id)
+                    await interaction.channel.send("Gab es einen Bug/Fehler?", view=view)
             except Exception:
                 logging.exception("Unexpected error")
             self.stop()
@@ -918,11 +864,12 @@ class BattleView(RestrictedView):
                 await interaction.message.edit(embed=winner_embed, view=None)
             except Exception:
                 await interaction.channel.send(embed=winner_embed)
-            # Feedback nach jedem Kampf anbieten
+            # Feedback im Thread anbieten (falls in Thread)
             try:
-                allowed = {self.player1_id, self.player2_id}
-                view = FightFeedbackView(interaction.channel, interaction.guild, allowed)
-                await interaction.channel.send("Gab es einen Bug/Fehler?", view=view)
+                if isinstance(interaction.channel, discord.Thread):
+                    allowed = {self.player1_id, self.player2_id}
+                    view = FightFeedbackView(interaction.channel, interaction.guild, allowed, reporter_id=interaction.user.id)
+                    await interaction.channel.send("Gab es einen Bug/Fehler?", view=view)
             except Exception:
                 logging.exception("Unexpected error")
             self.stop()
@@ -955,7 +902,7 @@ class BattleView(RestrictedView):
                 attacker_status_icons=self._status_icons(self.current_turn),
                 defender_status_icons=self._status_icons(defender_id),
             )
-            await self._safe_edit_battle_log(log_embed)
+            await self.battle_log_message.edit(embed=log_embed)
 
         # Defer die Interaction für weitere Updates
         await interaction.response.defer()
@@ -1112,7 +1059,7 @@ class BattleView(RestrictedView):
                 attacker_status_icons=self._status_icons(0),
                 defender_status_icons=self._status_icons(self.player1_id),
             )
-            await self._safe_edit_battle_log(log_embed)
+            await self.battle_log_message.edit(embed=log_embed)
 
         # SIDE EFFECTS: Apply new effects from bot attack (nur wenn Treffer)
         effects = attack.get("effects", [])
@@ -1158,7 +1105,7 @@ class BattleView(RestrictedView):
         # Aktualisiere Kampf-UI
         await message.edit(embed=battle_embed, view=self)
 
-class CardSelectView(RestrictedView):
+class CardSelectView(ui.View):
     def __init__(self, user_id, karten_liste, anzahl):
         super().__init__(timeout=90)
         self.user_id = user_id
@@ -1247,7 +1194,7 @@ class UserSearchModal(ui.Modal):
         else:
             return "⚫"
 
-class UserSearchResultView(RestrictedView):
+class UserSearchResultView(ui.View):
     def __init__(self, challenger, options, parent_view: ui.View | None = None):
         super().__init__(timeout=60)
         self.challenger = challenger
@@ -1531,7 +1478,7 @@ class ShowAllMembersPager(ui.View):
             self.next_btn.disabled = (self.page_index == len(self.pages) - 1)
             await interaction.response.edit_message(view=self)
 
-class OpponentSelectView(RestrictedView):
+class OpponentSelectView(ui.View):
     def __init__(self, challenger: discord.Member, guild: discord.Guild):
         super().__init__(timeout=60)
         self.challenger = challenger
@@ -1646,7 +1593,7 @@ class OpponentSelectView(RestrictedView):
         self.stop()
         await interaction.response.defer()
 
-class AdminUserSelectView(RestrictedView):
+class AdminUserSelectView(ui.View):
     def __init__(self, admin_user_id: int, guild: discord.Guild):
         super().__init__(timeout=60)
         self.admin_user_id = admin_user_id
@@ -1747,7 +1694,7 @@ class AdminUserSelectView(RestrictedView):
         self.stop()
         await interaction.response.defer()
 
-class FightVisibilityView(RestrictedView):
+class FightVisibilityView(ui.View):
     def __init__(self, user_id: int):
         super().__init__(timeout=60)
         self.user_id = user_id
@@ -1780,7 +1727,7 @@ class FightVisibilityView(RestrictedView):
         self.stop()
         await interaction.response.defer()
 
-class ChallengeResponseView(RestrictedView):
+class ChallengeResponseView(ui.View):
     def __init__(self, challenger: discord.Member, challenged: discord.Member, ctx, selected_cards, mode, thread: discord.Thread | None = None):
         super().__init__(timeout=60)
         self.challenger = challenger
@@ -1813,7 +1760,7 @@ class ChallengeResponseView(RestrictedView):
         self.stop()
         await interaction.response.defer()
 
-class AdminCloseView(RestrictedView):
+class AdminCloseView(ui.View):
     def __init__(self, thread: discord.Thread):
         super().__init__(timeout=3600)
         self.thread = thread
@@ -1830,45 +1777,37 @@ class AdminCloseView(RestrictedView):
         except Exception:
             logging.exception("Unexpected error")
 
-class BugReportLinkView(RestrictedView):
-    def __init__(self):
-        super().__init__(timeout=300)
-        if BUG_REPORT_TALLY_URL:
-            self.add_item(ui.Button(label="Formular öffnen", style=discord.ButtonStyle.link, url=BUG_REPORT_TALLY_URL))
-
-class FightFeedbackView(RestrictedView):
-    def __init__(self, channel, guild: discord.Guild, allowed_user_ids: set[int]):
+class FightFeedbackView(ui.View):
+    def __init__(self, thread: discord.Thread, guild: discord.Guild, allowed_user_ids: set[int], reporter_id: int = None):
         super().__init__(timeout=600)  # 10 minutes timeout
-        self.channel = channel
+        self.thread = thread
         self.guild = guild
         self.allowed_user_ids = allowed_user_ids
+        self.reporter_id = reporter_id
 
-    @ui.button(label="Es gab einen Bug", style=discord.ButtonStyle.success)
+    @ui.button(label="Ja", style=discord.ButtonStyle.success)
     async def yes_btn(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id not in self.allowed_user_ids and not await is_admin(interaction):
             await interaction.response.send_message("Nur Teilnehmer oder Admins können antworten.", ephemeral=True)
             return
-        if not BUG_REPORT_TALLY_URL or "REPLACE_ME" in BUG_REPORT_TALLY_URL:
-            await interaction.response.send_message("❌ Bug-Formular ist noch nicht konfiguriert.", ephemeral=True)
-            return
-
-        await interaction.response.send_message(
-            content="🐞 Danke! Bitte fülle dieses Formular aus:",
-            view=BugReportLinkView(),
-            ephemeral=True,
-        )
-
+        # Ping only Basti and MFU Admin role (not Montrigor)
+        mentions = []
         try:
-            await interaction.message.edit(view=None)
+            # Always mention Basti
+            mentions.append(f"<@{965593518745731152}>")
+
+            # Mention MFU Admin role
+            role_admin = self.guild.get_role(MFU_ADMIN_ROLE_ID)
+            if role_admin:
+                mentions.append(role_admin.mention)
+
         except Exception:
             logging.exception("Unexpected error")
+        mention_text = " ".join(mentions) if mentions else "Admins/Owner"
 
-        try:
-            if isinstance(self.channel, discord.Thread):
-                await self.channel.send("Ein Admin/Owner kann den Thread jetzt schließen.", view=AdminCloseView(self.channel))
-        except Exception:
-            logging.exception("Unexpected error")
-
+        await interaction.response.send_message(f"⚠️ Bug gemeldet! {mention_text}", ephemeral=False)
+        # Ersetze Buttons mit Admin-Only Close
+        await self.thread.send("Ein Admin/Owner kann den Thread jetzt schließen.", view=AdminCloseView(self.thread))
         self.stop()
 
     @ui.button(label="Nein", style=discord.ButtonStyle.danger)
@@ -1876,25 +1815,15 @@ class FightFeedbackView(RestrictedView):
         if interaction.user.id not in self.allowed_user_ids and not await is_admin(interaction):
             await interaction.response.send_message("Nur Teilnehmer oder Admins können antworten.", ephemeral=True)
             return
-        await interaction.response.send_message("✅ Danke!", ephemeral=True)
-
-        try:
-            await interaction.message.edit(view=None)
-        except Exception:
-            logging.exception("Unexpected error")
-
+        await interaction.response.send_message("✅ Danke! Thread wird geschlossen.", ephemeral=True)
         self.stop()
         try:
-            if isinstance(self.channel, discord.Thread):
-                await self.channel.delete()
+            await self.thread.delete()
         except Exception:
             logging.exception("Unexpected error")
 
-# Helper: Check Admin (Admins oder Owner/Dev)
+# Helper: Check Admin (Admins oder Owner)
 async def is_admin(interaction):
-    # Bot-Owner/Dev dürfen Admin-Commands nutzen (auch ohne Serverrechte)
-    if await is_owner_or_dev(interaction):
-        return True
     # Prüfe ob User Admin-Berechtigung hat ODER Server-Owner ist ODER spezielle Rollen hat
     if interaction.user.id == (interaction.guild.owner_id if interaction.guild else 0):
         return True
@@ -1907,14 +1836,6 @@ async def is_admin(interaction):
     except Exception:
         logging.exception("Unexpected error")
     return False
-
-async def is_config_admin(interaction: discord.Interaction) -> bool:
-    if await is_admin(interaction):
-        return True
-    if interaction.guild is None:
-        return False
-    perms = interaction.user.guild_permissions
-    return perms.manage_guild or perms.manage_channels
 
 def _has_dev_role(member: discord.Member) -> bool:
     if DEV_ROLE_ID == 0:
@@ -1967,14 +1888,13 @@ async def set_maintenance_mode(guild_id: int, enabled: bool) -> None:
 # Slash-Command: Tägliche Belohnung
 @bot.tree.command(name="täglich", description="Hole deine tägliche Belohnung ab")
 async def täglich(interaction: discord.Interaction):
-    visibility_key = command_visibility_key_for_interaction(interaction)
     now = int(time.time())
     async with db_context() as db:
         cursor = await db.execute("SELECT last_daily FROM user_daily WHERE user_id = ?", (interaction.user.id,))
         row = await cursor.fetchone()
         if row and row[0] and now - row[0] < 86400:
             stunden = int((86400 - (now - row[0])) / 3600)
-            await _send_ephemeral(interaction, content=f"Du kannst deine tägliche Belohnung erst in {stunden} Stunden abholen.")
+            await interaction.response.send_message(f"Du kannst deine tägliche Belohnung erst in {stunden} Stunden abholen.", ephemeral=True)
             return
         await db.execute("INSERT OR REPLACE INTO user_daily (user_id, last_daily) VALUES (?, ?)", (interaction.user.id, now))
         await db.commit()
@@ -1986,22 +1906,19 @@ async def täglich(interaction: discord.Interaction):
     is_new_card = await check_and_add_karte(user_id, karte)
     
     if is_new_card:
-        await _send_with_visibility(interaction, visibility_key, content=f"Du hast eine tägliche Belohnung erhalten: **{karte['name']}**!")
+        await interaction.response.send_message(f"Du hast eine tägliche Belohnung erhalten: **{karte['name']}**!", ephemeral=True)
     else:
         # Karte wurde zu Infinitydust umgewandelt
         embed = discord.Embed(title="💎 Tägliche Belohnung - Infinitydust!", description=f"Du hattest **{karte['name']}** bereits!")
         embed.add_field(name="Umwandlung", value="Die Karte wurde zu **Infinitydust** umgewandelt!", inline=False)
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
-        await _send_with_visibility(interaction, visibility_key, embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # Slash-Command: Mission starten
 @bot.tree.command(name="mission", description="Schicke dein Team auf eine Mission und erhalte eine Belohnung")
 async def mission(interaction: discord.Interaction):
     if not await is_channel_allowed(interaction):
         return
-    visibility_key = command_visibility_key_for_interaction(interaction)
-    visibility = await get_message_visibility(interaction.guild_id, visibility_key) if visibility_key else VISIBILITY_PRIVATE
-    ephemeral = visibility != VISIBILITY_PUBLIC
     # Prüfe Admin-Berechtigung
     is_admin_user = await is_admin(interaction)
     
@@ -2009,7 +1926,7 @@ async def mission(interaction: discord.Interaction):
         # Prüfe tägliche Mission-Limits für normale Nutzer
         mission_count = await get_mission_count(interaction.user.id)
         if mission_count >= 2:
-            await _send_ephemeral(interaction, content="❌ Du hast heute bereits deine 2 Missionen aufgebraucht! Komme morgen wieder.")
+            await interaction.response.send_message("❌ Du hast heute bereits deine 2 Missionen aufgebraucht! Komme morgen wieder.", ephemeral=True)
             return
     
     # Generiere Mission-Daten
@@ -2033,20 +1950,20 @@ async def mission(interaction: discord.Interaction):
     }
     
     mission_view = MissionAcceptView(interaction.user.id, mission_data)
-    await _send_with_visibility(interaction, visibility_key, embed=embed, view=mission_view)
+    await interaction.response.send_message(embed=embed, view=mission_view, ephemeral=True)
     await mission_view.wait()
     
     if not mission_view.value:
-        await interaction.followup.send("Mission abgelehnt.", ephemeral=ephemeral)
+        await interaction.followup.send("Mission abgelehnt.", ephemeral=True)
         return
     
     # Mission angenommen - starte Wellen-System
     # Erhöhe Zähler beim Start (nur Nicht-Admins)
     if not is_admin_user:
         await increment_mission_count(interaction.user.id)
-    await start_mission_waves(interaction, mission_data, is_admin_user, ephemeral)
+    await start_mission_waves(interaction, mission_data, is_admin_user)
 
-async def start_mission_waves(interaction, mission_data, is_admin, ephemeral: bool):
+async def start_mission_waves(interaction, mission_data, is_admin):
     """Startet das Wellen-System für die Mission"""
     waves = mission_data["waves"]
     reward_card = mission_data["reward_card"]
@@ -2054,15 +1971,15 @@ async def start_mission_waves(interaction, mission_data, is_admin, ephemeral: bo
     # Nutzer wählt seine Karte für die Mission
     user_karten = await get_user_karten(interaction.user.id)
     if not user_karten:
-        await interaction.followup.send("❌ Du hast keine Karten für die Mission!", ephemeral=ephemeral)
+        await interaction.followup.send("❌ Du hast keine Karten für die Mission!", ephemeral=True)
         return
     
     card_select_view = CardSelectView(interaction.user.id, user_karten, 1)
-    await interaction.followup.send("Wähle deine Karte für die Mission:", view=card_select_view, ephemeral=ephemeral)
+    await interaction.followup.send("Wähle deine Karte für die Mission:", view=card_select_view, ephemeral=True)
     await card_select_view.wait()
     
     if not card_select_view.value:
-        await interaction.followup.send("❌ Keine Karte gewählt. Mission abgebrochen.", ephemeral=ephemeral)
+        await interaction.followup.send("❌ Keine Karte gewählt. Mission abgebrochen.", ephemeral=True)
         return
     
     selected_card_name = card_select_view.value[0]
@@ -2074,16 +1991,16 @@ async def start_mission_waves(interaction, mission_data, is_admin, ephemeral: bo
     while current_wave <= waves:
         # Prüfe Pause bei >4 Wellen nach der 3. Welle
         if waves > 4 and current_wave == 4:
-            await interaction.followup.send("⏸️ **Pause nach der 3. Welle!** Möchtest du deine Karte wechseln?", ephemeral=ephemeral)
+            await interaction.followup.send("⏸️ **Pause nach der 3. Welle!** Möchtest du deine Karte wechseln?", ephemeral=True)
             
             pause_view = MissionCardSelectView(interaction.user.id, selected_card_name)
-            await interaction.followup.send("Was möchtest du tun?", view=pause_view, ephemeral=ephemeral)
+            await interaction.followup.send("Was möchtest du tun?", view=pause_view, ephemeral=True)
             await pause_view.wait()
             
             if pause_view.value == "change":
                 # Neue Karte wählen
                 new_card_view = MissionNewCardSelectView(interaction.user.id, user_karten)
-                await interaction.followup.send("Wähle eine neue Karte:", view=new_card_view, ephemeral=ephemeral)
+                await interaction.followup.send("Wähle eine neue Karte:", view=new_card_view, ephemeral=True)
                 await new_card_view.wait()
                 
                 if new_card_view.value:
@@ -2092,16 +2009,13 @@ async def start_mission_waves(interaction, mission_data, is_admin, ephemeral: bo
                     mission_data["player_card"] = player_card
         
         # Starte Welle mit konsistenter Karte
-        wave_result = await execute_mission_wave(interaction, current_wave, waves, player_card, reward_card, ephemeral)
+        wave_result = await execute_mission_wave(interaction, current_wave, waves, player_card, reward_card)
         
         if not wave_result:  # Niederlage
-            await interaction.followup.send(f"❌ **Mission fehlgeschlagen!** Du hast in Welle {current_wave} verloren.", ephemeral=ephemeral)
+            await interaction.followup.send(f"❌ **Mission fehlgeschlagen!** Du hast in Welle {current_wave} verloren.", ephemeral=True)
             return
-
-        await interaction.followup.send(
-            f"🏆 Welle {current_wave} gewonnen! Starte Welle {current_wave + 1}...",
-            ephemeral=ephemeral,
-        )
+        
+        await interaction.followup.send(f"🏆 Welle {current_wave} gewonnen! Starte Welle {current_wave + 1}...", ephemeral=True)
         current_wave += 1
     
     # Mission erfolgreich abgeschlossen (Zähler wurde bereits beim Start erhöht)
@@ -2113,16 +2027,16 @@ async def start_mission_waves(interaction, mission_data, is_admin, ephemeral: bo
         success_embed = discord.Embed(title="🏆 Mission erfolgreich!", 
                                      description=f"Du hast alle {waves} Wellen überstanden und **{reward_card['name']}** erhalten!")
         success_embed.set_image(url=reward_card["bild"])
-        await interaction.followup.send(embed=success_embed, ephemeral=ephemeral)
+        await interaction.followup.send(embed=success_embed, ephemeral=True)
     else:
         # Karte wurde zu Infinitydust umgewandelt
         success_embed = discord.Embed(title="💎 Mission erfolgreich - Infinitydust!", 
-                                     description=f"Du hast alle {waves} Wellen überstanden!")
+                                      description=f"Du hast alle {waves} Wellen überstanden!")
         success_embed.add_field(name="Belohnung", value=f"Du hattest **{reward_card['name']}** bereits - wurde zu **Infinitydust** umgewandelt!", inline=False)
         success_embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
-        await interaction.followup.send(embed=success_embed, ephemeral=ephemeral)
+        await interaction.followup.send(embed=success_embed, ephemeral=True)
 
-async def execute_mission_wave(interaction, wave_num, total_waves, player_card, reward_card, ephemeral: bool):
+async def execute_mission_wave(interaction, wave_num, total_waves, player_card, reward_card):
     """Führt eine einzelne Mission-Welle aus"""
     # Bot-Karte für diese Welle
     bot_card = random.choice(karten)
@@ -2143,11 +2057,11 @@ async def execute_mission_wave(interaction, wave_num, total_waves, player_card, 
     
     # Erstelle Kampf-Log ZUERST (über dem Kampf)
     log_embed = create_battle_log_embed()
-    log_message = await interaction.followup.send(embed=log_embed, ephemeral=ephemeral)
+    log_message = await interaction.followup.send(embed=log_embed, ephemeral=True)
     mission_battle_view.battle_log_message = log_message
     
     # Dann den Kampf (unter dem Log)
-    battle_message = await interaction.followup.send(embed=embed, view=mission_battle_view, ephemeral=ephemeral)
+    battle_message = await interaction.followup.send(embed=embed, view=mission_battle_view, ephemeral=True)
     
     # Warte auf Kampf-Ende
     await mission_battle_view.wait()
@@ -2157,29 +2071,26 @@ async def execute_mission_wave(interaction, wave_num, total_waves, player_card, 
 # Entfernt: /team Command (auf Wunsch des Nutzers)
 
 # Slash-Command: Story spielen
-@bot.tree.command(name="story", description="Starte eine interaktive Story")
+@bot.tree.command(name="story", description="Starte eine interaktive Story (nur für dich sichtbar)")
 async def story(interaction: discord.Interaction):
     if not await is_channel_allowed(interaction):
         return
-    visibility_key = command_visibility_key_for_interaction(interaction)
-    visibility = await get_message_visibility(interaction.guild_id, visibility_key) if visibility_key else VISIBILITY_PRIVATE
-    ephemeral = visibility != VISIBILITY_PUBLIC
     # Auswahl der Story (aktuell nur "text")
     view = StorySelectView(interaction.user.id)
     embed = discord.Embed(title="📖 Story auswählen", description="Wähle eine Story aus der Liste. Aktuell verfügbar: **text**")
-    await _send_with_visibility(interaction, visibility_key, embed=embed, view=view)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
     await view.wait()
     if not view.value:
-        await interaction.followup.send("⏰ Keine Story gewählt. Abgebrochen.", ephemeral=ephemeral)
+        await interaction.followup.send("⏰ Keine Story gewählt. Abgebrochen.", ephemeral=True)
         return
 
     # Starte den Story-Player (Schritt 0)
     story_view = StoryPlayerView(interaction.user.id, view.value)
     start_embed = story_view.render_step_embed()
-    await interaction.followup.send(embed=start_embed, view=story_view, ephemeral=ephemeral)
+    await interaction.followup.send(embed=start_embed, view=story_view, ephemeral=True)
 
 
-class StorySelectView(RestrictedView):
+class StorySelectView(ui.View):
     def __init__(self, user_id: int):
         super().__init__(timeout=60)
         self.user_id = user_id
@@ -2198,7 +2109,7 @@ class StorySelectView(RestrictedView):
         await interaction.response.defer()
 
 
-class StoryPlayerView(RestrictedView):
+class StoryPlayerView(ui.View):
     def __init__(self, user_id: int, story_id: str):
         super().__init__(timeout=180)
         self.user_id = user_id
@@ -2254,58 +2165,39 @@ class StoryPlayerView(RestrictedView):
 # Slash-Command-Group: Konfiguration
 configure_group = app_commands.Group(name="configure", description="Bot-Konfiguration (Nur für Admins)")
 
-@bot.tree.command(name="ad", description="Fügt den aktuellen Kanal zur Liste erlaubter Bot-Kanäle hinzu")
-async def add_channel_shortcut(interaction: discord.Interaction):
-    if not await require_owner_or_dev(interaction):
-        return
-    visibility_key = command_visibility_key_for_interaction(interaction)
-    if not interaction.guild_id or not interaction.channel_id:
-        await _send_ephemeral(interaction, content="❌ Dieser Command funktioniert nur in einem Server-Kanal.")
-        return
-    async with db_context() as db:
-        await db.execute(
-            "INSERT OR IGNORE INTO guild_allowed_channels (guild_id, channel_id) VALUES (?, ?)",
-            (interaction.guild_id, interaction.channel_id),
-        )
-        await db.commit()
-    await _send_with_visibility(interaction, visibility_key, content=f"✅ Hinzugefügt: {interaction.channel.mention}")
-
 @configure_group.command(name="add", description="Fügt den aktuellen Kanal zur Liste erlaubter Bot-Kanäle hinzu")
 async def configure_add(interaction: discord.Interaction):
-    if not await is_config_admin(interaction):
+    if not await is_admin(interaction):
         await interaction.response.send_message("❌ Keine Berechtigung.", ephemeral=True)
         return
-    visibility_key = command_visibility_key_for_interaction(interaction)
     async with db_context() as db:
         await db.execute("INSERT OR IGNORE INTO guild_allowed_channels (guild_id, channel_id) VALUES (?, ?)", (interaction.guild_id, interaction.channel_id))
         await db.commit()
-    await _send_with_visibility(interaction, visibility_key, content=f"✅ Hinzugefügt: {interaction.channel.mention}")
+    await interaction.response.send_message(f"✅ Hinzugefügt: {interaction.channel.mention}", ephemeral=True)
 
 @configure_group.command(name="remove", description="Entfernt den aktuellen Kanal aus der Liste erlaubter Bot-Kanäle")
 async def configure_remove(interaction: discord.Interaction):
-    if not await is_config_admin(interaction):
+    if not await is_admin(interaction):
         await interaction.response.send_message("❌ Keine Berechtigung.", ephemeral=True)
         return
-    visibility_key = command_visibility_key_for_interaction(interaction)
     async with db_context() as db:
         await db.execute("DELETE FROM guild_allowed_channels WHERE guild_id = ? AND channel_id = ?", (interaction.guild_id, interaction.channel_id))
         await db.commit()
-    await _send_with_visibility(interaction, visibility_key, content=f"🗑️ Entfernt: {interaction.channel.mention}")
+    await interaction.response.send_message(f"🗑️ Entfernt: {interaction.channel.mention}", ephemeral=True)
 
 @configure_group.command(name="list", description="Zeigt alle erlaubten Bot-Kanäle an")
 async def configure_list(interaction: discord.Interaction):
-    if not await is_config_admin(interaction):
+    if not await is_admin(interaction):
         await interaction.response.send_message("❌ Keine Berechtigung.", ephemeral=True)
         return
-    visibility_key = command_visibility_key_for_interaction(interaction)
     async with db_context() as db:
         cursor = await db.execute("SELECT channel_id FROM guild_allowed_channels WHERE guild_id = ?", (interaction.guild_id,))
         rows = await cursor.fetchall()
     if not rows:
-        await _send_with_visibility(interaction, visibility_key, content="ℹ️ Es sind noch keine Kanäle erlaubt. Nutze `/configure add` im gewünschten Kanal.")
+        await interaction.response.send_message("ℹ️ Es sind noch keine Kanäle erlaubt. Nutze `/configure add` im gewünschten Kanal.", ephemeral=True)
         return
     mentions = "\n".join(f"• <#{r[0]}>" for r in rows)
-    await _send_with_visibility(interaction, visibility_key, content=f"✅ Erlaubte Kanäle:\n{mentions}")
+    await interaction.response.send_message(f"✅ Erlaubte Kanäle:\n{mentions}", ephemeral=True)
 
 # Registriere die Gruppe
 bot.tree.add_command(configure_group)
@@ -2316,18 +2208,13 @@ async def reset_intro(interaction: discord.Interaction):
     if not await is_admin(interaction):
         await interaction.response.send_message("❌ Keine Berechtigung.", ephemeral=True)
         return
-    visibility_key = command_visibility_key_for_interaction(interaction)
     async with db_context() as db:
         await db.execute(
             "DELETE FROM user_seen_channels WHERE guild_id = ? AND channel_id = ?",
             (interaction.guild.id, interaction.channel.id),
         )
         await db.commit()
-    await _send_with_visibility(
-        interaction,
-        visibility_key,
-        content="✅ Intro-Status für ALLE in diesem Kanal zurückgesetzt. Schreibe eine Nachricht, um den Prompt erneut zu sehen.",
-    )
+    await interaction.response.send_message("✅ Intro-Status für ALLE in diesem Kanal zurückgesetzt. Schreibe eine Nachricht, um den Prompt erneut zu sehen.", ephemeral=True)
 
 # Select Menu Views für das neue Fuse-System
 class DustAmountSelect(ui.Select):
@@ -2361,7 +2248,7 @@ class DustAmountSelect(ui.Select):
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
         await interaction.response.edit_message(embed=embed, view=view)
 
-class FuseCardSelectView(RestrictedView):
+class FuseCardSelectView(ui.View):
     def __init__(self, dust_amount, buff_amount, user_karten):
         super().__init__(timeout=60)
         self.dust_amount = dust_amount
@@ -2397,7 +2284,7 @@ class CardSelect(ui.Select):
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
         await interaction.response.edit_message(embed=embed, view=view)
 
-class BuffTypeSelectView(RestrictedView):
+class BuffTypeSelectView(ui.View):
     def __init__(self, dust_amount, buff_amount, selected_card, karte_data):
         super().__init__(timeout=60)
         self.dust_amount = dust_amount
@@ -2565,7 +2452,7 @@ class BuffTypeSelect(ui.Select):
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
         await interaction.response.edit_message(embed=embed, view=None)
 
-class InviteUserSelectView(RestrictedView):
+class InviteUserSelectView(ui.View):
     def __init__(self, inviter_id, available_user_ids):
         super().__init__(timeout=60)
         self.inviter_id = inviter_id
@@ -2677,7 +2564,7 @@ class InviteUserSelect(ui.Select):
             view=None,
         )
 
-class DustAmountView(RestrictedView):
+class DustAmountView(ui.View):
     def __init__(self, user_dust):
         super().__init__(timeout=60)
         self.add_item(DustAmountSelect(user_dust))
@@ -2687,11 +2574,14 @@ class DustAmountView(RestrictedView):
 async def eingeladen(interaction: discord.Interaction):
     try:
         print(f"[INVITED] /eingeladen invoked by user={interaction.user.id} guild={interaction.guild_id} channel={interaction.channel_id}")
-        visibility_key = command_visibility_key_for_interaction(interaction)
-        visibility = await get_message_visibility(interaction.guild_id, visibility_key) if visibility_key else VISIBILITY_PRIVATE
-        ephemeral = visibility != VISIBILITY_PUBLIC
-        await interaction.response.defer(ephemeral=ephemeral)
+        await interaction.response.defer(ephemeral=True)
         
+        # Channel-Check nach der Antwort
+        if not await is_channel_allowed_ids(interaction.guild_id, interaction.channel_id):
+            print(f"[INVITED] channel not allowed guild={interaction.guild_id} channel={interaction.channel_id}")
+            await interaction.followup.send("❌ Der Bot reagiert nur in konfigurierten Kanälen. Nutze `/configure add` im gewünschten Kanal.", ephemeral=True)
+            return
+            
         user_id = interaction.user.id
         is_admin_user = await is_admin(interaction)
         print(f"[INVITED] is_admin_user={is_admin_user} for user={interaction.user.id}")
@@ -2745,7 +2635,7 @@ async def eingeladen(interaction: discord.Interaction):
         )
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
         
-        await interaction.followup.send(embed=embed, view=view, ephemeral=ephemeral)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         
     except discord.NotFound:
         logging.info("Invite interaction message no longer exists")
@@ -2761,7 +2651,6 @@ async def eingeladen(interaction: discord.Interaction):
 async def fuse(interaction: discord.Interaction):
     if not await is_channel_allowed(interaction):
         return
-    visibility_key = command_visibility_key_for_interaction(interaction)
     user_id = interaction.user.id
     user_dust = await get_infinitydust(user_id)
     
@@ -2771,7 +2660,7 @@ async def fuse(interaction: discord.Interaction):
             description=f"Du hast nur **{user_dust} Infinitydust**.\nDu brauchst mindestens **10 Infinitydust** zum Verstärken!",
             color=0xff0000
         )
-        await _send_ephemeral(interaction, embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         return
     
     view = DustAmountView(user_dust)
@@ -2781,20 +2670,19 @@ async def fuse(interaction: discord.Interaction):
         color=0x9d4edd
     )
     embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
-    await _send_with_visibility(interaction, visibility_key, embed=embed, view=view)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 # Slash-Command: Vault anzeigen
 @bot.tree.command(name="vault", description="Zeige deine Karten-Sammlung")
 async def vault(interaction: discord.Interaction):
     if not await is_channel_allowed(interaction):
         return
-    visibility_key = command_visibility_key_for_interaction(interaction)
     user_id = interaction.user.id
     user_karten = await get_user_karten(user_id)
     infinitydust = await get_infinitydust(user_id)
     
     if not user_karten and infinitydust == 0:
-        await _send_ephemeral(interaction, content="Du hast noch keine Karten in deiner Sammlung.")
+        await interaction.response.send_message("Du hast noch keine Karten in deiner Sammlung.", ephemeral=True)
         return
     
     embed = discord.Embed(title="🗄️ Deine Karten-Sammlung", description=f"Du besitzt **{len(user_karten)}** verschiedene Karten:")
@@ -2814,27 +2702,24 @@ async def vault(interaction: discord.Interaction):
         embed.set_footer(text=f"Und {len(user_karten) - 10} weitere Karten...")
     
     view = VaultView(interaction.user.id, user_karten)
-    await _send_with_visibility(interaction, visibility_key, embed=embed, view=view)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 # Admin-Command: Vault anderer User anzeigen
 @bot.tree.command(name="vaultlook", description="Schau in den Vault eines anderen Users (Nur für Admins)")
 async def vaultlook(interaction: discord.Interaction):
-    visibility_key = command_visibility_key_for_interaction(interaction)
-    visibility = await get_message_visibility(interaction.guild_id, visibility_key) if visibility_key else VISIBILITY_PRIVATE
-    ephemeral = visibility != VISIBILITY_PUBLIC
     # Schnell antworten, dann prüfen
-    await interaction.response.defer(ephemeral=ephemeral)
+    await interaction.response.defer(ephemeral=True)
     if not await is_admin(interaction):
         await interaction.followup.send("❌ Du hast keine Berechtigung für diesen Command! Nur Admins können in andere Vaults schauen.", ephemeral=True)
         return
 
     # Nutzer-Auswahl mit Suche und Statuskreisen (wie in /fight)
     view = AdminUserSelectView(interaction.user.id, interaction.guild)
-    await interaction.followup.send("Wähle einen User, dessen Vault du ansehen möchtest:", view=view, ephemeral=ephemeral)
+    await interaction.followup.send("Wähle einen User, dessen Vault du ansehen möchtest:", view=view, ephemeral=True)
     await view.wait()
     
     if not view.value:
-        await interaction.followup.send("⏰ Keine Auswahl getroffen. Abgebrochen.", ephemeral=ephemeral)
+        await interaction.followup.send("⏰ Keine Auswahl getroffen. Abgebrochen.", ephemeral=True)
         return
     
     target_user_id = int(view.value)
@@ -2843,14 +2728,38 @@ async def vaultlook(interaction: discord.Interaction):
     if not target_user:
         await interaction.followup.send("❌ Nutzer nicht gefunden!", ephemeral=True)
         return
-
-    await send_vaultlook(interaction, target_user_id, target_user.display_name, visibility_key=visibility_key)
+    
+    # Hole Vault-Daten des Ziel-Users
+    user_karten = await get_user_karten(target_user_id)
+    infinitydust = await get_infinitydust(target_user_id)
+    
+    if not user_karten and infinitydust == 0:
+        await interaction.followup.send(f"❌ {target_user.mention} hat noch keine Karten in seiner Sammlung.", ephemeral=True)
+        return
+    
+    # Erstelle Vault-Embed
+    embed = discord.Embed(title=f"🔍 Vault von {target_user.display_name}", description=f"**{target_user.mention}** besitzt **{len(user_karten)}** verschiedene Karten:")
+    
+    # Füge Infinitydust hinzu (falls vorhanden)
+    if infinitydust > 0:
+        embed.add_field(name="💎 Infinitydust", value=f"Anzahl: {infinitydust}x", inline=True)
+        embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+    
+    # Füge normale Karten hinzu (alle anzeigen für Admins)
+    for kartenname, anzahl in user_karten:
+        karte = await get_karte_by_name(kartenname)
+        if karte:
+            embed.add_field(name=f"{karte['name']} (x{anzahl})", value=karte['beschreibung'][:100] + "...", inline=False)
+    
+    embed.set_footer(text=f"Vault-Lookup durch {interaction.user.display_name}")
+    embed.color = 0xff6b6b  # Rot für Admin-Aktionen
+    
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="fight", description="Kämpfe gegen einen anderen Spieler im 1v1!")
 async def fight(interaction: discord.Interaction):
     if not await is_channel_allowed(interaction):
         return
-    visibility_override = await get_command_visibility_override(interaction)
     # Schritt 0: Sichtbarkeit wählen (Privat/Öffentlich)
     # Defer sofort, um Interaktions-Timeouts/Unknown interaction zu vermeiden
     try:
@@ -2858,18 +2767,14 @@ async def fight(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
     except Exception:
         logging.exception("Unexpected error")
-    if visibility_override is None:
-        visibility_view = FightVisibilityView(interaction.user.id)
-        await interaction.followup.send("Wie soll der Kampf sichtbar sein?", view=visibility_view, ephemeral=True)
-        await visibility_view.wait()
-        if visibility_view.value is None:
-            await interaction.followup.send("⏰ Keine Auswahl getroffen. Kampf abgebrochen.", ephemeral=True)
-            return
-        is_private = visibility_view.value
-    else:
-        is_private = visibility_override != VISIBILITY_PUBLIC
+    visibility_view = FightVisibilityView(interaction.user.id)
+    await interaction.followup.send("Wie soll der Kampf sichtbar sein?", view=visibility_view, ephemeral=True)
+    await visibility_view.wait()
+    if visibility_view.value is None:
+        await interaction.followup.send("⏰ Keine Auswahl getroffen. Kampf abgebrochen.", ephemeral=True)
+        return
+    is_private = visibility_view.value
     fight_thread: discord.Thread | None = None
-    me = _get_bot_member(interaction)
 
     # Schritt 1: Karten-Auswahl (nur 1 Karte)
     user_karten = await get_user_karten(interaction.user.id)
@@ -2915,55 +2820,23 @@ async def fight(interaction: discord.Interaction):
         target_channel: discord.abc.MessageableChannel = interaction.channel
         if is_private and isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
             try:
-                if isinstance(interaction.channel, discord.TextChannel) and me is not None:
-                    perms = interaction.channel.permissions_for(me)
-                    if not perms.create_private_threads or not perms.send_messages_in_threads:
-                        await interaction.followup.send(
-                            "⚠️ Privater Kampf nicht möglich (fehlende Thread-Rechte). Ich poste öffentlich.",
-                            ephemeral=True,
-                        )
-                    else:
-                        # Erzeuge privaten Thread und füge Herausforderer hinzu
-                        thread_name = f"Privater Kampf von {interaction.user.display_name}"
-                        fight_thread = await interaction.channel.create_thread(
-                            name=thread_name,
-                            type=discord.ChannelType.private_thread,
-                            invitable=False,
-                        )
-                        await fight_thread.add_user(interaction.user)
-                        target_channel = fight_thread
-                elif isinstance(interaction.channel, discord.Thread):
-                    if me is not None and not _can_send_in_channel(interaction.channel, me):
-                        await interaction.followup.send(
-                            "⚠️ Kein Schreibzugriff im Thread. Ich poste öffentlich.",
-                            ephemeral=True,
-                        )
-                    else:
-                        target_channel = interaction.channel
+                # Erzeuge privaten Thread und füge Herausforderer hinzu
+                thread_name = f"Privater Kampf von {interaction.user.display_name}"
+                fight_thread = await interaction.channel.create_thread(name=thread_name, type=discord.ChannelType.private_thread, invitable=False)
+                await fight_thread.add_user(interaction.user)
+                target_channel = fight_thread
             except Exception:
                 # Fallback: öffentlich
                 fight_thread = None
                 target_channel = interaction.channel
 
-        if me is not None and isinstance(target_channel, (discord.TextChannel, discord.Thread)):
-            if not _can_send_in_channel(target_channel, me):
-                await _send_ephemeral(
-                    interaction,
-                    content="❌ Mir fehlen Rechte, um den Kampf hier zu posten. Bitte gib mir Zugriff.",
-                )
-                return
-
         # KAMPF-LOG ZUERST senden (wird über der Kampf-Nachricht angezeigt)
         log_embed = create_battle_log_embed()
-        battle_log_message = await _safe_send_channel(interaction, target_channel, embed=log_embed)
-        if battle_log_message is None:
-            return
-        battle_view.battle_log_message = battle_log_message
+        battle_view.battle_log_message = await target_channel.send(embed=log_embed)
         
         # DANN Kampf-Nachricht senden (erscheint unter dem Log)
         embed = create_battle_embed(selected_cards[0], bot_card, battle_view.player1_hp, battle_view.player2_hp, interaction.user.id, interaction.user, bot_user)
-        if await _safe_send_channel(interaction, target_channel, embed=embed, view=battle_view) is None:
-            return
+        msg = await target_channel.send(embed=embed, view=battle_view)
         return
     
     # User als Gegner
@@ -2975,44 +2848,18 @@ async def fight(interaction: discord.Interaction):
     target_channel: discord.abc.MessageableChannel = interaction.channel
     if is_private and isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
         try:
-            if isinstance(interaction.channel, discord.TextChannel) and me is not None:
-                perms = interaction.channel.permissions_for(me)
-                if not perms.create_private_threads or not perms.send_messages_in_threads:
-                    await interaction.followup.send(
-                        "⚠️ Privater Kampf nicht möglich (fehlende Thread-Rechte). Ich poste öffentlich.",
-                        ephemeral=True,
-                    )
-                else:
-                    thread_name = f"Privater Kampf: {interaction.user.display_name} vs {challenged.display_name}"
-                    fight_thread = await interaction.channel.create_thread(
-                        name=thread_name,
-                        type=discord.ChannelType.private_thread,
-                        invitable=False,
-                    )
-                    await fight_thread.add_user(interaction.user)
-                    await fight_thread.add_user(challenged)
-                    target_channel = fight_thread
-            elif isinstance(interaction.channel, discord.Thread):
-                if me is not None and not _can_send_in_channel(interaction.channel, me):
-                    await interaction.followup.send(
-                        "⚠️ Kein Schreibzugriff im Thread. Ich poste öffentlich.",
-                        ephemeral=True,
-                    )
-                else:
-                    target_channel = interaction.channel
+            thread_name = f"Privater Kampf: {interaction.user.display_name} vs {challenged.display_name}"
+            fight_thread = await interaction.channel.create_thread(name=thread_name, type=discord.ChannelType.private_thread, invitable=False)
+            await fight_thread.add_user(interaction.user)
+            await fight_thread.add_user(challenged)
+            target_channel = fight_thread
         except Exception:
             fight_thread = None
             target_channel = interaction.channel
 
     # Nachricht an Herausgeforderten
     challenge_view = ChallengeResponseView(interaction.user, challenged, interaction, selected_cards, 1, fight_thread)
-    if await _safe_send_channel(
-        interaction,
-        target_channel,
-        content=f"{challenged.mention}, du wurdest zu einem 1v1 Kartenkampf herausgefordert!",
-        view=challenge_view,
-    ) is None:
-        return
+    await target_channel.send(f"{challenged.mention}, du wurdest zu einem 1v1 Kartenkampf herausgefordert!", view=challenge_view)
     await interaction.followup.send(f"Warte auf Antwort von {challenged.mention}...", ephemeral=True)
     await challenge_view.wait()
     
@@ -3046,13 +2893,7 @@ async def fight(interaction: discord.Interaction):
         return
     
     gegner_card_select_view = CardSelectView(challenged.id, gegner_karten_liste, 1)
-    if await _safe_send_channel(
-        interaction,
-        fight_thread or interaction.channel,
-        content=f"{challenged.mention}, wähle deine Karte für den 1v1 Kampf:",
-        view=gegner_card_select_view,
-    ) is None:
-        return
+    await (fight_thread or interaction.channel).send(f"{challenged.mention}, wähle deine Karte für den 1v1 Kampf:", view=gegner_card_select_view)
     await gegner_card_select_view.wait()
     if not gegner_card_select_view.value:
         await interaction.followup.send(f"{challenged.mention} hat keine Karte gewählt. Kampf abgebrochen.", ephemeral=True)
@@ -3072,48 +2913,45 @@ async def fight(interaction: discord.Interaction):
     
     # KAMPF-LOG ZUERST senden (wird über der Kampf-Nachricht angezeigt)
     log_embed = create_battle_log_embed()
-    battle_log_message = await _safe_send_channel(interaction, fight_thread or interaction.channel, embed=log_embed)
-    if battle_log_message is None:
-        return
-    battle_view.battle_log_message = battle_log_message
+    battle_view.battle_log_message = await (fight_thread or interaction.channel).send(embed=log_embed)
     
     # DANN Kampf-Nachricht senden (erscheint unter dem Log)
     embed = create_battle_embed(selected_cards[0], gegner_selected_cards[0], battle_view.player1_hp, battle_view.player2_hp, interaction.user.id, interaction.user, challenged)
-    await _safe_send_channel(interaction, fight_thread or interaction.channel, embed=embed, view=battle_view)
+    msg = await (fight_thread or interaction.channel).send(embed=embed, view=battle_view)
 
 
 
 # Slash-Command: Anfang (Hauptmenü)
-class AnfangView(RestrictedView):
+class AnfangView(ui.View):
     def __init__(self):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)
 
-    @ui.button(label="tägliche Karte", style=discord.ButtonStyle.success, row=0, custom_id="anfang:daily")
+    @ui.button(label="tägliche Karte", style=discord.ButtonStyle.success, row=0)
     async def btn_daily(self, interaction: discord.Interaction, button: ui.Button):
         # Leitet zum täglichen Belohnungs-Flow weiter
         await täglich.callback(interaction)
 
-    @ui.button(label="Verbessern", style=discord.ButtonStyle.primary, row=0, custom_id="anfang:fuse")
+    @ui.button(label="Verbessern", style=discord.ButtonStyle.primary, row=0)
     async def btn_fuse(self, interaction: discord.Interaction, button: ui.Button):
         # Leitet zum Fuse-Flow weiter
         await fuse.callback(interaction)
 
-    @ui.button(label="Kämpfe", style=discord.ButtonStyle.danger, row=0, custom_id="anfang:fight")
+    @ui.button(label="Kämpfe", style=discord.ButtonStyle.danger, row=0)
     async def btn_fight(self, interaction: discord.Interaction, button: ui.Button):
         # Leitet zum Fight-Flow weiter
         await fight.callback(interaction)
 
-    @ui.button(label="Mission", style=discord.ButtonStyle.secondary, row=0, custom_id="anfang:mission")
+    @ui.button(label="Mission", style=discord.ButtonStyle.secondary, row=0)
     async def btn_mission(self, interaction: discord.Interaction, button: ui.Button):
         # Leitet zum Missions-Flow weiter
         await mission.callback(interaction)
 
-    @ui.button(label="Story", style=discord.ButtonStyle.secondary, row=0, custom_id="anfang:story")
+    @ui.button(label="Story", style=discord.ButtonStyle.secondary, row=0)
     async def btn_story(self, interaction: discord.Interaction, button: ui.Button):
         # Leitet zum Story-Flow weiter
         await story.callback(interaction)
 
-class IntroEphemeralPromptView(RestrictedView):
+class IntroEphemeralPromptView(ui.View):
     def __init__(self, user_id: int):
         super().__init__(timeout=120)
         self.user_id = user_id
@@ -3137,16 +2975,10 @@ class IntroEphemeralPromptView(RestrictedView):
 
 
 @bot.tree.command(name="anfang", description="Zeigt das Startmenü mit Schnellzugriff auf wichtige Funktionen")
-@app_commands.describe(action="Optional: /anfang aktualisieren oder /anfang lastaktu")
-@app_commands.choices(
-    action=[
-        app_commands.Choice(name="aktualisieren", value="aktualisieren"),
-        app_commands.Choice(name="lastaktu", value="lastaktu"),
-    ]
-)
-async def anfang(interaction: discord.Interaction, action: str | None = None):
+async def anfang(interaction: discord.Interaction):
     if not await is_channel_allowed(interaction):
         return
+    is_admin_user = await is_admin(interaction)
 
     text = (
         "# **Rekrut.**\n\n"
@@ -3159,90 +2991,7 @@ async def anfang(interaction: discord.Interaction, action: str | None = None):
     )
 
     view = AnfangView()
-    if interaction.guild is None:
-        await interaction.response.send_message(content=text, view=view)
-        return
-
-    visibility_key = command_visibility_key_for_interaction(interaction)
-    visibility = await get_message_visibility(interaction.guild_id, visibility_key) if visibility_key else VISIBILITY_PRIVATE
-    is_admin_user = await is_admin(interaction)
-
-    if action:
-        if not is_admin_user:
-            await interaction.response.send_message("❌ Keine Berechtigung.", ephemeral=True)
-            return
-        if action == "lastaktu":
-            existing = await get_latest_anfang_message(interaction.guild_id)
-            if not existing:
-                await interaction.response.send_message("ℹ️ Es gibt noch keine gespeicherte /anfang-Nachricht.", ephemeral=True)
-                return
-            channel_id, message_id = existing
-            link = f"https://discord.com/channels/{interaction.guild_id}/{channel_id}/{message_id}"
-            await interaction.response.send_message(f"🔗 Letzte /anfang-Nachricht: {link}", ephemeral=True)
-            return
-        if action == "aktualisieren":
-            existing = await get_latest_anfang_message(interaction.guild_id)
-            if not existing:
-                await interaction.response.send_message("ℹ️ Keine gespeicherte /anfang-Nachricht gefunden. Nutze zuerst `/anfang`.", ephemeral=True)
-                return
-            old_channel_id, old_message_id = existing
-            try:
-                old_channel = interaction.guild.get_channel(old_channel_id) or await interaction.guild.fetch_channel(old_channel_id)
-                if not isinstance(old_channel, (discord.TextChannel, discord.Thread)):
-                    await interaction.response.send_message("❌ Kanal der gespeicherten Nachricht nicht gefunden.", ephemeral=True)
-                    return
-                old_message = await old_channel.fetch_message(old_message_id)
-                await old_message.edit(content=text, view=view)
-                await set_latest_anfang_message(
-                    interaction.guild_id,
-                    old_channel_id,
-                    old_message_id,
-                    interaction.user.id,
-                )
-                await interaction.response.send_message("✅ /anfang aktualisiert.", ephemeral=True)
-            except Exception:
-                logging.exception("Failed to edit latest /anfang message")
-                await interaction.response.send_message("❌ Konnte die gespeicherte /anfang-Nachricht nicht aktualisieren.", ephemeral=True)
-            return
-
-    if is_admin_user:
-        existing = await get_latest_anfang_message(interaction.guild_id)
-
-        # Alte Nachricht deaktivieren (Buttons entfernen), damit nur die neueste erkannt wird
-        if existing:
-            old_channel_id, old_message_id = existing
-            try:
-                old_channel = interaction.guild.get_channel(old_channel_id) or await interaction.guild.fetch_channel(old_channel_id)
-                if isinstance(old_channel, (discord.TextChannel, discord.Thread)):
-                    old_message = await old_channel.fetch_message(old_message_id)
-                    await old_message.edit(view=None)
-            except Exception:
-                pass
-
-        sent_message = None
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.send_message(content=text, view=view)
-                sent_message = await interaction.original_response()
-            else:
-                sent_message = await interaction.followup.send(content=text, view=view)
-        except Exception:
-            logging.exception("Failed to send /anfang message")
-            return
-
-        await set_latest_anfang_message(
-            interaction.guild_id,
-            sent_message.channel.id,
-            sent_message.id,
-            interaction.user.id,
-        )
-        return
-
-    # Nicht-Admins: Sichtbarkeit über Panel-Einstellung
-    if visibility == VISIBILITY_PUBLIC:
-        await _send_with_visibility(interaction, visibility_key, content=text, view=view)
-    else:
-        await _send_ephemeral(interaction, content=text, view=view)
+    await interaction.response.send_message(content=text, view=view, ephemeral=not is_admin_user)
 
 # Admin-Command: Test-Bericht
 @bot.tree.command(name="test-bericht", description="Listet alle verfügbaren Commands und deren Status (Nur für Admins)")
@@ -3253,11 +3002,50 @@ async def test_bericht(interaction: discord.Interaction):
     if not await is_admin(interaction):
         await interaction.response.send_message("❌ Du hast keine Berechtigung.", ephemeral=True)
         return
-    visibility_key = command_visibility_key_for_interaction(interaction)
-    await _send_ephemeral(interaction, content="🔍 Sammle verfügbare Commands...")
-    await send_test_report(interaction, visibility_key=visibility_key)
+    
+    await interaction.response.send_message("🔍 Sammle verfügbare Commands...", ephemeral=True)
 
-class UserSelectView(RestrictedView):
+    def flatten_commands(cmds, prefix=""):
+        flat = []
+        for c in cmds:
+            if isinstance(c, app_commands.Group):
+                new_prefix = f"{prefix}{c.name} "
+                flat.extend(flatten_commands(c.commands, new_prefix))
+            else:
+                flat.append((f"{prefix}{c.name}", c))
+        return flat
+
+    try:
+        all_cmds = bot.tree.get_commands()
+    except Exception:
+        all_cmds = []
+
+    flat_cmds = flatten_commands(all_cmds)
+
+    lines = []
+    for name, cmd in flat_cmds:
+        lines.append(f"• /{name} — registriert")
+
+    description = "Alle registrierten Slash-Commands (inkl. Unterbefehle):\n" + "\n".join(lines) if lines else "Keine Commands registriert."
+
+    embed = discord.Embed(
+        title="🤖 Verfügbare Commands",
+        description=description,
+        color=0x2b90ff
+    )
+    embed.add_field(
+        name="Hinweis",
+        value=(
+            "Dieser Bericht ist nur für dich sichtbar. Ein automatisches Ausführen einzelner Slash-Commands "
+            "ist nicht möglich, daher wird hier die Registrierung angezeigt."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=f"Angefordert von {interaction.user.display_name} | {time.strftime('%d.%m.%Y %H:%M:%S')}")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+class UserSelectView(ui.View):
     def __init__(self, user_id, guild):
         super().__init__(timeout=60)
         self.user_id = user_id
@@ -3278,7 +3066,7 @@ class UserSelectView(RestrictedView):
         self.stop()
         await interaction.response.defer()
 
-class VaultView(RestrictedView):
+class VaultView(ui.View):
     def __init__(self, user_id: int, user_karten):
         super().__init__(timeout=120)
         self.user_id = user_id
@@ -3337,7 +3125,7 @@ class VaultView(RestrictedView):
                     embed.add_field(name="Attacken", value="\n".join(lines), inline=False)
                 
                 # Buttons für Attacken anzeigen, aber deaktiviert (kein Effekt beim Klicken)
-                view_buttons = RestrictedView(timeout=60)
+                view_buttons = ui.View(timeout=60)
                 for i, atk in enumerate(attacks[:4]):
                     dmg = atk.get("damage")
                     buff = damage_buff_map.get(i + 1, 0)
@@ -3356,7 +3144,7 @@ class VaultView(RestrictedView):
                 await inter.response.send_message(embed=embed, view=view_buttons, ephemeral=True)
 
             select.callback = handle_select
-            view = RestrictedView(timeout=90)
+            view = ui.View(timeout=90)
             view.add_item(select)
             await interaction.response.send_message("Wähle eine Karte:", view=view, ephemeral=True)
         else:
@@ -3402,7 +3190,7 @@ class VaultView(RestrictedView):
                         embed.add_field(name="Attacken", value="\n".join(lines), inline=False)
                     
                     # Buttons für Attacken anzeigen, aber deaktiviert (kein Effekt beim Klicken)
-                    view_buttons = RestrictedView(timeout=60)
+                    view_buttons = ui.View(timeout=60)
                     for i, atk in enumerate(attacks[:4]):
                         dmg = atk.get("damage")
                         buff = damage_buff_map.get(i + 1, 0)
@@ -3439,7 +3227,7 @@ class VaultView(RestrictedView):
                 prev_btn.callback = on_prev
                 next_btn.callback = on_next
 
-                v = RestrictedView(timeout=120)
+                v = ui.View(timeout=120)
                 v.add_item(sel)
                 v.add_item(prev_btn)
                 v.add_item(next_btn)
@@ -3452,7 +3240,7 @@ class VaultView(RestrictedView):
 
             await send_page(interaction, current_index)
 
-class GiveCardSelectView(RestrictedView):
+class GiveCardSelectView(ui.View):
     def __init__(self, user_id, target_user_id):
         super().__init__(timeout=60)
         self.user_id = user_id
@@ -3473,7 +3261,7 @@ class GiveCardSelectView(RestrictedView):
         await interaction.response.defer()
 
 # View für Infinitydust-Mengen-Auswahl
-class InfinitydustAmountView(RestrictedView):
+class InfinitydustAmountView(ui.View):
     def __init__(self, user_id, target_user_id):
         super().__init__(timeout=60)
         self.user_id = user_id
@@ -3504,17 +3292,14 @@ async def give(interaction: discord.Interaction):
     if not await is_admin(interaction):
         await interaction.response.send_message("❌ Du hast keine Berechtigung für diesen Command! Nur Admins/Owner können Karten geben.", ephemeral=True)
         return
-    visibility_key = command_visibility_key_for_interaction(interaction)
-    visibility = await get_message_visibility(interaction.guild_id, visibility_key) if visibility_key else VISIBILITY_PRIVATE
-    ephemeral = visibility != VISIBILITY_PUBLIC
     
     # Schritt 1: Nutzer-Auswahl
     user_select_view = UserSelectView(interaction.user.id, interaction.guild)
-    await _send_with_visibility(interaction, visibility_key, content="Wähle einen Nutzer, dem du eine Karte geben möchtest:", view=user_select_view)
+    await interaction.response.send_message("Wähle einen Nutzer, dem du eine Karte geben möchtest:", view=user_select_view, ephemeral=True)
     await user_select_view.wait()
     
     if not user_select_view.value:
-        await interaction.followup.send("⏰ Keine Auswahl getroffen. Abgebrochen.", ephemeral=ephemeral)
+        await interaction.followup.send("⏰ Keine Auswahl getroffen. Abgebrochen.", ephemeral=True)
         return
     
     target_user_id = int(user_select_view.value)
@@ -3526,11 +3311,11 @@ async def give(interaction: discord.Interaction):
     
     # Schritt 2: Karten-Auswahl
     card_select_view = GiveCardSelectView(interaction.user.id, target_user_id)
-    await interaction.followup.send(f"Wähle eine Karte für {target_user.mention}:", view=card_select_view, ephemeral=ephemeral)
+    await interaction.followup.send(f"Wähle eine Karte für {target_user.mention}:", view=card_select_view, ephemeral=True)
     await card_select_view.wait()
     
     if not card_select_view.value:
-        await interaction.followup.send("⏰ Keine Karte gewählt. Abgebrochen.", ephemeral=ephemeral)
+        await interaction.followup.send("⏰ Keine Karte gewählt. Abgebrochen.", ephemeral=True)
         return
     
     selected_card_name = card_select_view.value
@@ -3539,11 +3324,11 @@ async def give(interaction: discord.Interaction):
     if selected_card_name == "infinitydust":
         # Infinitydust-Mengen-Auswahl
         amount_view = InfinitydustAmountView(interaction.user.id, target_user_id)
-        await interaction.followup.send(f"Wähle die Menge Infinitydust für {target_user.mention}:", view=amount_view, ephemeral=ephemeral)
+        await interaction.followup.send(f"Wähle die Menge Infinitydust für {target_user.mention}:", view=amount_view, ephemeral=True)
         await amount_view.wait()
         
         if not amount_view.value:
-            await interaction.followup.send("⏰ Keine Menge gewählt. Abgebrochen.", ephemeral=ephemeral)
+            await interaction.followup.send("⏰ Keine Menge gewählt. Abgebrochen.", ephemeral=True)
             return
         
         amount = amount_view.value
@@ -3554,7 +3339,7 @@ async def give(interaction: discord.Interaction):
         # Erfolgsnachricht für Infinitydust (öffentlich)
         embed = discord.Embed(title="💎 Infinitydust verschenkt!", description=f"{interaction.user.mention} hat **{amount}x Infinitydust** an {target_user.mention} gegeben!")
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
-        await _send_with_visibility(interaction, visibility_key, embed=embed)
+        await interaction.channel.send(embed=embed)
         return
     
     # Normale Karte dem Nutzer geben
@@ -3566,16 +3351,16 @@ async def give(interaction: discord.Interaction):
         embed = discord.Embed(title="🎁 Karte verschenkt!", description=f"{interaction.user.mention} hat **{selected_card_name}** an {target_user.mention} gegeben!")
         if selected_card:
             embed.set_image(url=selected_card["bild"])
-        await _send_with_visibility(interaction, visibility_key, embed=embed)
+        await interaction.channel.send(embed=embed)
     else:
         # Karte wurde zu Infinitydust umgewandelt
         embed = discord.Embed(title="💎 Karte verschenkt - Infinitydust!", description=f"{interaction.user.mention} hat **{selected_card_name}** an {target_user.mention} gegeben!")
         embed.add_field(name="Umwandlung", value=f"{target_user.mention} hatte die Karte bereits - wurde zu **Infinitydust** umgewandelt!", inline=False)
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
-        await _send_with_visibility(interaction, visibility_key, embed=embed)
+        await interaction.channel.send(embed=embed)
 
 # View für Mission-Auswahl
-class MissionAcceptView(RestrictedView):
+class MissionAcceptView(ui.View):
     def __init__(self, user_id, mission_data):
         super().__init__(timeout=60)
         self.user_id = user_id
@@ -3601,7 +3386,7 @@ class MissionAcceptView(RestrictedView):
         await interaction.response.defer()
 
 # View für Karten-Auswahl bei Pause
-class MissionCardSelectView(RestrictedView):
+class MissionCardSelectView(ui.View):
     def __init__(self, user_id, current_card_name):
         super().__init__(timeout=60)
         self.user_id = user_id
@@ -3626,7 +3411,7 @@ class MissionCardSelectView(RestrictedView):
         await interaction.response.defer()
 
 # View für neue Karten-Auswahl
-class MissionNewCardSelectView(RestrictedView):
+class MissionNewCardSelectView(ui.View):
     def __init__(self, user_id, user_karten):
         super().__init__(timeout=60)
         self.user_id = user_id
@@ -3648,7 +3433,7 @@ class MissionNewCardSelectView(RestrictedView):
 
 
 # View für Mission-Kämpfe (interaktiv)
-class MissionBattleView(RestrictedView):
+class MissionBattleView(ui.View):
     def __init__(self, player_card, bot_card, user_id, wave_num, total_waves):
         super().__init__(timeout=120)
         self.player_card = player_card
@@ -3668,7 +3453,6 @@ class MissionBattleView(RestrictedView):
         ])
         self.round_counter = 0
         self.battle_log_message = None
-        self._last_log_edit_ts = 0.0
 
         # Buff-Speicher
         self.health_bonus = 0
@@ -3728,28 +3512,6 @@ class MissionBattleView(RestrictedView):
         if any(e.get("type") == "confusion" for e in effects):
             icons.append("\U0001f300")
         return f" {' '.join(icons)}" if icons else ""
-
-    async def _safe_edit_battle_log(self, embed) -> None:
-        if not self.battle_log_message:
-            return
-        try:
-            last_ts = float(getattr(self, "_last_log_edit_ts", 0.0) or 0.0)
-        except Exception:
-            last_ts = 0.0
-        now = time.monotonic()
-        if now - last_ts < 0.9:
-            await asyncio.sleep(0.9 - (now - last_ts))
-        for attempt in range(2):
-            try:
-                await self.battle_log_message.edit(embed=embed)
-                self._last_log_edit_ts = time.monotonic()
-                return
-            except Exception as e:
-                if getattr(e, "status", None) == 429:
-                    await asyncio.sleep(1.5 * (attempt + 1))
-                    continue
-                logging.exception("Failed to edit battle log")
-                return
 
     def is_attack_on_cooldown_user(self, attack_index: int) -> bool:
         return self.user_attack_cooldowns.get(attack_index, 0) > 0
@@ -3966,7 +3728,7 @@ class MissionBattleView(RestrictedView):
                 attacker_status_icons=self._status_icons(self.user_id),
                 defender_status_icons=self._status_icons(0),
             )
-            await self._safe_edit_battle_log(log_embed)
+            await self.battle_log_message.edit(embed=log_embed)
         
         # Starte Cooldown für starke Attacken (min>90 UND max>99 inkl. Buffs) für nächsten Zug.
         # In Missionen soll die stärkste Attacke im nächsten eigenen Zug gesperrt sein.
@@ -4061,7 +3823,7 @@ class MissionBattleView(RestrictedView):
                     attacker_status_icons=self._status_icons(0),
                     defender_status_icons=self._status_icons(self.user_id),
                 )
-                await self._safe_edit_battle_log(log_embed)
+                await self.battle_log_message.edit(embed=log_embed)
     
             # SIDE EFFECTS: Apply new effects from bot attack (nur wenn Treffer)
             effects = attack.get("effects", [])
@@ -4136,360 +3898,12 @@ class MissionBattleView(RestrictedView):
 # =========================
 
 async def _send_ephemeral(interaction: discord.Interaction, *, content: str | None = None, embed=None, view=None, file=None):
-    if not await is_channel_allowed_ids(
-        interaction.guild_id,
-        interaction.channel_id,
-        getattr(interaction.channel, "parent_id", None),
-    ):
-        return None
-    kwargs = {"ephemeral": True}
-    if content is not None:
-        kwargs["content"] = content
-    if embed is not None:
-        kwargs["embed"] = embed
-    if view is not None:
-        kwargs["view"] = view
+    kwargs = {"content": content, "embed": embed, "view": view, "ephemeral": True}
     if file is not None:
         kwargs["file"] = file
     if interaction.response.is_done():
         return await interaction.followup.send(**kwargs)
     return await interaction.response.send_message(**kwargs)
-
-def _get_bot_member(interaction: discord.Interaction) -> discord.Member | None:
-    if interaction.guild is None or interaction.client.user is None:
-        return None
-    return interaction.guild.get_member(interaction.client.user.id) or interaction.guild.me
-
-def _can_send_in_channel(channel: discord.abc.GuildChannel | discord.Thread, member: discord.Member | None) -> bool:
-    if member is None:
-        return True
-    perms = channel.permissions_for(member)
-    if not perms.view_channel:
-        return False
-    if isinstance(channel, discord.Thread):
-        return perms.send_messages_in_threads
-    return perms.send_messages
-
-async def _safe_send_channel(
-    interaction: discord.Interaction,
-    channel: discord.abc.MessageableChannel,
-    *,
-    content: str | None = None,
-    embed=None,
-    view=None,
-) -> discord.Message | None:
-    guild_id = getattr(channel, "guild", None).id if getattr(channel, "guild", None) else None
-    channel_id = getattr(channel, "id", None)
-    parent_id = getattr(channel, "parent_id", None)
-    if not await is_channel_allowed_ids(guild_id, channel_id, parent_id):
-        return None
-    try:
-        return await channel.send(content=content, embed=embed, view=view)
-    except discord.Forbidden:
-        await _send_ephemeral(
-            interaction,
-            content="❌ Mir fehlen Rechte in diesem Kanal/Thread (View/Send/Thread-Rechte). Bitte gib mir Zugriff.",
-        )
-        return None
-
-VISIBILITY_PUBLIC = "public"
-VISIBILITY_PRIVATE = "private"
-
-def command_visibility_key(qualified_name: str) -> str:
-    return f"cmd:{qualified_name.replace(' ', '.')}"
-
-def command_visibility_key_for_interaction(interaction: discord.Interaction) -> str | None:
-    if not interaction.command:
-        return None
-    name = getattr(interaction.command, "qualified_name", interaction.command.name)
-    return command_visibility_key(name)
-
-LEGACY_COMMAND_VISIBILITY_KEYS = {
-    command_visibility_key("anfang"): "anfang",
-}
-
-PANEL_STATIC_VISIBILITY_ITEMS: list[tuple[str, str, str]] = [
-    ("maintenance", "Wartungsmodus", "Bestätigungen für Wartungsmodus an/aus"),
-    ("delete_user", "User löschen", "Lösch-Dialog und Ergebnis"),
-    ("db_backup", "DB-Backup", "DB-Datei als Attachment"),
-    ("give_dust", "Give Dust", "Bestätigung für Dust-Vergabe"),
-    ("grant_card", "Grant Card", "Bestätigung für Karten-Vergabe"),
-    ("revoke_card", "Revoke Card", "Bestätigung für Karten-Abzug"),
-    ("set_daily", "Daily Reset", "Bestätigung für Daily-Reset"),
-    ("set_mission", "Mission Reset", "Bestätigung für Mission-Reset"),
-    ("health", "Health", "Health-Report"),
-    ("debug_db", "Debug DB", "DB-Checks/Integrity"),
-    ("debug_user", "Debug User", "User-Übersicht"),
-    ("debug_sync", "Debug Sync", "Sync-Ergebnis"),
-    ("logs_last", "Logs Last", "Letzte Log-Zeilen"),
-    ("karten_validate", "Karten Validate", "Prüfung karten.py"),
-    ("channel_config", "Kanal-Config", "Kanal erlauben/entfernen/listen"),
-    ("reset_intro", "Intro Reset", "Intro-Reset Bestätigung"),
-    ("vault_look", "Vault Look", "Vault-Ansicht"),
-    ("bot_status", "Bot-Status", "Status-Menü"),
-    ("test_report", "Command-Report", "Slash-Command Bericht"),
-]
-
-def _visibility_label(value: str) -> str:
-    return "öffentlich" if value == VISIBILITY_PUBLIC else "nur sichtbar"
-
-async def get_latest_anfang_message(guild_id: int | None):
-    if not guild_id:
-        return None
-    async with db_context() as db:
-        try:
-            cursor = await db.execute(
-                "SELECT channel_id, message_id FROM guild_anfang_message WHERE guild_id = ?",
-                (guild_id,),
-            )
-            row = await cursor.fetchone()
-        except sqlite3.OperationalError as exc:
-            if "no such table" in str(exc) and "guild_anfang_message" in str(exc):
-                await _ensure_anfang_table(db)
-                return None
-            raise
-    if row:
-        return int(row[0]), int(row[1])
-    return None
-
-async def set_latest_anfang_message(guild_id: int, channel_id: int, message_id: int, author_id: int) -> None:
-    async with db_context() as db:
-        try:
-            await db.execute(
-                """
-                INSERT INTO guild_anfang_message (guild_id, channel_id, message_id, author_id, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(guild_id) DO UPDATE SET
-                    channel_id = excluded.channel_id,
-                    message_id = excluded.message_id,
-                    author_id = excluded.author_id,
-                    updated_at = excluded.updated_at
-                """,
-                (guild_id, channel_id, message_id, author_id, int(time.time())),
-            )
-            await db.commit()
-        except sqlite3.OperationalError as exc:
-            if "no such table" in str(exc) and "guild_anfang_message" in str(exc):
-                await _ensure_anfang_table(db)
-                await db.execute(
-                    """
-                    INSERT INTO guild_anfang_message (guild_id, channel_id, message_id, author_id, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(guild_id) DO UPDATE SET
-                        channel_id = excluded.channel_id,
-                        message_id = excluded.message_id,
-                        author_id = excluded.author_id,
-                        updated_at = excluded.updated_at
-                    """,
-                    (guild_id, channel_id, message_id, author_id, int(time.time())),
-                )
-                await db.commit()
-                return
-            raise
-
-def _flatten_app_commands(commands_list, prefix: str = "") -> list[tuple[str, app_commands.Command]]:
-    flat: list[tuple[str, app_commands.Command]] = []
-    for cmd in commands_list:
-        if isinstance(cmd, app_commands.Group):
-            new_prefix = f"{prefix}{cmd.name} "
-            flat.extend(_flatten_app_commands(cmd.commands, new_prefix))
-        else:
-            flat.append((f"{prefix}{cmd.name}", cmd))
-    return flat
-
-def get_panel_visibility_items() -> list[tuple[str, str, str]]:
-    try:
-        all_cmds = bot.tree.get_commands()
-    except Exception:
-        all_cmds = []
-    command_items: list[tuple[str, str, str]] = []
-    for name, cmd in _flatten_app_commands(all_cmds):
-        key = command_visibility_key(name)
-        label = f"/{name}"[:100]
-        desc = (cmd.description or "Slash-Command")[:100]
-        command_items.append((key, label, desc))
-    command_items.sort(key=lambda item: item[1].lower())
-    return PANEL_STATIC_VISIBILITY_ITEMS + command_items
-
-def _visibility_value_for_key(message_key: str, visibility_map: dict[str, str]) -> str:
-    if message_key in visibility_map:
-        return visibility_map[message_key]
-    legacy_key = LEGACY_COMMAND_VISIBILITY_KEYS.get(message_key)
-    if legacy_key and legacy_key in visibility_map:
-        return visibility_map[legacy_key]
-    return VISIBILITY_PRIVATE
-
-async def _ensure_visibility_table(db) -> None:
-    await db.execute(
-        """
-        CREATE TABLE IF NOT EXISTS guild_message_visibility (
-            guild_id INTEGER,
-            message_key TEXT,
-            visibility TEXT,
-            PRIMARY KEY (guild_id, message_key)
-        )
-        """
-    )
-    await db.commit()
-
-async def _ensure_anfang_table(db) -> None:
-    await db.execute(
-        """
-        CREATE TABLE IF NOT EXISTS guild_anfang_message (
-            guild_id INTEGER PRIMARY KEY,
-            channel_id INTEGER,
-            message_id INTEGER,
-            author_id INTEGER,
-            updated_at INTEGER
-        )
-        """
-    )
-    await db.commit()
-
-async def get_visibility_override(guild_id: int | None, message_key: str) -> str | None:
-    if not guild_id:
-        return None
-    async with db_context() as db:
-        try:
-            cursor = await db.execute(
-                "SELECT visibility FROM guild_message_visibility WHERE guild_id = ? AND message_key = ?",
-                (guild_id, message_key),
-            )
-            row = await cursor.fetchone()
-        except sqlite3.OperationalError as exc:
-            if "no such table" in str(exc) and "guild_message_visibility" in str(exc):
-                await _ensure_visibility_table(db)
-                cursor = await db.execute(
-                    "SELECT visibility FROM guild_message_visibility WHERE guild_id = ? AND message_key = ?",
-                    (guild_id, message_key),
-                )
-                row = await cursor.fetchone()
-            else:
-                raise
-    return row[0] if row and row[0] else None
-
-async def get_message_visibility(guild_id: int | None, message_key: str) -> str:
-    if not guild_id:
-        return VISIBILITY_PRIVATE
-    override = await get_visibility_override(guild_id, message_key)
-    if override:
-        return override
-    legacy_key = LEGACY_COMMAND_VISIBILITY_KEYS.get(message_key)
-    if legacy_key:
-        legacy_override = await get_visibility_override(guild_id, legacy_key)
-        if legacy_override:
-            return legacy_override
-    return VISIBILITY_PRIVATE
-
-async def get_command_visibility(interaction: discord.Interaction) -> str:
-    key = command_visibility_key_for_interaction(interaction)
-    if not key:
-        return VISIBILITY_PRIVATE
-    return await get_message_visibility(interaction.guild_id, key)
-
-async def get_command_visibility_override(interaction: discord.Interaction) -> str | None:
-    key = command_visibility_key_for_interaction(interaction)
-    if not key:
-        return None
-    override = await get_visibility_override(interaction.guild_id, key)
-    if override:
-        return override
-    legacy_key = LEGACY_COMMAND_VISIBILITY_KEYS.get(key)
-    if legacy_key:
-        return await get_visibility_override(interaction.guild_id, legacy_key)
-    return None
-
-async def get_visibility_map(guild_id: int | None) -> dict[str, str]:
-    if not guild_id:
-        return {}
-    async with db_context() as db:
-        try:
-            cursor = await db.execute(
-                "SELECT message_key, visibility FROM guild_message_visibility WHERE guild_id = ?",
-                (guild_id,),
-            )
-            rows = await cursor.fetchall()
-        except sqlite3.OperationalError as exc:
-            if "no such table" in str(exc) and "guild_message_visibility" in str(exc):
-                await _ensure_visibility_table(db)
-                cursor = await db.execute(
-                    "SELECT message_key, visibility FROM guild_message_visibility WHERE guild_id = ?",
-                    (guild_id,),
-                )
-                rows = await cursor.fetchall()
-            else:
-                raise
-    return {row[0]: row[1] for row in rows}
-
-async def set_message_visibility(guild_id: int | None, message_key: str, visibility: str) -> None:
-    if not guild_id:
-        return
-    async with db_context() as db:
-        try:
-            await db.execute(
-                "INSERT INTO guild_message_visibility (guild_id, message_key, visibility) VALUES (?, ?, ?) "
-                "ON CONFLICT(guild_id, message_key) DO UPDATE SET visibility = excluded.visibility",
-                (guild_id, message_key, visibility),
-            )
-        except sqlite3.OperationalError as exc:
-            if "no such table" in str(exc) and "guild_message_visibility" in str(exc):
-                await _ensure_visibility_table(db)
-                await db.execute(
-                    "INSERT INTO guild_message_visibility (guild_id, message_key, visibility) VALUES (?, ?, ?) "
-                    "ON CONFLICT(guild_id, message_key) DO UPDATE SET visibility = excluded.visibility",
-                    (guild_id, message_key, visibility),
-                )
-            else:
-                raise
-        await db.commit()
-
-async def _send_panel_message(
-    interaction: discord.Interaction,
-    message_key: str,
-    *,
-    content: str | None = None,
-    embed=None,
-    view=None,
-    file=None,
-):
-    if not await is_channel_allowed_ids(
-        interaction.guild_id,
-        interaction.channel_id,
-        getattr(interaction.channel, "parent_id", None),
-    ):
-        return None
-    visibility = await get_message_visibility(interaction.guild_id, message_key)
-    kwargs = {}
-    if content is not None:
-        kwargs["content"] = content
-    if embed is not None:
-        kwargs["embed"] = embed
-    if view is not None:
-        kwargs["view"] = view
-    if file is not None:
-        kwargs["file"] = file
-    if visibility != VISIBILITY_PUBLIC:
-        if message_key.startswith("cmd:"):
-            if not await is_admin(interaction):
-                kwargs["ephemeral"] = True
-        else:
-            kwargs["ephemeral"] = True
-    if interaction.response.is_done():
-        return await interaction.followup.send(**kwargs)
-    return await interaction.response.send_message(**kwargs)
-
-async def _send_with_visibility(
-    interaction: discord.Interaction,
-    visibility_key: str | None,
-    *,
-    content: str | None = None,
-    embed=None,
-    view=None,
-    file=None,
-):
-    if visibility_key:
-        return await _send_panel_message(interaction, visibility_key, content=content, embed=embed, view=view, file=file)
-    return await _send_ephemeral(interaction, content=content, embed=embed, view=view, file=file)
 
 async def _edit_panel_message(interaction: discord.Interaction, *, content: str | None = None, embed=None, view=None):
     try:
@@ -4528,7 +3942,7 @@ async def _select_card(interaction: discord.Interaction, prompt: str):
     await view.wait()
     return view.value
 
-class NumberSelectView(RestrictedView):
+class NumberSelectView(ui.View):
     def __init__(self, requester_id: int, options: list[int], placeholder: str):
         super().__init__(timeout=60)
         self.requester_id = requester_id
@@ -4546,7 +3960,7 @@ class NumberSelectView(RestrictedView):
         self.stop()
         await interaction.response.defer()
 
-class CardSelectPagerView(RestrictedView):
+class CardSelectPagerView(ui.View):
     def __init__(self, requester_id: int, cards: list[dict]):
         super().__init__(timeout=120)
         self.requester_id = requester_id
@@ -4608,7 +4022,7 @@ class CardSelectPagerView(RestrictedView):
         self.stop()
         await interaction.response.edit_message(content="Abgebrochen.", view=None)
 
-class ConfirmDeleteUserView(RestrictedView):
+class ConfirmDeleteUserView(ui.View):
     def __init__(self, requester_id: int, target_id: int, target_name: str):
         super().__init__(timeout=60)
         self.requester_id = requester_id
@@ -4635,7 +4049,7 @@ class ConfirmDeleteUserView(RestrictedView):
         self.stop()
         await interaction.response.edit_message(content="Abgebrochen.", view=None)
 
-async def send_health(interaction: discord.Interaction, visibility_key: str | None = None):
+async def send_health(interaction: discord.Interaction):
     uptime = timedelta(seconds=int(time.time() - BOT_START_TIME))
     latency_ms = int(bot.latency * 1000)
     guild_count = len(bot.guilds)
@@ -4646,21 +4060,16 @@ async def send_health(interaction: discord.Interaction, visibility_key: str | No
     embed.add_field(name="Python", value=sys.version.split()[0], inline=True)
     embed.add_field(name="DB Path", value=str(DB_PATH), inline=True)
     embed.add_field(name="Error Count", value=str(ERROR_COUNT), inline=True)
-    await _send_with_visibility(interaction, visibility_key, embed=embed)
+    await _send_ephemeral(interaction, embed=embed)
 
-async def send_db_backup(interaction: discord.Interaction, visibility_key: str | None = None):
+async def send_db_backup(interaction: discord.Interaction):
     db_path = Path(DB_PATH)
     if not db_path.exists():
-        await _send_with_visibility(interaction, visibility_key, content="DB-Datei nicht gefunden.")
+        await _send_ephemeral(interaction, content="DB-Datei nicht gefunden.")
         return
-    await _send_with_visibility(
-        interaction,
-        visibility_key,
-        content="DB-Backup:",
-        file=discord.File(str(db_path), filename=db_path.name),
-    )
+    await _send_ephemeral(interaction, content="DB-Backup:", file=discord.File(str(db_path), filename=db_path.name))
 
-async def send_db_debug(interaction: discord.Interaction, visibility_key: str | None = None):
+async def send_db_debug(interaction: discord.Interaction):
     async with db_context() as db:
         cursor = await db.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
         tables = [row[0] for row in await cursor.fetchall()]
@@ -4669,9 +4078,9 @@ async def send_db_debug(interaction: discord.Interaction, visibility_key: str | 
     embed = discord.Embed(title="DB Debug", color=0x2b90ff)
     embed.add_field(name="Tables", value=str(len(tables)), inline=True)
     embed.add_field(name="Integrity", value=str(integrity[0] if integrity else "unknown"), inline=True)
-    await _send_with_visibility(interaction, visibility_key, embed=embed)
+    await _send_ephemeral(interaction, embed=embed)
 
-async def send_debug_user(interaction: discord.Interaction, user_id: int, user_name: str, visibility_key: str | None = None):
+async def send_debug_user(interaction: discord.Interaction, user_id: int, user_name: str):
     async with db_context() as db:
         cursor = await db.execute("SELECT team FROM user_teams WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
@@ -4712,22 +4121,22 @@ async def send_debug_user(interaction: discord.Interaction, user_id: int, user_n
     embed.add_field(name="Daily", value=str(last_daily), inline=True)
     embed.add_field(name="Mission Count", value=str(mission_count), inline=True)
     embed.add_field(name="Mission Reset", value=str(last_mission_reset), inline=True)
-    await _send_with_visibility(interaction, visibility_key, embed=embed)
+    await _send_ephemeral(interaction, embed=embed)
 
-async def send_logs_last(interaction: discord.Interaction, count: int, visibility_key: str | None = None):
+async def send_logs_last(interaction: discord.Interaction, count: int):
     if not LOG_PATH.exists():
-        await _send_with_visibility(interaction, visibility_key, content="Log-Datei nicht gefunden.")
+        await _send_ephemeral(interaction, content="Log-Datei nicht gefunden.")
         return
     content = LOG_PATH.read_text(encoding="utf-8", errors="ignore").splitlines()
     tail = "\n".join(content[-int(count):])
     if not tail:
-        await _send_with_visibility(interaction, visibility_key, content="Keine Logs vorhanden.")
+        await _send_ephemeral(interaction, content="Keine Logs vorhanden.")
         return
     if len(tail) > 1900:
         tail = tail[-1900:]
-    await _send_with_visibility(interaction, visibility_key, content=f"```text\n{tail}\n```")
+    await _send_ephemeral(interaction, content=f"```text\n{tail}\n```")
 
-async def send_karten_validate(interaction: discord.Interaction, visibility_key: str | None = None):
+async def send_karten_validate(interaction: discord.Interaction):
     issues = []
     for idx, card in enumerate(karten, start=1):
         name = card.get("name")
@@ -4764,17 +4173,17 @@ async def send_karten_validate(interaction: discord.Interaction, visibility_key:
                     elif not isinstance(dmg, int):
                         issues.append(f"{idx}.{a_i}: damage ist kein int")
     if not issues:
-        await _send_with_visibility(interaction, visibility_key, content="karten.py ist valide.")
+        await _send_ephemeral(interaction, content="karten.py ist valide.")
         return
     preview = "\n".join(issues[:20])
     more = len(issues) - 20
     if more > 0:
         preview += f"\n... +{more} weitere"
-    await _send_with_visibility(interaction, visibility_key, content=f"Probleme gefunden:\n{preview}")
+    await _send_ephemeral(interaction, content=f"Probleme gefunden:\n{preview}")
 
-async def send_configure_add(interaction: discord.Interaction, visibility_key: str | None = None):
+async def send_configure_add(interaction: discord.Interaction):
     if interaction.guild is None:
-        await _send_with_visibility(interaction, visibility_key, content="Nur in Servern verfügbar.")
+        await _send_ephemeral(interaction, content="Nur in Servern verfügbar.")
         return
     async with db_context() as db:
         await db.execute(
@@ -4783,11 +4192,11 @@ async def send_configure_add(interaction: discord.Interaction, visibility_key: s
         )
         await db.commit()
     logging.info("Configure add channel: actor=%s guild=%s channel=%s", interaction.user.id, interaction.guild_id, interaction.channel_id)
-    await _send_with_visibility(interaction, visibility_key, content=f"✅ Hinzugefügt: {interaction.channel.mention}")
+    await _send_ephemeral(interaction, content=f"✅ Hinzugefügt: {interaction.channel.mention}")
 
-async def send_configure_remove(interaction: discord.Interaction, visibility_key: str | None = None):
+async def send_configure_remove(interaction: discord.Interaction):
     if interaction.guild is None:
-        await _send_with_visibility(interaction, visibility_key, content="Nur in Servern verfügbar.")
+        await _send_ephemeral(interaction, content="Nur in Servern verfügbar.")
         return
     async with db_context() as db:
         await db.execute(
@@ -4796,11 +4205,11 @@ async def send_configure_remove(interaction: discord.Interaction, visibility_key
         )
         await db.commit()
     logging.info("Configure remove channel: actor=%s guild=%s channel=%s", interaction.user.id, interaction.guild_id, interaction.channel_id)
-    await _send_with_visibility(interaction, visibility_key, content=f"🗑️ Entfernt: {interaction.channel.mention}")
+    await _send_ephemeral(interaction, content=f"🗑️ Entfernt: {interaction.channel.mention}")
 
-async def send_configure_list(interaction: discord.Interaction, visibility_key: str | None = None):
+async def send_configure_list(interaction: discord.Interaction):
     if interaction.guild is None:
-        await _send_with_visibility(interaction, visibility_key, content="Nur in Servern verfügbar.")
+        await _send_ephemeral(interaction, content="Nur in Servern verfügbar.")
         return
     async with db_context() as db:
         cursor = await db.execute(
@@ -4809,14 +4218,14 @@ async def send_configure_list(interaction: discord.Interaction, visibility_key: 
         )
         rows = await cursor.fetchall()
     if not rows:
-        await _send_with_visibility(interaction, visibility_key, content="ℹ️ Es sind noch keine Kanäle erlaubt.")
+        await _send_ephemeral(interaction, content="ℹ️ Es sind noch keine Kanäle erlaubt.")
         return
     mentions = "\n".join(f"• <#{r[0]}>" for r in rows)
-    await _send_with_visibility(interaction, visibility_key, content=f"✅ Erlaubte Kanäle:\n{mentions}")
+    await _send_ephemeral(interaction, content=f"✅ Erlaubte Kanäle:\n{mentions}")
 
-async def send_reset_intro(interaction: discord.Interaction, visibility_key: str | None = None):
+async def send_reset_intro(interaction: discord.Interaction):
     if interaction.guild is None:
-        await _send_with_visibility(interaction, visibility_key, content="Nur in Servern verfügbar.")
+        await _send_ephemeral(interaction, content="Nur in Servern verfügbar.")
         return
     async with db_context() as db:
         await db.execute(
@@ -4825,22 +4234,21 @@ async def send_reset_intro(interaction: discord.Interaction, visibility_key: str
         )
         await db.commit()
     logging.info("Reset intro: actor=%s guild=%s channel=%s", interaction.user.id, interaction.guild_id, interaction.channel_id)
-    await _send_with_visibility(
+    await _send_ephemeral(
         interaction,
-        visibility_key,
         content="✅ Intro-Status für ALLE in diesem Kanal zurückgesetzt. Schreibe eine Nachricht, um den Prompt erneut zu sehen.",
     )
 
-async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_name: str, visibility_key: str | None = None):
+async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_name: str):
     if interaction.guild is None:
-        await _send_with_visibility(interaction, visibility_key, content="Nur in Servern verfügbar.")
+        await _send_ephemeral(interaction, content="Nur in Servern verfügbar.")
         return
     target_user = interaction.guild.get_member(user_id)
     mention = target_user.mention if target_user else f"<@{user_id}>"
     user_karten = await get_user_karten(user_id)
     infinitydust = await get_infinitydust(user_id)
     if not user_karten and infinitydust == 0:
-        await _send_with_visibility(interaction, visibility_key, content=f"❌ {mention} hat noch keine Karten in seiner Sammlung.")
+        await _send_ephemeral(interaction, content=f"❌ {mention} hat noch keine Karten in seiner Sammlung.")
         return
     embed = discord.Embed(
         title=f"🔍 Vault von {user_name}",
@@ -4856,9 +4264,9 @@ async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_na
     embed.set_footer(text=f"Vault-Lookup durch {interaction.user.display_name}")
     embed.color = 0xff6b6b
     logging.info("Vault look: actor=%s target=%s", interaction.user.id, user_id)
-    await _send_with_visibility(interaction, visibility_key, embed=embed)
+    await _send_ephemeral(interaction, embed=embed)
 
-async def send_test_report(interaction: discord.Interaction, visibility_key: str | None = None):
+async def send_test_report(interaction: discord.Interaction):
     def flatten_commands(cmds, prefix=""):
         flat = []
         for c in cmds:
@@ -4891,9 +4299,9 @@ async def send_test_report(interaction: discord.Interaction, visibility_key: str
     )
     embed.set_footer(text=f"Angefordert von {interaction.user.display_name} | {time.strftime('%d.%m.%Y %H:%M:%S')}")
     logging.info("Test report requested by %s", interaction.user.id)
-    await _send_with_visibility(interaction, visibility_key, embed=embed)
+    await _send_ephemeral(interaction, embed=embed)
 
-async def send_bot_status(interaction: discord.Interaction, visibility_key: str | None = None):
+async def send_bot_status(interaction: discord.Interaction):
     view = BotStatusView(interaction.user.id)
     embed = discord.Embed(
         title="🤖 Bot-Status setzen",
@@ -4901,9 +4309,9 @@ async def send_bot_status(interaction: discord.Interaction, visibility_key: str 
         color=0x2b90ff,
     )
     logging.info("Bot status requested by %s", interaction.user.id)
-    await _send_with_visibility(interaction, visibility_key, embed=embed, view=view)
+    await _send_ephemeral(interaction, embed=embed, view=view)
 
-async def send_balance_stats(interaction: discord.Interaction, visibility_key: str | None = None):
+async def send_balance_stats(interaction: discord.Interaction):
     if not await is_channel_allowed(interaction, bypass_maintenance=True):
         return
     total_cards = len(karten)
@@ -4947,423 +4355,205 @@ async def send_balance_stats(interaction: discord.Interaction, visibility_key: s
     embed.add_field(name="Avg HP", value=f"{avg_hp:.1f}", inline=True)
     embed.add_field(name="Avg Max Damage", value=f"{avg_atk:.1f}", inline=True)
     embed.add_field(name="Top Karten (DB)", value="\n".join(top_cards) or "Keine Daten", inline=False)
-    if visibility_key:
-        await _send_with_visibility(interaction, visibility_key, embed=embed)
-    else:
-        await _send_ephemeral(interaction, embed=embed)
-
-DEV_ACTION_OPTIONS: list[tuple[str, str]] = [
-    ("Maintenance ON", "maintenance_on"),
-    ("Maintenance OFF", "maintenance_off"),
-    ("Delete user data", "delete_user"),
-    ("DB backup", "db_backup"),
-    ("Give dust", "give_dust"),
-    ("Grant card", "grant_card"),
-    ("Revoke card", "revoke_card"),
-    ("Set daily reset", "set_daily"),
-    ("Set mission reset", "set_mission"),
-    ("Health", "health"),
-    ("Debug DB", "debug_db"),
-    ("Debug user", "debug_user"),
-    ("Debug sync", "debug_sync"),
-    ("Logs last", "logs_last"),
-    ("Karten validate", "karten_validate"),
-    ("Kanal erlauben (hier)", "cfg_add"),
-    ("Kanal entfernen (hier)", "cfg_remove"),
-    ("Erlaubte Kanäle anzeigen", "cfg_list"),
-    ("Intro zurücksetzen (Kanal)", "reset_intro"),
-    ("Vault ansehen", "vault_look"),
-    ("Bot-Status setzen", "bot_status"),
-    ("Command-Report", "test_report"),
-    ("Nachrichten-Sichtbarkeit", "visibility_settings"),
-]
+    await _send_ephemeral(interaction, embed=embed)
 
 class DevActionSelect(ui.Select):
-    def __init__(
-        self,
-        requester_id: int,
-        options_list: list[tuple[str, str]] | None = None,
-        placeholder: str = "Dev-Tools wählen...",
-    ):
+    def __init__(self, requester_id: int):
         self.requester_id = requester_id
-        options_src = DEV_ACTION_OPTIONS if options_list is None else options_list
-        options = [SelectOption(label=label, value=value) for label, value in options_src]
-        super().__init__(placeholder=placeholder, min_values=1, max_values=1, options=options)
+        options = [
+            SelectOption(label="Maintenance ON", value="maintenance_on"),
+            SelectOption(label="Maintenance OFF", value="maintenance_off"),
+            SelectOption(label="Delete user data", value="delete_user"),
+            SelectOption(label="DB backup", value="db_backup"),
+            SelectOption(label="Give dust", value="give_dust"),
+            SelectOption(label="Grant card", value="grant_card"),
+            SelectOption(label="Revoke card", value="revoke_card"),
+            SelectOption(label="Set daily reset", value="set_daily"),
+            SelectOption(label="Set mission reset", value="set_mission"),
+            SelectOption(label="Health", value="health"),
+            SelectOption(label="Debug DB", value="debug_db"),
+            SelectOption(label="Debug user", value="debug_user"),
+            SelectOption(label="Debug sync", value="debug_sync"),
+            SelectOption(label="Logs last", value="logs_last"),
+            SelectOption(label="Karten validate", value="karten_validate"),
+            SelectOption(label="Kanal erlauben (hier)", value="cfg_add"),
+            SelectOption(label="Kanal entfernen (hier)", value="cfg_remove"),
+            SelectOption(label="Erlaubte Kanäle anzeigen", value="cfg_list"),
+            SelectOption(label="Intro zurücksetzen (Kanal)", value="reset_intro"),
+            SelectOption(label="Vault ansehen", value="vault_look"),
+            SelectOption(label="Bot-Status setzen", value="bot_status"),
+            SelectOption(label="Command-Report", value="test_report"),
+        ]
+        super().__init__(placeholder="Dev-Tools wählen...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        action = self.values[0]
-        await handle_dev_action(interaction, self.requester_id, action)
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        if not await require_owner_or_dev(interaction):
+            return
+        if not await is_channel_allowed(interaction):
+            return
 
-class DevSearchView(RestrictedView):
+        action = self.values[0]
+        if action == "maintenance_on":
+            if interaction.guild is None:
+                await _send_ephemeral(interaction, content="Nur in Servern verfügbar.")
+                return
+            await set_maintenance_mode(interaction.guild_id, True)
+            logging.info("Maintenance ON by %s in guild %s", interaction.user.id, interaction.guild_id)
+            await _send_ephemeral(interaction, content="Wartungsmodus aktiviert.")
+            return
+        if action == "maintenance_off":
+            if interaction.guild is None:
+                await _send_ephemeral(interaction, content="Nur in Servern verfügbar.")
+                return
+            await set_maintenance_mode(interaction.guild_id, False)
+            logging.info("Maintenance OFF by %s in guild %s", interaction.user.id, interaction.guild_id)
+            await _send_ephemeral(interaction, content="Wartungsmodus deaktiviert.")
+            return
+        if action == "delete_user":
+            user_id, user_name = await _select_user(interaction, "Wähle den Nutzer für Löschen:")
+            if not user_id:
+                return
+            view = ConfirmDeleteUserView(interaction.user.id, user_id, user_name)
+            await _send_ephemeral(interaction, content=f"Wirklich alle Bot-Daten von {user_name} löschen?", view=view)
+            return
+        if action == "db_backup":
+            logging.info("DB backup requested by %s", interaction.user.id)
+            await send_db_backup(interaction)
+            return
+        if action == "give_dust":
+            user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Dust:")
+            if not user_id:
+                return
+            amount = await _select_number(interaction, "Menge wählen", [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000])
+            if not amount:
+                return
+            await add_infinitydust(user_id, int(amount))
+            logging.info("Give dust: actor=%s target=%s amount=%s", interaction.user.id, user_id, amount)
+            await _send_ephemeral(interaction, content=f"{user_name} erhält {amount}x Infinitydust.")
+            return
+        if action == "grant_card":
+            user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Karte vergeben:")
+            if not user_id:
+                return
+            card_name = await _select_card(interaction, "Karte auswählen:")
+            if not card_name:
+                return
+            amount = await _select_number(interaction, "Anzahl wählen", [1, 2, 5, 10, 20, 50, 100])
+            if not amount:
+                return
+            await add_karte_amount(user_id, card_name, int(amount))
+            logging.info("Grant card: actor=%s target=%s card=%s amount=%s", interaction.user.id, user_id, card_name, amount)
+            await _send_ephemeral(interaction, content=f"{user_name} erhält {amount}x {card_name}.")
+            return
+        if action == "revoke_card":
+            user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Karte abziehen:")
+            if not user_id:
+                return
+            card_name = await _select_card(interaction, "Karte auswählen:")
+            if not card_name:
+                return
+            amount = await _select_number(interaction, "Anzahl wählen", [1, 2, 5, 10, 20, 50, 100])
+            if not amount:
+                return
+            new_amount = await remove_karte_amount(user_id, card_name, int(amount))
+            logging.info("Revoke card: actor=%s target=%s card=%s amount=%s new_total=%s", interaction.user.id, user_id, card_name, amount, new_amount)
+            await _send_ephemeral(interaction, content=f"Neue Menge {card_name} bei {user_name}: {new_amount}.")
+            return
+        if action == "set_daily":
+            user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Daily-Reset:")
+            if not user_id:
+                return
+            async with db_context() as db:
+                await db.execute(
+                    "INSERT INTO user_daily (user_id, last_daily) VALUES (?, 0) "
+                    "ON CONFLICT(user_id) DO UPDATE SET last_daily = 0",
+                    (user_id,),
+                )
+                await db.commit()
+            logging.info("Daily reset: actor=%s target=%s", interaction.user.id, user_id)
+            await _send_ephemeral(interaction, content=f"Daily für {user_name} zurückgesetzt.")
+            return
+        if action == "set_mission":
+            user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Mission-Reset:")
+            if not user_id:
+                return
+            today_start = berlin_midnight_epoch()
+            async with db_context() as db:
+                await db.execute(
+                    "INSERT INTO user_daily (user_id, mission_count, last_mission_reset) VALUES (?, 0, ?) "
+                    "ON CONFLICT(user_id) DO UPDATE SET mission_count = 0, last_mission_reset = ?",
+                    (user_id, today_start, today_start),
+                )
+                await db.commit()
+            logging.info("Mission reset: actor=%s target=%s", interaction.user.id, user_id)
+            await _send_ephemeral(interaction, content=f"Mission-Reset für {user_name} gesetzt.")
+            return
+        if action == "health":
+            logging.info("Health requested by %s", interaction.user.id)
+            await send_health(interaction)
+            return
+        if action == "debug_db":
+            logging.info("Debug DB requested by %s", interaction.user.id)
+            await send_db_debug(interaction)
+            return
+        if action == "debug_user":
+            user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Debug:")
+            if not user_id:
+                return
+            logging.info("Debug user requested by %s target=%s", interaction.user.id, user_id)
+            await send_debug_user(interaction, user_id, user_name)
+            return
+        if action == "debug_sync":
+            synced = await bot.tree.sync()
+            logging.info("Debug sync by %s; synced=%s", interaction.user.id, len(synced))
+            await _send_ephemeral(interaction, content=f"Sync abgeschlossen: {len(synced)} Commands.")
+            return
+        if action == "logs_last":
+            count = await _select_number(interaction, "Anzahl Log-Zeilen", [10, 20, 50, 100, 200])
+            if not count:
+                return
+            await send_logs_last(interaction, int(count))
+            logging.info("Logs last requested by %s count=%s", interaction.user.id, count)
+            return
+        if action == "karten_validate":
+            await send_karten_validate(interaction)
+            logging.info("Karten validate requested by %s", interaction.user.id)
+            return
+        if action == "cfg_add":
+            await send_configure_add(interaction)
+            return
+        if action == "cfg_remove":
+            await send_configure_remove(interaction)
+            return
+        if action == "cfg_list":
+            await send_configure_list(interaction)
+            return
+        if action == "reset_intro":
+            await send_reset_intro(interaction)
+            return
+        if action == "vault_look":
+            user_id, user_name = await _select_user(interaction, "Wähle einen User für Vault-Look:")
+            if not user_id:
+                return
+            await send_vaultlook(interaction, user_id, user_name)
+            return
+        if action == "bot_status":
+            await send_bot_status(interaction)
+            return
+        if action == "test_report":
+            await send_test_report(interaction)
+            return
+
+class DevPanelView(ui.View):
     def __init__(self, requester_id: int):
         super().__init__(timeout=120)
         self.requester_id = requester_id
-        self.add_item(DevActionSelect(requester_id, placeholder="Tippe zum Suchen..."))
+        self.add_item(DevActionSelect(requester_id))
 
     @ui.button(label="Zurück", style=discord.ButtonStyle.secondary)
-    async def back(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
-            return
-        embed = discord.Embed(title="Dev/Tools", description="Aktionen wählen")
-        await _edit_panel_message(interaction, embed=embed, view=DevPanelView(self.requester_id))
-
-class VisibilitySelectPagerView(RestrictedView):
-    def __init__(self, requester_id: int, visibility_map: dict[str, str], page: int = 0):
-        super().__init__(timeout=120)
-        self.requester_id = requester_id
-        self.page = page
-        self.visibility_map = visibility_map
-        self.items = get_panel_visibility_items()
-        self.select = ui.Select(placeholder="Kategorie wählen...", min_values=1, max_values=1, options=[])
-        self.select.callback = self.select_callback
-        self.prev_button = ui.Button(label="Vorige Seite", style=discord.ButtonStyle.secondary, row=4)
-        self.prev_button.callback = self.prev_page
-        self.next_button = ui.Button(label="Nächste Seite", style=discord.ButtonStyle.secondary, row=4)
-        self.next_button.callback = self.next_page
-        self.back_button = ui.Button(label="Zurück zum Panel", style=discord.ButtonStyle.danger, row=4)
-        self.back_button.callback = self.back_to_panel
-        self._render()
-
-    def _render(self):
-        self.clear_items()
-        start = self.page * 25
-        subset = self.items[start:start + 25]
-        options = []
-        for key, label, desc in subset:
-            current_value = _visibility_value_for_key(key, self.visibility_map)
-            current = _visibility_label(current_value)
-            options.append(SelectOption(label=f"{label} ({current})", value=key, description=desc[:100]))
-        if not options:
-            options = [SelectOption(label="Keine Einträge", value="__none__")]
-        self.select.options = options
-        self.add_item(self.select)
-        self.prev_button.disabled = self.page == 0
-        self.next_button.disabled = start + 25 >= len(self.items)
-        self.add_item(self.prev_button)
-        self.add_item(self.next_button)
-        self.add_item(self.back_button)
-
-    async def select_callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
-            return
-        key = self.select.values[0]
-        if key == "__none__":
-            await interaction.response.defer()
-            return
-        entry = next((item for item in self.items if item[0] == key), None)
-        if not entry:
-            await interaction.response.send_message("Unbekannte Option.", ephemeral=True)
-            return
-        label = entry[1]
-        current_value = _visibility_value_for_key(key, self.visibility_map)
-        current = _visibility_label(current_value)
-        embed = discord.Embed(
-            title="Sichtbarkeit einstellen",
-            description=f"**{label}**\nAktuell: **{current}**\n\nWähle die Sichtbarkeit:",
-        )
-        await _edit_panel_message(
-            interaction,
-            embed=embed,
-            view=VisibilityToggleView(self.requester_id, key, self.page),
-        )
-
-    async def prev_page(self, interaction: discord.Interaction):
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
-            return
-        self.page = max(0, self.page - 1)
-        self._render()
-        await interaction.response.edit_message(view=self)
-
-    async def next_page(self, interaction: discord.Interaction):
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
-            return
-        if (self.page + 1) * 25 < len(self.items):
-            self.page += 1
-        self._render()
-        await interaction.response.edit_message(view=self)
-
-    async def back_to_panel(self, interaction: discord.Interaction):
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
-            return
-        embed = discord.Embed(title="Dev/Tools", description="Aktionen wählen")
-        await _edit_panel_message(interaction, embed=embed, view=DevPanelView(self.requester_id))
-
-class VisibilityToggleView(RestrictedView):
-    def __init__(self, requester_id: int, message_key: str, page: int):
-        super().__init__(timeout=120)
-        self.requester_id = requester_id
-        self.message_key = message_key
-        self.page = page
-
-    async def _back_to_list(self, interaction: discord.Interaction):
-        visibility_map = await get_visibility_map(interaction.guild_id)
-        embed = discord.Embed(
-            title="Sichtbarkeit",
-            description="Wähle eine Kategorie, um die Sichtbarkeit zu ändern.",
-        )
-        view = VisibilitySelectPagerView(self.requester_id, visibility_map, page=self.page)
-        await _edit_panel_message(interaction, embed=embed, view=view)
-
-    @ui.button(label="Öffentlich", style=discord.ButtonStyle.success)
-    async def set_public(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
-            return
-        await set_message_visibility(interaction.guild_id, self.message_key, VISIBILITY_PUBLIC)
-        await self._back_to_list(interaction)
-
-    @ui.button(label="Nur sichtbar", style=discord.ButtonStyle.secondary)
-    async def set_private(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
-            return
-        await set_message_visibility(interaction.guild_id, self.message_key, VISIBILITY_PRIVATE)
-        await self._back_to_list(interaction)
-
-    @ui.button(label="Zurück", style=discord.ButtonStyle.danger)
-    async def back(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
-            return
-        await self._back_to_list(interaction)
-
-async def show_visibility_settings(interaction: discord.Interaction, requester_id: int, page: int = 0):
-    visibility_map = await get_visibility_map(interaction.guild_id)
-    embed = discord.Embed(
-        title="Sichtbarkeit",
-        description="Wähle eine Kategorie, um die Sichtbarkeit zu ändern.",
-    )
-    view = VisibilitySelectPagerView(requester_id, visibility_map, page=page)
-    await _edit_panel_message(interaction, embed=embed, view=view)
-
-async def handle_dev_action(interaction: discord.Interaction, requester_id: int, action: str):
-    if interaction.user.id != requester_id:
-        await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
-        return
-    if not await require_owner_or_dev(interaction):
-        return
-    if not await is_channel_allowed(interaction):
-        return
-
-    if action == "maintenance_on":
-        if interaction.guild is None:
-            await _send_with_visibility(interaction, "maintenance", content="Nur in Servern verfügbar.")
-            return
-        await set_maintenance_mode(interaction.guild_id, True)
-        logging.info("Maintenance ON by %s in guild %s", interaction.user.id, interaction.guild_id)
-        await _send_with_visibility(interaction, "maintenance", content="Wartungsmodus aktiviert.")
-        return
-    if action == "maintenance_off":
-        if interaction.guild is None:
-            await _send_with_visibility(interaction, "maintenance", content="Nur in Servern verfügbar.")
-            return
-        await set_maintenance_mode(interaction.guild_id, False)
-        logging.info("Maintenance OFF by %s in guild %s", interaction.user.id, interaction.guild_id)
-        await _send_with_visibility(interaction, "maintenance", content="Wartungsmodus deaktiviert.")
-        return
-    if action == "delete_user":
-        user_id, user_name = await _select_user(interaction, "Wähle den Nutzer für Löschen:")
-        if not user_id:
-            return
-        view = ConfirmDeleteUserView(interaction.user.id, user_id, user_name)
-        await _send_with_visibility(
-            interaction,
-            "delete_user",
-            content=f"Wirklich alle Bot-Daten von {user_name} löschen?",
-            view=view,
-        )
-        return
-    if action == "db_backup":
-        logging.info("DB backup requested by %s", interaction.user.id)
-        await send_db_backup(interaction, visibility_key="db_backup")
-        return
-    if action == "give_dust":
-        user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Dust:")
-        if not user_id:
-            return
-        amount = await _select_number(interaction, "Menge wählen", [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000])
-        if not amount:
-            return
-        await add_infinitydust(user_id, int(amount))
-        logging.info("Give dust: actor=%s target=%s amount=%s", interaction.user.id, user_id, amount)
-        await _send_with_visibility(interaction, "give_dust", content=f"{user_name} erhält {amount}x Infinitydust.")
-        return
-    if action == "grant_card":
-        user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Karte vergeben:")
-        if not user_id:
-            return
-        card_name = await _select_card(interaction, "Karte auswählen:")
-        if not card_name:
-            return
-        amount = await _select_number(interaction, "Anzahl wählen", [1, 2, 5, 10, 20, 50, 100])
-        if not amount:
-            return
-        await add_karte_amount(user_id, card_name, int(amount))
-        logging.info("Grant card: actor=%s target=%s card=%s amount=%s", interaction.user.id, user_id, card_name, amount)
-        await _send_with_visibility(interaction, "grant_card", content=f"{user_name} erhält {amount}x {card_name}.")
-        return
-    if action == "revoke_card":
-        user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Karte abziehen:")
-        if not user_id:
-            return
-        card_name = await _select_card(interaction, "Karte auswählen:")
-        if not card_name:
-            return
-        amount = await _select_number(interaction, "Anzahl wählen", [1, 2, 5, 10, 20, 50, 100])
-        if not amount:
-            return
-        new_amount = await remove_karte_amount(user_id, card_name, int(amount))
-        logging.info("Revoke card: actor=%s target=%s card=%s amount=%s new_total=%s", interaction.user.id, user_id, card_name, amount, new_amount)
-        await _send_with_visibility(interaction, "revoke_card", content=f"Neue Menge {card_name} bei {user_name}: {new_amount}.")
-        return
-    if action == "set_daily":
-        user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Daily-Reset:")
-        if not user_id:
-            return
-        async with db_context() as db:
-            await db.execute(
-                "INSERT INTO user_daily (user_id, last_daily) VALUES (?, 0) "
-                "ON CONFLICT(user_id) DO UPDATE SET last_daily = 0",
-                (user_id,),
-            )
-            await db.commit()
-        logging.info("Daily reset: actor=%s target=%s", interaction.user.id, user_id)
-        await _send_with_visibility(interaction, "set_daily", content=f"Daily für {user_name} zurückgesetzt.")
-        return
-    if action == "set_mission":
-        user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Mission-Reset:")
-        if not user_id:
-            return
-        today_start = berlin_midnight_epoch()
-        async with db_context() as db:
-            await db.execute(
-                "INSERT INTO user_daily (user_id, mission_count, last_mission_reset) VALUES (?, 0, ?) "
-                "ON CONFLICT(user_id) DO UPDATE SET mission_count = 0, last_mission_reset = ?",
-                (user_id, today_start, today_start),
-            )
-            await db.commit()
-        logging.info("Mission reset: actor=%s target=%s", interaction.user.id, user_id)
-        await _send_with_visibility(interaction, "set_mission", content=f"Mission-Reset für {user_name} gesetzt.")
-        return
-    if action == "health":
-        logging.info("Health requested by %s", interaction.user.id)
-        await send_health(interaction, visibility_key="health")
-        return
-    if action == "debug_db":
-        logging.info("Debug DB requested by %s", interaction.user.id)
-        await send_db_debug(interaction, visibility_key="debug_db")
-        return
-    if action == "debug_user":
-        user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Debug:")
-        if not user_id:
-            return
-        logging.info("Debug user requested by %s target=%s", interaction.user.id, user_id)
-        await send_debug_user(interaction, user_id, user_name, visibility_key="debug_user")
-        return
-    if action == "debug_sync":
-        synced = await bot.tree.sync()
-        logging.info("Debug sync by %s; synced=%s", interaction.user.id, len(synced))
-        await _send_with_visibility(interaction, "debug_sync", content=f"Sync abgeschlossen: {len(synced)} Commands.")
-        return
-    if action == "logs_last":
-        count = await _select_number(interaction, "Anzahl Log-Zeilen", [10, 20, 50, 100, 200])
-        if not count:
-            return
-        await send_logs_last(interaction, int(count), visibility_key="logs_last")
-        logging.info("Logs last requested by %s count=%s", interaction.user.id, count)
-        return
-    if action == "karten_validate":
-        await send_karten_validate(interaction, visibility_key="karten_validate")
-        logging.info("Karten validate requested by %s", interaction.user.id)
-        return
-    if action == "cfg_add":
-        await send_configure_add(interaction, visibility_key="channel_config")
-        return
-    if action == "cfg_remove":
-        await send_configure_remove(interaction, visibility_key="channel_config")
-        return
-    if action == "cfg_list":
-        await send_configure_list(interaction, visibility_key="channel_config")
-        return
-    if action == "reset_intro":
-        await send_reset_intro(interaction, visibility_key="reset_intro")
-        return
-    if action == "vault_look":
-        user_id, user_name = await _select_user(interaction, "Wähle einen User für Vault-Look:")
-        if not user_id:
-            return
-        await send_vaultlook(interaction, user_id, user_name, visibility_key="vault_look")
-        return
-    if action == "bot_status":
-        await send_bot_status(interaction, visibility_key="bot_status")
-        return
-    if action == "test_report":
-        await send_test_report(interaction, visibility_key="test_report")
-        return
-    if action == "visibility_settings":
-        await show_visibility_settings(interaction, requester_id)
-        return
-
-class DevPanelView(RestrictedView):
-    def __init__(self, requester_id: int, page: int = 0):
-        super().__init__(timeout=120)
-        self.requester_id = requester_id
-        self.page = page
-
-        self.select = DevActionSelect(requester_id, options_list=[])
-        self.add_item(self.select)
-
-        self.prev_button = ui.Button(label="Vorige Seite", style=discord.ButtonStyle.secondary, row=4)
-        self.prev_button.callback = self.prev_page
-        self.add_item(self.prev_button)
-
-        self.next_button = ui.Button(label="Nächste Seite", style=discord.ButtonStyle.secondary, row=4)
-        self.next_button.callback = self.next_page
-        self.add_item(self.next_button)
-
-        self._render()
-
-    def _render(self):
-        start = self.page * 25
-        subset = DEV_ACTION_OPTIONS[start:start + 25]
-        self.select.options = [SelectOption(label=label, value=value) for label, value in subset]
-        self.prev_button.disabled = self.page == 0
-        self.next_button.disabled = start + 25 >= len(DEV_ACTION_OPTIONS)
-
-    async def prev_page(self, interaction: discord.Interaction):
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
-            return
-        self.page = max(0, self.page - 1)
-        self._render()
-        await interaction.response.edit_message(view=self)
-
-    async def next_page(self, interaction: discord.Interaction):
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
-            return
-        if (self.page + 1) * 25 < len(DEV_ACTION_OPTIONS):
-            self.page += 1
-        self._render()
-        await interaction.response.edit_message(view=self)
-
-    @ui.button(label="Suche", style=discord.ButtonStyle.secondary, row=3)
-    async def search(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
-            return
-        if len(DEV_ACTION_OPTIONS) > 25:
-            await interaction.response.send_message("Zu viele Optionen für die Suche. Nutze die Seiten.", ephemeral=True)
-            return
-        embed = discord.Embed(title="Dev-Tools Suche", description="Tippe im Auswahlfeld, um zu filtern.")
-        await _edit_panel_message(interaction, embed=embed, view=DevSearchView(self.requester_id))
-
-    @ui.button(label="Zurück", style=discord.ButtonStyle.secondary, row=3)
     async def back(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
             await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
@@ -5371,7 +4561,7 @@ class DevPanelView(RestrictedView):
         embed = discord.Embed(title="Panel", description="Hauptmenü")
         await _edit_panel_message(interaction, embed=embed, view=PanelHomeView(self.requester_id))
 
-class StatsPanelView(RestrictedView):
+class StatsPanelView(ui.View):
     def __init__(self, requester_id: int):
         super().__init__(timeout=120)
         self.requester_id = requester_id
@@ -5391,7 +4581,7 @@ class StatsPanelView(RestrictedView):
         embed = discord.Embed(title="Panel", description="Hauptmenü")
         await _edit_panel_message(interaction, embed=embed, view=PanelHomeView(self.requester_id))
 
-class PanelHomeView(RestrictedView):
+class PanelHomeView(ui.View):
     def __init__(self, requester_id: int):
         super().__init__(timeout=120)
         self.requester_id = requester_id
@@ -5425,17 +4615,15 @@ async def panel(interaction: discord.Interaction):
         return
     if not await is_channel_allowed(interaction):
         return
-    visibility_key = command_visibility_key_for_interaction(interaction)
     embed = discord.Embed(title="Panel", description="Hauptmenü")
-    await _send_with_visibility(interaction, visibility_key, embed=embed, view=PanelHomeView(interaction.user.id))
+    await interaction.response.send_message(embed=embed, view=PanelHomeView(interaction.user.id), ephemeral=True)
 
 # /balance stats (oeffentlich)
 BALANCE_GROUP = app_commands.Group(name="balance", description="Balance-Statistiken")
 
 @BALANCE_GROUP.command(name="stats", description="Zeigt Balance-Statistiken")
 async def balance_stats(interaction: discord.Interaction):
-    visibility_key = command_visibility_key_for_interaction(interaction)
-    await send_balance_stats(interaction, visibility_key=visibility_key)
+    await send_balance_stats(interaction)
 
 bot.tree.add_command(BALANCE_GROUP)
 # =========================
@@ -5443,7 +4631,7 @@ bot.tree.add_command(BALANCE_GROUP)
 # =========================
 
 # Mapping: Discord Presence -> Farbe/Circle + Sort-Priorität
-class StatusUserPickerView(RestrictedView):
+class StatusUserPickerView(ui.View):
     """
     Wiederverwendbarer Nutzer-Picker mit:
     - farbigen Status-Kreisen vor dem Namen (grün/orange/rot/schwarz)
@@ -5648,7 +4836,7 @@ class BotStatusSelect(ui.Select):
             except discord.InteractionResponded:
                 await interaction.followup.send(f"❌ Fehler beim Setzen des Status: {e}", ephemeral=True)
 
-class BotStatusView(RestrictedView):
+class BotStatusView(ui.View):
     def __init__(self, requester_id: int):
         super().__init__(timeout=60)
         self.add_item(BotStatusSelect(requester_id))
@@ -5658,8 +4846,13 @@ async def bot_status(interaction: discord.Interaction):
     # Reagiere nur in erlaubten Kanälen (konsistent mit anderen Commands)
     if not await is_channel_allowed(interaction):
         return
-    visibility_key = command_visibility_key_for_interaction(interaction)
-    await send_bot_status(interaction, visibility_key=visibility_key)
+    view = BotStatusView(interaction.user.id)
+    embed = discord.Embed(
+        title="🤖 Bot-Status setzen",
+        description="Wähle den gewünschten Status:\n• Online\n• Abwesend\n• Bitte nicht stören\n• Unsichtbar",
+        color=0x2b90ff
+    )
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 if __name__ == "__main__":
     token = get_bot_token()
     try:
