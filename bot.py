@@ -2912,7 +2912,7 @@ async def fight(interaction: discord.Interaction):
         
         bot_user = BotUser()
         # Route in privaten Thread, falls privat
-        target_channel: discord.abc.MessageableChannel = interaction.channel
+        target_channel: discord.abc.Messageable = interaction.channel
         if is_private and isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
             try:
                 if isinstance(interaction.channel, discord.TextChannel) and me is not None:
@@ -2972,7 +2972,7 @@ async def fight(interaction: discord.Interaction):
         await interaction.followup.send("❌ Gegner nicht gefunden!", ephemeral=True)
         return
     # Privater Thread ggf. erstellen und beide hinzufügen
-    target_channel: discord.abc.MessageableChannel = interaction.channel
+    target_channel: discord.abc.Messageable = interaction.channel
     if is_private and isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
         try:
             if isinstance(interaction.channel, discord.TextChannel) and me is not None:
@@ -4172,7 +4172,7 @@ def _can_send_in_channel(channel: discord.abc.GuildChannel | discord.Thread, mem
 
 async def _safe_send_channel(
     interaction: discord.Interaction,
-    channel: discord.abc.MessageableChannel,
+    channel: discord.abc.Messageable,
     *,
     content: str | None = None,
     embed=None,
