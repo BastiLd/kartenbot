@@ -103,6 +103,7 @@ ADMIN_SLASH_COMMANDS = {
     "test-bericht",
     "give",
     "bot_status",
+    "bot_log",
 }
 
 def prune_admin_slash_commands() -> None:
