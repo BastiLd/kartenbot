@@ -48,8 +48,6 @@ _persistent_views_registered = False
 
 class KatabumpCommandTree(app_commands.CommandTree):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.type == discord.InteractionType.autocomplete:
-            return True
         if interaction.guild is None or interaction.channel_id is None:
             return False
         command_name = ""
@@ -61,7 +59,15 @@ class KatabumpCommandTree(app_commands.CommandTree):
             interaction.channel_id,
             getattr(interaction.channel, "parent_id", None),
         )
-        if not allow_unconfigured and not channel_allowed:
+        if interaction.type == discord.InteractionType.autocomplete:
+            if channel_allowed:
+                return True
+            if allow_unconfigured and not await has_allowed_channels(interaction.guild_id):
+                return True
+            return False
+        if not channel_allowed:
+            if allow_unconfigured and not await has_allowed_channels(interaction.guild_id):
+                return True
             return False
         if await is_maintenance_enabled(interaction.guild_id):
             if not await is_owner_or_dev(interaction):
@@ -241,7 +247,21 @@ async def is_channel_allowed_ids(
         return True
     return False
 
+async def has_allowed_channels(guild_id: int | None) -> bool:
+    if not guild_id:
+        return False
+    async with db_context() as db:
+        cursor = await db.execute(
+            "SELECT 1 FROM guild_allowed_channels WHERE guild_id = ? LIMIT 1",
+            (guild_id,),
+        )
+        return await cursor.fetchone() is not None
+
 class RestrictedView(ui.View):
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await is_channel_allowed(interaction)
+
+class RestrictedModal(ui.Modal):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return await is_channel_allowed(interaction)
 
@@ -1177,7 +1197,7 @@ class CardSelectView(RestrictedView):
         await interaction.response.defer()
 
 # Neue Suchfunktion-Klassen
-class UserSearchModal(ui.Modal):
+class UserSearchModal(RestrictedModal):
     def __init__(self, guild, challenger, parent_view: ui.View | None = None, include_bot_option: bool = True):
         super().__init__(title="🔍 User suchen")
         self.guild = guild
