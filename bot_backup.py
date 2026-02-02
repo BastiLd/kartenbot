@@ -53,21 +53,19 @@ class KatabumpCommandTree(app_commands.CommandTree):
         command_name = ""
         if interaction.command:
             command_name = getattr(interaction.command, "qualified_name", interaction.command.name)
-        allow_unconfigured = command_name in {"configure add", "ad"}
         channel_allowed = await is_channel_allowed_ids(
             interaction.guild_id,
             interaction.channel_id,
             getattr(interaction.channel, "parent_id", None),
         )
+        allow_channel_bypass = False
+        if command_name == "ad":
+            allow_channel_bypass = await is_owner_or_dev(interaction)
+        elif command_name == "configure add":
+            allow_channel_bypass = await is_config_admin(interaction)
         if interaction.type == discord.InteractionType.autocomplete:
-            if channel_allowed:
-                return True
-            if allow_unconfigured and not await has_allowed_channels(interaction.guild_id):
-                return True
-            return False
-        if not channel_allowed:
-            if allow_unconfigured and not await has_allowed_channels(interaction.guild_id):
-                return True
+            return channel_allowed or allow_channel_bypass
+        if not channel_allowed and not allow_channel_bypass:
             return False
         if await is_maintenance_enabled(interaction.guild_id):
             if not await is_owner_or_dev(interaction):
@@ -246,16 +244,6 @@ async def is_channel_allowed_ids(
     if parent_channel_id and parent_channel_id in allowed_channels:
         return True
     return False
-
-async def has_allowed_channels(guild_id: int | None) -> bool:
-    if not guild_id:
-        return False
-    async with db_context() as db:
-        cursor = await db.execute(
-            "SELECT 1 FROM guild_allowed_channels WHERE guild_id = ? LIMIT 1",
-            (guild_id,),
-        )
-        return await cursor.fetchone() is not None
 
 class RestrictedView(ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
