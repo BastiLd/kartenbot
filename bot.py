@@ -163,6 +163,10 @@ async def on_ready():
             _persistent_views_registered = True
         except Exception:
             logging.exception("Failed to register persistent views")
+    try:
+        await resend_pending_requests()
+    except Exception:
+        logging.exception("Failed to resend pending requests on startup")
 
 # Event: On Message – bei erster Nachricht im Kanal Intro zeigen (ephemeral)
 @bot.event
@@ -408,6 +412,19 @@ async def increment_mission_count(user_id):
                         (user_id, user_id, today_start))
         await db.commit()
 
+def _build_mission_embed(mission_data: dict) -> discord.Embed:
+    title = mission_data.get("title") or "Mission"
+    description = mission_data.get("description") or "Hier kommt später die Story. Hier kommt später die Story."
+    reward_card = mission_data.get("reward_card") or {}
+    waves = mission_data.get("waves", 0)
+    embed = discord.Embed(title=title, description=description)
+    embed.add_field(name="Wellen", value=f"{waves}", inline=True)
+    if reward_card:
+        embed.add_field(name="🎁 Belohnung", value=f"**{reward_card.get('name', '?')}**", inline=True)
+        if reward_card.get("bild"):
+            embed.set_thumbnail(url=reward_card["bild"])
+    return embed
+
 # Hilfsfunktionen für Team-Management
 async def get_team(user_id):
     async with db_context() as db:
@@ -441,6 +458,126 @@ async def get_last_karte(user_id):
         cursor = await db.execute("SELECT karten_name FROM user_karten WHERE user_id = ? ORDER BY rowid DESC LIMIT 1", (user_id,))
         row = await cursor.fetchone()
         return row[0] if row else None
+
+# Offene Kampf-/Missions-Requests (persistiert)
+async def create_fight_request(
+    *,
+    guild_id: int,
+    origin_channel_id: int,
+    message_channel_id: int,
+    thread_id: int | None,
+    thread_created: bool,
+    challenger_id: int,
+    challenged_id: int,
+    challenger_card: str,
+    message_id: int | None = None,
+) -> int:
+    async with db_context() as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO fight_requests (
+                guild_id, origin_channel_id, message_channel_id, thread_id, thread_created,
+                challenger_id, challenged_id, challenger_card, created_at, status, message_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                guild_id,
+                origin_channel_id,
+                message_channel_id,
+                thread_id,
+                1 if thread_created else 0,
+                challenger_id,
+                challenged_id,
+                challenger_card,
+                int(time.time()),
+                "pending",
+                message_id,
+            ),
+        )
+        await db.commit()
+        return int(cursor.lastrowid)
+
+async def update_fight_request_message(request_id: int, message_id: int | None, message_channel_id: int | None = None) -> None:
+    async with db_context() as db:
+        await db.execute(
+            "UPDATE fight_requests SET message_id = ?, message_channel_id = COALESCE(?, message_channel_id) WHERE id = ?",
+            (message_id, message_channel_id, request_id),
+        )
+        await db.commit()
+
+async def claim_fight_request(request_id: int, status: str) -> bool:
+    async with db_context() as db:
+        cursor = await db.execute(
+            "UPDATE fight_requests SET status = ? WHERE id = ? AND status = 'pending'",
+            (status, request_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+async def get_pending_fight_requests():
+    async with db_context() as db:
+        cursor = await db.execute(
+            "SELECT * FROM fight_requests WHERE status = 'pending'"
+        )
+        return await cursor.fetchall()
+
+async def create_mission_request(
+    *,
+    guild_id: int,
+    channel_id: int,
+    user_id: int,
+    mission_data: dict,
+    visibility: str,
+    is_admin: bool,
+    message_id: int | None = None,
+) -> int:
+    async with db_context() as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO mission_requests (
+                guild_id, channel_id, user_id, mission_data, visibility, is_admin, created_at, status, message_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                guild_id,
+                channel_id,
+                user_id,
+                json.dumps(mission_data),
+                visibility,
+                1 if is_admin else 0,
+                int(time.time()),
+                "pending",
+                message_id,
+            ),
+        )
+        await db.commit()
+        return int(cursor.lastrowid)
+
+async def update_mission_request_message(request_id: int, message_id: int | None, channel_id: int | None = None) -> None:
+    async with db_context() as db:
+        await db.execute(
+            "UPDATE mission_requests SET message_id = ?, channel_id = COALESCE(?, channel_id) WHERE id = ?",
+            (message_id, channel_id, request_id),
+        )
+        await db.commit()
+
+async def claim_mission_request(request_id: int, status: str) -> bool:
+    async with db_context() as db:
+        cursor = await db.execute(
+            "UPDATE mission_requests SET status = ? WHERE id = ? AND status = 'pending'",
+            (status, request_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+async def get_pending_mission_requests():
+    async with db_context() as db:
+        cursor = await db.execute(
+            "SELECT * FROM mission_requests WHERE status = 'pending'"
+        )
+        return await cursor.fetchall()
 
 async def delete_user_data(user_id: int) -> None:
     async with db_context() as db:
@@ -1789,38 +1926,171 @@ class FightVisibilityView(RestrictedView):
         self.stop()
         await interaction.response.defer()
 
+async def _get_member_safe(guild: discord.Guild, user_id: int) -> discord.Member | None:
+    member = guild.get_member(user_id)
+    if member:
+        return member
+    try:
+        return await guild.fetch_member(user_id)
+    except Exception:
+        return None
+
+async def _maybe_delete_fight_thread(thread_id: int | None, thread_created: bool) -> None:
+    if not thread_created or not thread_id:
+        return
+    try:
+        channel = bot.get_channel(thread_id)
+        if channel is None:
+            channel = await bot.fetch_channel(thread_id)
+        if isinstance(channel, discord.Thread):
+            await channel.delete()
+    except Exception:
+        logging.exception("Unexpected error")
+
+async def _start_fight_from_challenge(
+    interaction: discord.Interaction,
+    *,
+    challenger_id: int,
+    challenged_id: int,
+    challenger_card_name: str,
+    thread_id: int | None,
+    thread_created: bool,
+) -> None:
+    if interaction.guild is None:
+        await interaction.followup.send("❌ Nur in Servern verfügbar.", ephemeral=True)
+        return
+    challenger = await _get_member_safe(interaction.guild, challenger_id)
+    challenged = await _get_member_safe(interaction.guild, challenged_id)
+    if not challenger or not challenged:
+        await interaction.followup.send("❌ Nutzer nicht gefunden. Bitte erneut herausfordern.", ephemeral=True)
+        await _maybe_delete_fight_thread(thread_id, thread_created)
+        return
+    challenger_card = await get_karte_by_name(challenger_card_name)
+    if not challenger_card:
+        await _safe_send_channel(
+            interaction,
+            interaction.channel,
+            content=f"❌ Karte von {challenger.mention} nicht gefunden. Bitte erneut herausfordern.",
+        )
+        await _maybe_delete_fight_thread(thread_id, thread_created)
+        return
+    gegner_karten_liste = await get_user_karten(challenged.id)
+    if not gegner_karten_liste:
+        await _safe_send_channel(
+            interaction,
+            interaction.channel,
+            content=f"❌ {challenged.mention} hat keine Karten! Kampf abgebrochen.",
+        )
+        await _maybe_delete_fight_thread(thread_id, thread_created)
+        return
+    gegner_card_select_view = CardSelectView(challenged.id, gegner_karten_liste, 1)
+    if await _safe_send_channel(
+        interaction,
+        interaction.channel,
+        content=f"{challenged.mention}, wähle deine Karte für den 1v1 Kampf:",
+        view=gegner_card_select_view,
+    ) is None:
+        return
+    await gegner_card_select_view.wait()
+    if not gegner_card_select_view.value:
+        await _safe_send_channel(
+            interaction,
+            interaction.channel,
+            content=f"{challenged.mention} hat keine Karte gewählt. Kampf abgebrochen.",
+        )
+        await _maybe_delete_fight_thread(thread_id, thread_created)
+        return
+    gegner_selected_names = gegner_card_select_view.value
+    gegner_selected_cards = [await get_karte_by_name(name) for name in gegner_selected_names]
+    if not gegner_selected_cards or not gegner_selected_cards[0]:
+        await _safe_send_channel(
+            interaction,
+            interaction.channel,
+            content=f"❌ Karte von {challenged.mention} nicht gefunden. Kampf abgebrochen.",
+        )
+        await _maybe_delete_fight_thread(thread_id, thread_created)
+        return
+    battle_view = BattleView(challenger_card, gegner_selected_cards[0], challenger.id, challenged.id, None)
+    await battle_view.init_with_buffs()
+    log_embed = create_battle_log_embed()
+    battle_log_message = await _safe_send_channel(interaction, interaction.channel, embed=log_embed)
+    if battle_log_message is None:
+        return
+    battle_view.battle_log_message = battle_log_message
+    embed = create_battle_embed(
+        challenger_card,
+        gegner_selected_cards[0],
+        battle_view.player1_hp,
+        battle_view.player2_hp,
+        challenger.id,
+        challenger,
+        challenged,
+    )
+    await _safe_send_channel(interaction, interaction.channel, embed=embed, view=battle_view)
+
 class ChallengeResponseView(RestrictedView):
-    def __init__(self, challenger: discord.Member, challenged: discord.Member, ctx, selected_cards, mode, thread: discord.Thread | None = None):
-        super().__init__(timeout=60)
-        self.challenger = challenger
-        self.challenged = challenged
-        self.ctx = ctx
-        self.selected_cards = selected_cards
-        self.mode = mode
-        self.value = None
-        self.thread = thread
+    def __init__(
+        self,
+        challenger_id: int,
+        challenged_id: int,
+        challenger_card_name: str,
+        *,
+        request_id: int,
+        thread_id: int | None,
+        thread_created: bool,
+    ):
+        super().__init__(timeout=None)
+        self.challenger_id = challenger_id
+        self.challenged_id = challenged_id
+        self.challenger_card_name = challenger_card_name
+        self.request_id = request_id
+        self.thread_id = thread_id
+        self.thread_created = thread_created
     @ui.button(label="Kämpfen", style=discord.ButtonStyle.success)
     async def accept(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user != self.challenged:
+        if interaction.user.id != self.challenged_id:
             await interaction.response.send_message("Nur der Herausgeforderte kann annehmen!", ephemeral=True)
             return
-        self.value = True
-        self.stop()
+        if not await claim_fight_request(self.request_id, "accepted"):
+            await interaction.response.send_message("❌ Diese Kampf-Anfrage ist nicht mehr offen.", ephemeral=True)
+            return
+        await interaction.response.defer()
         # Falls privater Thread genutzt wird, stelle sicher, dass der Herausgeforderte hinzugefügt ist
         try:
-            if self.thread is not None:
-                await self.thread.add_user(self.challenged)
+            if self.thread_id:
+                thread = bot.get_channel(self.thread_id)
+                if thread is None:
+                    thread = await bot.fetch_channel(self.thread_id)
+                if isinstance(thread, discord.Thread):
+                    await thread.add_user(interaction.user)
         except Exception:
             logging.exception("Unexpected error")
-        await interaction.response.defer()
+        await _start_fight_from_challenge(
+            interaction,
+            challenger_id=self.challenger_id,
+            challenged_id=self.challenged_id,
+            challenger_card_name=self.challenger_card_name,
+            thread_id=self.thread_id,
+            thread_created=self.thread_created,
+        )
+        self.stop()
     @ui.button(label="Ablehnen", style=discord.ButtonStyle.danger)
     async def decline(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user != self.challenged:
+        if interaction.user.id != self.challenged_id:
             await interaction.response.send_message("Nur der Herausgeforderte kann ablehnen!", ephemeral=True)
             return
-        self.value = False
+        if not await claim_fight_request(self.request_id, "declined"):
+            await interaction.response.send_message("❌ Diese Kampf-Anfrage ist nicht mehr offen.", ephemeral=True)
+            return
+        await interaction.response.send_message("Kampf abgelehnt.", ephemeral=True)
+        try:
+            await interaction.channel.send(
+                content=f"<@{self.challenger_id}>, {interaction.user.mention} hat den Kampf abgelehnt."
+            )
+        except Exception:
+            logging.exception("Unexpected error")
+        await _maybe_delete_fight_thread(self.thread_id, self.thread_created)
         self.stop()
-        await interaction.response.defer()
 
 class AdminCloseView(RestrictedView):
     def __init__(self, thread: discord.Thread):
@@ -2014,6 +2284,7 @@ async def mission(interaction: discord.Interaction):
     # Prüfe Admin-Berechtigung
     is_admin_user = await is_admin(interaction)
     
+    mission_count = 0
     if not is_admin_user:
         # Prüfe tägliche Mission-Limits für normale Nutzer
         mission_count = await get_mission_count(interaction.user.id)
@@ -2027,33 +2298,41 @@ async def mission(interaction: discord.Interaction):
     
     # Erstelle Mission-Embed
     # Anzeige angepasst auf 2/Tag für Nicht-Admins
-    embed = discord.Embed(title=f"Mission {mission_count + 1}/2" if not is_admin_user else "Mission (Admin)", 
-                         description="Hier kommt später die Story. Hier kommt später die Story.")
-    embed.add_field(name="Wellen", value=f"{waves}", inline=True)
-    embed.add_field(name="🎁 Belohnung", value=f"**{reward_card['name']}**", inline=True)
-    embed.set_thumbnail(url=reward_card["bild"])
+    mission_title = f"Mission {mission_count + 1}/2" if not is_admin_user else "Mission (Admin)"
+    mission_description = "Hier kommt später die Story. Hier kommt später die Story."
     
     # Zeige Mission-Auswahl
     mission_data = {
         "waves": waves,
         "reward_card": reward_card,
         "current_wave": 0,
-        "player_card": None
+        "player_card": None,
+        "title": mission_title,
+        "description": mission_description,
     }
-    
-    mission_view = MissionAcceptView(interaction.user.id, mission_data)
-    await _send_with_visibility(interaction, visibility_key, embed=embed, view=mission_view)
-    await mission_view.wait()
-    
-    if not mission_view.value:
-        await interaction.followup.send("Mission abgelehnt.", ephemeral=ephemeral)
-        return
-    
-    # Mission angenommen - starte Wellen-System
-    # Erhöhe Zähler beim Start (nur Nicht-Admins)
-    if not is_admin_user:
-        await increment_mission_count(interaction.user.id)
-    await start_mission_waves(interaction, mission_data, is_admin_user, ephemeral)
+    embed = _build_mission_embed(mission_data)
+
+    request_id = await create_mission_request(
+        guild_id=interaction.guild_id or 0,
+        channel_id=interaction.channel_id or 0,
+        user_id=interaction.user.id,
+        mission_data=mission_data,
+        visibility=visibility,
+        is_admin=is_admin_user,
+    )
+    mission_view = MissionAcceptView(
+        interaction.user.id,
+        mission_data,
+        request_id=request_id,
+        visibility=visibility,
+        is_admin=is_admin_user,
+    )
+    message = await _send_with_visibility(interaction, visibility_key, embed=embed, view=mission_view)
+    if isinstance(message, discord.Message):
+        await update_mission_request_message(request_id, message.id, message.channel.id)
+    else:
+        # Falls keine Message zurückkommt (ephemeral), bleibt Request trotzdem offen.
+        pass
 
 async def start_mission_waves(interaction, mission_data, is_admin, ephemeral: bool):
     """Startet das Wellen-System für die Mission"""
@@ -2982,6 +3261,7 @@ async def fight(interaction: discord.Interaction):
         return
     # Privater Thread ggf. erstellen und beide hinzufügen
     target_channel: discord.abc.Messageable = interaction.channel
+    thread_created = False
     if is_private and isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
         try:
             if isinstance(interaction.channel, discord.TextChannel) and me is not None:
@@ -3001,6 +3281,7 @@ async def fight(interaction: discord.Interaction):
                     await fight_thread.add_user(interaction.user)
                     await fight_thread.add_user(challenged)
                     target_channel = fight_thread
+                    thread_created = True
             elif isinstance(interaction.channel, discord.Thread):
                 if me is not None and not _can_send_in_channel(interaction.channel, me):
                     await interaction.followup.send(
@@ -3013,82 +3294,38 @@ async def fight(interaction: discord.Interaction):
             fight_thread = None
             target_channel = interaction.channel
 
-    # Nachricht an Herausgeforderten
-    challenge_view = ChallengeResponseView(interaction.user, challenged, interaction, selected_cards, 1, fight_thread)
-    if await _safe_send_channel(
+    # Nachricht an Herausgeforderten + Request speichern
+    request_id = await create_fight_request(
+        guild_id=interaction.guild_id or 0,
+        origin_channel_id=interaction.channel_id or 0,
+        message_channel_id=getattr(target_channel, "id", 0) or 0,
+        thread_id=fight_thread.id if thread_created and fight_thread else None,
+        thread_created=thread_created,
+        challenger_id=interaction.user.id,
+        challenged_id=challenged.id,
+        challenger_card=selected_cards[0]["name"],
+    )
+    challenge_view = ChallengeResponseView(
+        interaction.user.id,
+        challenged.id,
+        selected_cards[0]["name"],
+        request_id=request_id,
+        thread_id=fight_thread.id if thread_created and fight_thread else None,
+        thread_created=thread_created,
+    )
+    message = await _safe_send_channel(
         interaction,
         target_channel,
         content=f"{challenged.mention}, du wurdest zu einem 1v1 Kartenkampf herausgefordert!",
         view=challenge_view,
-    ) is None:
+    )
+    if message is None:
+        await claim_fight_request(request_id, "failed")
+        await _maybe_delete_fight_thread(fight_thread.id if fight_thread else None, thread_created)
         return
+    await update_fight_request_message(request_id, message.id, getattr(message.channel, "id", None))
     await interaction.followup.send(f"Warte auf Antwort von {challenged.mention}...", ephemeral=True)
-    await challenge_view.wait()
-    
-    if challenge_view.value is None:
-        await interaction.followup.send(f"{challenged.mention} hat nicht rechtzeitig geantwortet. Kampf abgebrochen.", ephemeral=True)
-        # Thread aufräumen, falls erstellt
-        try:
-            if fight_thread is not None:
-                await fight_thread.delete()
-        except Exception:
-            logging.exception("Unexpected error")
-        return
-    if challenge_view.value is False:
-        await interaction.followup.send(f"{challenged.mention} hat den Kampf abgelehnt.", ephemeral=True)
-        try:
-            if fight_thread is not None:
-                await fight_thread.delete()
-        except Exception:
-            logging.exception("Unexpected error")
-        return
-    
-    # Schritt 3: Gegner wählt seine Karte
-    gegner_karten_liste = await get_user_karten(challenged.id)
-    if not gegner_karten_liste:
-        await interaction.followup.send(f"{challenged.mention} hat keine Karten! Kampf abgebrochen.", ephemeral=True)
-        try:
-            if fight_thread is not None:
-                await fight_thread.delete()
-        except Exception:
-            logging.exception("Unexpected error")
-        return
-    
-    gegner_card_select_view = CardSelectView(challenged.id, gegner_karten_liste, 1)
-    if await _safe_send_channel(
-        interaction,
-        fight_thread or interaction.channel,
-        content=f"{challenged.mention}, wähle deine Karte für den 1v1 Kampf:",
-        view=gegner_card_select_view,
-    ) is None:
-        return
-    await gegner_card_select_view.wait()
-    if not gegner_card_select_view.value:
-        await interaction.followup.send(f"{challenged.mention} hat keine Karte gewählt. Kampf abgebrochen.", ephemeral=True)
-        try:
-            if fight_thread is not None:
-                await fight_thread.delete()
-        except Exception:
-            logging.exception("Unexpected error")
-        return
-    
-    gegner_selected_names = gegner_card_select_view.value
-    gegner_selected_cards = [await get_karte_by_name(name) for name in gegner_selected_names]
-    
-    # 1v1 Kampf starten
-    battle_view = BattleView(selected_cards[0], gegner_selected_cards[0], interaction.user.id, challenged.id, None)
-    await battle_view.init_with_buffs()
-    
-    # KAMPF-LOG ZUERST senden (wird über der Kampf-Nachricht angezeigt)
-    log_embed = create_battle_log_embed()
-    battle_log_message = await _safe_send_channel(interaction, fight_thread or interaction.channel, embed=log_embed)
-    if battle_log_message is None:
-        return
-    battle_view.battle_log_message = battle_log_message
-    
-    # DANN Kampf-Nachricht senden (erscheint unter dem Log)
-    embed = create_battle_embed(selected_cards[0], gegner_selected_cards[0], battle_view.player1_hp, battle_view.player2_hp, interaction.user.id, interaction.user, challenged)
-    await _safe_send_channel(interaction, fight_thread or interaction.channel, embed=embed, view=battle_view)
+    return
 
 
 
@@ -3585,29 +3822,40 @@ async def give(interaction: discord.Interaction):
 
 # View für Mission-Auswahl
 class MissionAcceptView(RestrictedView):
-    def __init__(self, user_id, mission_data):
-        super().__init__(timeout=60)
+    def __init__(self, user_id, mission_data, *, request_id: int, visibility: str, is_admin: bool):
+        super().__init__(timeout=None)
         self.user_id = user_id
         self.mission_data = mission_data
-        self.value = None
+        self.request_id = request_id
+        self.visibility = visibility
+        self.is_admin = is_admin
 
     @ui.button(label="Annehmen", style=discord.ButtonStyle.success)
     async def accept(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Nur der Mission-User kann annehmen!", ephemeral=True)
             return
-        self.value = True
+        if not await claim_mission_request(self.request_id, "accepted"):
+            await interaction.response.send_message("❌ Diese Missions-Anfrage ist nicht mehr offen.", ephemeral=True)
+            return
+        ephemeral = self.visibility != VISIBILITY_PUBLIC and interaction.guild is not None
+        await interaction.response.defer(ephemeral=ephemeral)
+        if not self.is_admin:
+            await increment_mission_count(self.user_id)
+        await start_mission_waves(interaction, self.mission_data, self.is_admin, ephemeral)
         self.stop()
-        await interaction.response.defer()
 
     @ui.button(label="Ablehnen", style=discord.ButtonStyle.danger)
     async def decline(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Nur der Mission-User kann ablehnen!", ephemeral=True)
             return
-        self.value = False
+        if not await claim_mission_request(self.request_id, "declined"):
+            await interaction.response.send_message("❌ Diese Missions-Anfrage ist nicht mehr offen.", ephemeral=True)
+            return
+        ephemeral = self.visibility != VISIBILITY_PUBLIC and interaction.guild is not None
+        await interaction.response.send_message("Mission abgelehnt.", ephemeral=ephemeral)
         self.stop()
-        await interaction.response.defer()
 
 # View für Karten-Auswahl bei Pause
 class MissionCardSelectView(RestrictedView):
@@ -4200,6 +4448,90 @@ async def _safe_send_channel(
             content="❌ Mir fehlen Rechte in diesem Kanal/Thread (View/Send/Thread-Rechte). Bitte gib mir Zugriff.",
         )
         return None
+
+async def _fetch_channel_safe(channel_id: int | None):
+    if not channel_id:
+        return None
+    try:
+        return await bot.fetch_channel(channel_id)
+    except Exception:
+        return None
+
+async def resend_pending_requests() -> None:
+    try:
+        fight_rows = await get_pending_fight_requests()
+    except Exception:
+        logging.exception("Failed to load pending fight requests")
+        fight_rows = []
+    for row in fight_rows:
+        try:
+            guild_id = int(row["guild_id"]) if row["guild_id"] else 0
+            guild = bot.get_guild(guild_id) if guild_id else None
+            if guild is None:
+                continue
+            channel = None
+            thread_id = row["thread_id"]
+            if thread_id:
+                channel = guild.get_channel(int(thread_id)) or await _fetch_channel_safe(int(thread_id))
+            if channel is None and row["message_channel_id"]:
+                channel = guild.get_channel(int(row["message_channel_id"])) or await _fetch_channel_safe(int(row["message_channel_id"]))
+            if channel is None and row["origin_channel_id"]:
+                channel = guild.get_channel(int(row["origin_channel_id"])) or await _fetch_channel_safe(int(row["origin_channel_id"]))
+            if channel is None:
+                continue
+            if not await is_channel_allowed_ids(guild.id, getattr(channel, "id", None), getattr(channel, "parent_id", None)):
+                continue
+            view = ChallengeResponseView(
+                int(row["challenger_id"]),
+                int(row["challenged_id"]),
+                row["challenger_card"],
+                request_id=int(row["id"]),
+                thread_id=int(row["thread_id"]) if row["thread_id"] else None,
+                thread_created=bool(row["thread_created"]),
+            )
+            msg = await channel.send(
+                content=f"<@{row['challenged_id']}>, du wurdest zu einem 1v1 Kartenkampf herausgefordert!",
+                view=view,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+            await update_fight_request_message(int(row["id"]), msg.id, msg.channel.id)
+        except Exception:
+            logging.exception("Failed to resend fight request")
+
+    try:
+        mission_rows = await get_pending_mission_requests()
+    except Exception:
+        logging.exception("Failed to load pending mission requests")
+        mission_rows = []
+    for row in mission_rows:
+        try:
+            guild_id = int(row["guild_id"]) if row["guild_id"] else 0
+            guild = bot.get_guild(guild_id) if guild_id else None
+            if guild is None:
+                continue
+            channel = None
+            if row["channel_id"]:
+                channel = guild.get_channel(int(row["channel_id"])) or await _fetch_channel_safe(int(row["channel_id"]))
+            if channel is None:
+                continue
+            if not await is_channel_allowed_ids(guild.id, getattr(channel, "id", None), getattr(channel, "parent_id", None)):
+                continue
+            try:
+                mission_data = json.loads(row["mission_data"]) if row["mission_data"] else {}
+            except Exception:
+                mission_data = {}
+            embed = _build_mission_embed(mission_data)
+            view = MissionAcceptView(
+                int(row["user_id"]),
+                mission_data,
+                request_id=int(row["id"]),
+                visibility=row["visibility"] or VISIBILITY_PRIVATE,
+                is_admin=bool(row["is_admin"]),
+            )
+            msg = await channel.send(embed=embed, view=view)
+            await update_mission_request_message(int(row["id"]), msg.id, msg.channel.id)
+        except Exception:
+            logging.exception("Failed to resend mission request")
 
 VISIBILITY_PUBLIC = "public"
 VISIBILITY_PRIVATE = "private"

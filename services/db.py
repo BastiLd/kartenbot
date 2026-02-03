@@ -172,6 +172,40 @@ async def init_db():
         )
         """
     )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fight_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER,
+            origin_channel_id INTEGER,
+            message_channel_id INTEGER,
+            thread_id INTEGER,
+            thread_created INTEGER DEFAULT 0,
+            challenger_id INTEGER,
+            challenged_id INTEGER,
+            challenger_card TEXT,
+            created_at INTEGER,
+            status TEXT,
+            message_id INTEGER
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mission_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER,
+            channel_id INTEGER,
+            user_id INTEGER,
+            mission_data TEXT,
+            visibility TEXT,
+            is_admin INTEGER DEFAULT 0,
+            created_at INTEGER,
+            status TEXT,
+            message_id INTEGER
+        )
+        """
+    )
 
     await _ensure_column(db, "user_daily", "mission_count", "INTEGER DEFAULT 0")
     await _ensure_column(db, "user_daily", "last_mission_reset", "INTEGER")
