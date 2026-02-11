@@ -147,28 +147,34 @@ def create_battle_embed(
     player2_burning = active_effects and any(e["type"] == "burning" for e in active_effects.get(player2_id, []))
     player1_confused = active_effects and any(e["type"] == "confusion" for e in active_effects.get(player1_id, []))
     player2_confused = active_effects and any(e["type"] == "confusion" for e in active_effects.get(player2_id, []))
+    player1_stealth = active_effects and any(e["type"] == "stealth" for e in active_effects.get(player1_id, []))
+    player2_stealth = active_effects and any(e["type"] == "stealth" for e in active_effects.get(player2_id, []))
 
     if current_turn == (user1.id if user1 else 0):
         player1_label = (
             f"**\U0001f7e5 {user1_name}s Karte"
             f"{'\U0001f525' if player1_burning else ''}"
-            f"{' \U0001f300' if player1_confused else ''}**"
+            f"{' \U0001f300' if player1_confused else ''}"
+            f"{' \U0001f977' if player1_stealth else ''}**"
         )
         player2_label = (
             f"\U0001f7e6 {user2_name}s Karte"
             f"{'\U0001f525' if player2_burning else ''}"
             f"{' \U0001f300' if player2_confused else ''}"
+            f"{' \U0001f977' if player2_stealth else ''}"
         )
     else:
         player1_label = (
             f"\U0001f7e5 {user1_name}s Karte"
             f"{'\U0001f525' if player1_burning else ''}"
             f"{' \U0001f300' if player1_confused else ''}"
+            f"{' \U0001f977' if player1_stealth else ''}"
         )
         player2_label = (
             f"**\U0001f7e6 {user2_name}s Karte"
             f"{'\U0001f525' if player2_burning else ''}"
-            f"{' \U0001f300' if player2_confused else ''}**"
+            f"{' \U0001f300' if player2_confused else ''}"
+            f"{' \U0001f977' if player2_stealth else ''}**"
         )
 
     embed.add_field(name=player1_label, value=f"{player1_card['name']}\nHP: {player1_hp}", inline=True)

@@ -142,6 +142,55 @@ def berlin_midnight_epoch() -> int:
         midnight_ts = time.mktime((tm.tm_year, tm.tm_mon, tm.tm_mday, 0, 0, 0, tm.tm_wday, tm.tm_yday, tm.tm_isdst))
         return int(midnight_ts)
 
+def _format_amount_for_label(value) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, list) and len(value) == 2:
+        try:
+            return f"{int(value[0])}-{int(value[1])}"
+        except Exception:
+            return None
+    try:
+        return str(int(value))
+    except Exception:
+        return None
+
+def _heal_label_for_attack(attack: dict) -> str | None:
+    heal_data = attack.get("heal")
+    heal_text = _format_amount_for_label(heal_data)
+    if heal_text:
+        return heal_text
+
+    lifesteal_ratio = attack.get("lifesteal_ratio")
+    if lifesteal_ratio:
+        try:
+            pct = int(round(float(lifesteal_ratio) * 100))
+        except Exception:
+            pct = 0
+        if pct > 0:
+            return f"{pct}% LS"
+
+    for effect in attack.get("effects", []):
+        effect_type = effect.get("type")
+        if effect_type == "regen":
+            regen_text = _format_amount_for_label(effect.get("heal"))
+            try:
+                turns = max(1, int(effect.get("turns", 1) or 1))
+            except Exception:
+                turns = 1
+            if regen_text:
+                return f"{regen_text}x{turns}" if turns > 1 else regen_text
+        elif effect_type == "heal":
+            direct_heal = _format_amount_for_label(effect.get("amount"))
+            if direct_heal:
+                return direct_heal
+        elif effect_type == "mix_heal_or_max":
+            mix_heal = _format_amount_for_label(effect.get("heal"))
+            if mix_heal:
+                return f"{mix_heal}/MAX"
+            return "MAX"
+    return None
+
 # Volltreffer-System Funktionen
 @bot.event
 async def on_ready():
@@ -670,6 +719,8 @@ class BattleView(RestrictedView):
         # Diese werden später async geladen - erstmal Base-Werte setzen
         self.player1_hp = base_hp1
         self.player2_hp = base_hp2
+        self.player1_max_hp = base_hp1
+        self.player2_max_hp = base_hp2
         self.hp_view = hp_view
 
         # COOLDOWN-SYSTEM: Tracking für starke Attacken (min>90 und max>99 Schaden inkl. Buffs)
@@ -686,6 +737,18 @@ class BattleView(RestrictedView):
         self.active_effects = {player1_id: [], player2_id: []}
         # Confusion flags: if a player is confused, their next turn is forced-random
         self.confused_next_turn = {player1_id: False, player2_id: False}
+        # Manual reload tracking (e.g. Praezisionsschuss -> Nachladen)
+        self.manual_reload_needed = {player1_id: {}, player2_id: {}}
+        self.stunned_next_turn = {player1_id: False, player2_id: False}
+        self.special_lock_next_turn = {player1_id: False, player2_id: False}
+        self.blind_next_attack = {player1_id: 0.0, player2_id: 0.0}
+        self.pending_flat_bonus = {player1_id: 0, player2_id: 0}
+        self.pending_flat_bonus_uses = {player1_id: 0, player2_id: 0}
+        self.pending_multiplier = {player1_id: 1.0, player2_id: 1.0}
+        self.pending_multiplier_uses = {player1_id: 0, player2_id: 0}
+        self.force_max_next = {player1_id: 0, player2_id: 0}
+        self.incoming_modifiers = {player1_id: [], player2_id: []}
+        self.absorbed_damage = {player1_id: 0, player2_id: 0}
 
     def set_confusion(self, player_id: int, applier_id: int) -> None:
         """Mark player as confused for next turn and reflect it in active_effects for UI."""
@@ -706,6 +769,145 @@ class BattleView(RestrictedView):
             except Exception:
                 logging.exception("Unexpected error")
 
+    def is_reload_needed(self, player_id: int, attack_index: int) -> bool:
+        return bool(self.manual_reload_needed.get(player_id, {}).get(attack_index, False))
+
+    def set_reload_needed(self, player_id: int, attack_index: int, needed: bool) -> None:
+        bucket = self.manual_reload_needed.setdefault(player_id, {})
+        if needed:
+            bucket[attack_index] = True
+        else:
+            bucket.pop(attack_index, None)
+
+    def _find_effect(self, player_id: int, effect_type: str):
+        for effect in self.active_effects.get(player_id, []):
+            if effect.get("type") == effect_type:
+                return effect
+        return None
+
+    def has_stealth(self, player_id: int) -> bool:
+        return self._find_effect(player_id, "stealth") is not None
+
+    def consume_stealth(self, player_id: int) -> bool:
+        effect = self._find_effect(player_id, "stealth")
+        if not effect:
+            return False
+        try:
+            self.active_effects[player_id].remove(effect)
+        except ValueError:
+            pass
+        return True
+
+    def grant_stealth(self, player_id: int) -> None:
+        try:
+            self.active_effects[player_id] = [e for e in self.active_effects.get(player_id, []) if e.get("type") != "stealth"]
+        except Exception:
+            self.active_effects[player_id] = []
+        self.active_effects[player_id].append({"type": "stealth", "duration": 1, "applier": player_id})
+
+    def _max_hp_for(self, player_id: int) -> int:
+        return self.player1_max_hp if player_id == self.player1_id else self.player2_max_hp
+
+    def _hp_for(self, player_id: int) -> int:
+        return self.player1_hp if player_id == self.player1_id else self.player2_hp
+
+    def _set_hp_for(self, player_id: int, value: int) -> None:
+        if player_id == self.player1_id:
+            self.player1_hp = max(0, value)
+        else:
+            self.player2_hp = max(0, value)
+
+    def heal_player(self, player_id: int, amount: int) -> int:
+        if amount <= 0:
+            return 0
+        before = self._hp_for(player_id)
+        after = min(self._max_hp_for(player_id), before + amount)
+        self._set_hp_for(player_id, after)
+        return after - before
+
+    def queue_incoming_modifier(
+        self,
+        player_id: int,
+        *,
+        percent: float = 0.0,
+        flat: int = 0,
+        reflect: float = 0.0,
+        store_ratio: float = 0.0,
+        cap: int | None = None,
+        evade: bool = False,
+        counter: int = 0,
+        turns: int = 1,
+    ) -> None:
+        if turns <= 0:
+            turns = 1
+        for _ in range(turns):
+            self.incoming_modifiers[player_id].append(
+                {
+                    "percent": max(0.0, float(percent)),
+                    "flat": max(0, int(flat)),
+                    "reflect": max(0.0, float(reflect)),
+                    "store_ratio": max(0.0, float(store_ratio)),
+                    "cap": int(cap) if cap is not None else None,
+                    "evade": bool(evade),
+                    "counter": max(0, int(counter)),
+                }
+            )
+
+    def resolve_incoming_modifiers(self, defender_id: int, raw_damage: int) -> tuple[int, int, bool, int]:
+        if raw_damage <= 0 or not self.incoming_modifiers.get(defender_id):
+            return raw_damage, 0, False, 0
+        mod = self.incoming_modifiers[defender_id].pop(0)
+        if mod.get("evade"):
+            return 0, 0, True, int(mod.get("counter", 0) or 0)
+
+        damage = max(0, int(raw_damage))
+        prevented = 0
+
+        percent = float(mod.get("percent", 0.0) or 0.0)
+        if percent > 0:
+            cut = int(round(damage * percent))
+            damage -= cut
+            prevented += cut
+
+        flat = int(mod.get("flat", 0) or 0)
+        if flat > 0:
+            cut = min(flat, damage)
+            damage -= cut
+            prevented += cut
+
+        cap = mod.get("cap")
+        if cap is not None and damage > int(cap):
+            cut = damage - int(cap)
+            damage = int(cap)
+            prevented += cut
+
+        reflect_ratio = float(mod.get("reflect", 0.0) or 0.0)
+        reflected = int(round(prevented * reflect_ratio)) if reflect_ratio > 0 else 0
+
+        store_ratio = float(mod.get("store_ratio", 0.0) or 0.0)
+        if store_ratio > 0 and prevented > 0:
+            self.absorbed_damage[defender_id] += int(round(prevented * store_ratio))
+
+        return max(0, damage), max(0, reflected), False, 0
+
+    def apply_regen_tick(self, player_id: int) -> int:
+        total = 0
+        remove: list[dict] = []
+        for effect in self.active_effects.get(player_id, []):
+            if effect.get("type") != "regen":
+                continue
+            heal = int(effect.get("heal", 0) or 0)
+            total += self.heal_player(player_id, heal)
+            effect["duration"] = int(effect.get("duration", 0) or 0) - 1
+            if effect["duration"] <= 0:
+                remove.append(effect)
+        for effect in remove:
+            try:
+                self.active_effects[player_id].remove(effect)
+            except ValueError:
+                pass
+        return total
+
     def _status_icons(self, player_id: int) -> str:
         effects = self.active_effects.get(player_id, [])
         icons = []
@@ -713,6 +915,8 @@ class BattleView(RestrictedView):
             icons.append("\U0001f525")
         if any(e.get("type") == "confusion" for e in effects):
             icons.append("\U0001f300")
+        if any(e.get("type") == "stealth" for e in effects):
+            icons.append("\U0001f977")
         return f" {' '.join(icons)}" if icons else ""
 
     async def _safe_edit_battle_log(self, embed) -> None:
@@ -789,6 +993,8 @@ class BattleView(RestrictedView):
         # Finale HP-Werte mit Buffs
         self.player1_hp += health_buff1
         self.player2_hp += health_buff2
+        self.player1_max_hp = self.player1_hp
+        self.player2_max_hp = self.player2_hp
         
         # HP-View updaten falls vorhanden
         if self.hp_view:
@@ -845,11 +1051,32 @@ class BattleView(RestrictedView):
                     elif eff_type == "confusion":
                         if "🌀" not in effect_icons:
                             effect_icons.append("🌀")
+                    elif eff_type == "stealth":
+                        if "🥷" not in effect_icons:
+                            effect_icons.append("🥷")
+                    elif eff_type == "stun":
+                        if "🛑" not in effect_icons:
+                            effect_icons.append("🛑")
+                    elif eff_type in {"damage_reduction", "damage_reduction_flat", "reflect", "absorb_store", "cap_damage"}:
+                        if "🛡️" not in effect_icons:
+                            effect_icons.append("🛡️")
+                    elif eff_type in {"damage_boost", "damage_multiplier"}:
+                        if "⚡" not in effect_icons:
+                            effect_icons.append("⚡")
+                    elif eff_type in {"force_max", "mix_heal_or_max"}:
+                        if "🎯" not in effect_icons:
+                            effect_icons.append("🎯")
+                    elif eff_type in {"heal", "regen"}:
+                        if "❤️" not in effect_icons:
+                            effect_icons.append("❤️")
+                heal_label = _heal_label_for_attack(attack)
+                if heal_label and "❤️" not in effect_icons:
+                    effect_icons.append("❤️")
                 effects_label = f" {' '.join(effect_icons)}" if effect_icons else ""
                 
                 # COOLDOWN-SYSTEM: Prüfe ob Attacke auf Cooldown ist (nur für aktuellen Spieler)
                 is_on_cooldown = self.is_attack_on_cooldown(self.current_turn, i)
-                max_damage = self.get_attack_max_damage(base_damage, damage_buff)
+                is_reload_action = bool(attack.get("requires_reload") and self.is_reload_needed(self.current_turn, i))
                 
                 if is_on_cooldown:
                     # Grau für Cooldown beim aktuellen Spieler
@@ -857,10 +1084,18 @@ class BattleView(RestrictedView):
                     cooldown_turns = self.attack_cooldowns[self.current_turn][i]
                     button.label = f"{attack['name']} (Cooldown: {cooldown_turns})"
                     button.disabled = True
+                elif is_reload_action:
+                    button.style = discord.ButtonStyle.primary
+                    button.label = str(attack.get("reload_name") or "Nachladen")
+                    button.disabled = False
                 else:
-                    # Rot für normale Attacken
-                    button.style = discord.ButtonStyle.danger
-                    button.label = f"{attack['name']} ({damage_text}{buff_text}){effects_label}"
+                    if heal_label is not None:
+                        button.style = discord.ButtonStyle.success
+                        button.label = f"{attack['name']} (+{heal_label}){effects_label}"
+                    else:
+                        # Rot für normale Attacken
+                        button.style = discord.ButtonStyle.danger
+                        button.label = f"{attack['name']} ({damage_text}{buff_text}){effects_label}"
                     button.disabled = False
 
         # Deaktiviere restliche Buttons, falls die aktuelle Karte weniger als 4 Attacken hat
@@ -918,9 +1153,43 @@ class BattleView(RestrictedView):
             await interaction.response.send_message("Du bist nicht an der Reihe!", ephemeral=True)
             return
 
+        if self.stunned_next_turn.get(self.current_turn, False):
+            self.stunned_next_turn[self.current_turn] = False
+            await interaction.response.defer()
+            self.current_turn = self.player2_id if self.current_turn == self.player1_id else self.player1_id
+            self.reduce_cooldowns(self.current_turn)
+            await self.update_attack_buttons()
+            user1 = interaction.guild.get_member(self.player1_id)
+            user2 = interaction.guild.get_member(self.player2_id)
+            battle_embed = create_battle_embed(
+                self.player1_card,
+                self.player2_card,
+                self.player1_hp,
+                self.player2_hp,
+                self.current_turn,
+                user1,
+                user2,
+                self.active_effects,
+            )
+            battle_embed.description = (battle_embed.description or "") + "\n\n🛑 Der Gegner war betäubt und hat seinen Zug ausgesetzt."
+            try:
+                await interaction.message.edit(embed=battle_embed, view=self)
+            except Exception:
+                await interaction.channel.send(embed=battle_embed, view=self)
+            if self.current_turn == 0:
+                await self.execute_bot_attack(interaction.message)
+            return
+
         # COOLDOWN-SYSTEM: Prüfe ob Attacke auf Cooldown ist
         if self.is_attack_on_cooldown(self.current_turn, attack_index):
             await interaction.response.send_message("Diese Attacke ist noch auf Cooldown!", ephemeral=True)
+            return
+
+        if self.special_lock_next_turn.get(self.current_turn, False) and attack_index != 0:
+            await interaction.response.send_message(
+                "Diese Runde sind nur Standard-Angriffe erlaubt (Attacke 1).",
+                ephemeral=True,
+            )
             return
 
         # Bestimme Angreifer und Verteidiger zuerst
@@ -939,6 +1208,9 @@ class BattleView(RestrictedView):
 
         attacker_display = attacker_user.display_name if attacker_user else "Bot"
         defender_display = defender_user.display_name if defender_user else "Bot"
+
+        # Regeneration tickt beim Start des eigenen Zuges
+        self.apply_regen_tick(self.current_turn)
 
         # SIDE EFFECTS: Apply effects on defender before attack
         effects_to_remove = []
@@ -972,7 +1244,8 @@ class BattleView(RestrictedView):
 
         attack = attacks[attack_index]
         base_damage = attack["damage"]
-        attack_name = attack["name"]
+        is_reload_action = bool(attack.get("requires_reload") and self.is_reload_needed(self.current_turn, attack_index))
+        attack_name = str(attack.get("reload_name") or "Nachladen") if is_reload_action else attack["name"]
 
         # NEUES BUFF-SYSTEM: Hole User-spezifische Damage-Buffs
         card_buffs = await get_card_buffs(self.current_turn, current_card["name"])
@@ -981,36 +1254,166 @@ class BattleView(RestrictedView):
             if buff_type == "damage" and attack_number == (attack_index + 1):
                 damage_buff += buff_amount
 
-        # CONFUSION: Falls Angreifer verwirrt ist, 77% Selbstschaden, 23% normaler Treffer
+        attacker_hp = self._hp_for(self.current_turn)
+        attacker_max_hp = self._max_hp_for(self.current_turn)
+        defender_hp = self._hp_for(defender_id)
+        defender_max_hp = self._max_hp_for(defender_id)
+
+        conditional_self_pct = attack.get("bonus_if_self_hp_below_pct")
+        conditional_self_bonus = int(attack.get("bonus_damage_if_condition", 0) or 0)
+        if conditional_self_pct is not None and attacker_hp <= int(attacker_max_hp * float(conditional_self_pct)):
+            damage_buff += conditional_self_bonus
+
+        conditional_enemy_pct = attack.get("conditional_enemy_hp_below_pct")
+        if conditional_enemy_pct is not None and defender_hp <= int(defender_max_hp * float(conditional_enemy_pct)):
+            damage_if_condition = attack.get("damage_if_condition")
+            if isinstance(damage_if_condition, list) and len(damage_if_condition) == 2:
+                base_damage = [int(damage_if_condition[0]), int(damage_if_condition[1])]
+            elif isinstance(damage_if_condition, int):
+                base_damage = [damage_if_condition, damage_if_condition]
+
+        if attack.get("add_absorbed_damage"):
+            damage_buff += int(self.absorbed_damage.get(self.current_turn, 0))
+            self.absorbed_damage[self.current_turn] = 0
+
+        is_damaging_attack = self.get_attack_max_damage(base_damage, 0) > 0
+        attack_multiplier = 1.0
+        force_max_damage = False
+        if is_damaging_attack:
+            if self.pending_flat_bonus_uses.get(self.current_turn, 0) > 0:
+                damage_buff += int(self.pending_flat_bonus.get(self.current_turn, 0))
+                self.pending_flat_bonus_uses[self.current_turn] -= 1
+                if self.pending_flat_bonus_uses[self.current_turn] <= 0:
+                    self.pending_flat_bonus[self.current_turn] = 0
+            if self.pending_multiplier_uses.get(self.current_turn, 0) > 0:
+                attack_multiplier = float(self.pending_multiplier.get(self.current_turn, 1.0) or 1.0)
+                self.pending_multiplier_uses[self.current_turn] -= 1
+                if self.pending_multiplier_uses[self.current_turn] <= 0:
+                    self.pending_multiplier[self.current_turn] = 1.0
+            if self.force_max_next.get(self.current_turn, 0) > 0:
+                force_max_damage = True
+                self.force_max_next[self.current_turn] -= 1
+
+        # Manual reload action: spend turn to load the shot again.
         attack_hits_enemy = True
-        max_damage_threshold = self.get_attack_max_damage(base_damage, damage_buff)
-        if self.confused_next_turn.get(self.current_turn, False):
-            if random.random() < 0.77:
-                # Selbstschaden anstatt Gegner-Schaden
-                self_damage = random.randint(15, 20) if max_damage_threshold <= 100 else random.randint(40, 60)
-                if self.current_turn == self.player1_id:
-                    self.player1_hp -= self_damage
-                else:
-                    self.player2_hp -= self_damage
+        if is_reload_action:
+            actual_damage = 0
+            is_critical = False
+            attack_hits_enemy = False
+            self.set_reload_needed(self.current_turn, attack_index, False)
+        else:
+            defender_has_stealth = self.has_stealth(defender_id)
+            max_damage_threshold = self.get_attack_max_damage(base_damage, damage_buff)
+            blind_chance = float(self.blind_next_attack.get(self.current_turn, 0.0) or 0.0)
+            blind_miss = False
+            if blind_chance > 0:
+                self.blind_next_attack[self.current_turn] = 0.0
+                blind_miss = random.random() < blind_chance
+            # CONFUSION: Falls Angreifer verwirrt ist, 77% Selbstschaden, 23% normaler Treffer
+            if blind_miss:
                 actual_damage = 0
                 is_critical = False
                 attack_hits_enemy = False
+                if self.confused_next_turn.get(self.current_turn, False):
+                    self.consume_confusion_if_any(self.current_turn)
+            elif self.confused_next_turn.get(self.current_turn, False):
+                if random.random() < 0.77:
+                    # Selbstschaden anstatt Gegner-Schaden
+                    self_damage = random.randint(15, 20) if max_damage_threshold <= 100 else random.randint(40, 60)
+                    if self.current_turn == self.player1_id:
+                        self.player1_hp -= self_damage
+                    else:
+                        self.player2_hp -= self_damage
+                    actual_damage = 0
+                    is_critical = False
+                    attack_hits_enemy = False
+                else:
+                    # Angriff geht normal durch
+                    actual_damage, is_critical, min_damage, max_damage = calculate_damage(base_damage, damage_buff)
+                    if attack_multiplier != 1.0:
+                        actual_damage = int(round(actual_damage * attack_multiplier))
+                        max_damage = int(round(max_damage * attack_multiplier))
+                        min_damage = int(round(min_damage * attack_multiplier))
+                    if force_max_damage:
+                        actual_damage = max_damage
+                        is_critical = True
+                    if defender_has_stealth:
+                        actual_damage = 0
+                        is_critical = False
+                        attack_hits_enemy = False
+                        self.consume_stealth(defender_id)
+                    elif self.current_turn == self.player1_id:
+                        self.player2_hp -= actual_damage
+                    else:
+                        self.player1_hp -= actual_damage
+                # Confusion verbraucht und UI-Icon entfernen
+                self.consume_confusion_if_any(self.current_turn)
             else:
-                # Angriff geht normal durch
+                # Normaler Angriff
                 actual_damage, is_critical, min_damage, max_damage = calculate_damage(base_damage, damage_buff)
-                if self.current_turn == self.player1_id:
+                if attack_multiplier != 1.0:
+                    actual_damage = int(round(actual_damage * attack_multiplier))
+                    max_damage = int(round(max_damage * attack_multiplier))
+                    min_damage = int(round(min_damage * attack_multiplier))
+                if force_max_damage:
+                    actual_damage = max_damage
+                    is_critical = True
+                if defender_has_stealth:
+                    actual_damage = 0
+                    is_critical = False
+                    attack_hits_enemy = False
+                    self.consume_stealth(defender_id)
+                elif self.current_turn == self.player1_id:
                     self.player2_hp -= actual_damage
                 else:
                     self.player1_hp -= actual_damage
-            # Confusion verbraucht und UI-Icon entfernen
-            self.consume_confusion_if_any(self.current_turn)
-        else:
-            # Normaler Angriff
-            actual_damage, is_critical, min_damage, max_damage = calculate_damage(base_damage, damage_buff)
+
+            if attack_hits_enemy and actual_damage > 0:
+                final_damage, reflected_damage, dodged, counter_damage = self.resolve_incoming_modifiers(defender_id, actual_damage)
+                if dodged:
+                    if self.current_turn == self.player1_id:
+                        self.player2_hp += actual_damage
+                    else:
+                        self.player1_hp += actual_damage
+                    actual_damage = 0
+                    attack_hits_enemy = False
+                elif final_damage != actual_damage:
+                    delta = actual_damage - final_damage
+                    if delta > 0:
+                        if self.current_turn == self.player1_id:
+                            self.player2_hp += delta
+                        else:
+                            self.player1_hp += delta
+                    actual_damage = final_damage
+                if reflected_damage > 0:
+                    if self.current_turn == self.player1_id:
+                        self.player1_hp -= reflected_damage
+                    else:
+                        self.player2_hp -= reflected_damage
+                if counter_damage > 0:
+                    if self.current_turn == self.player1_id:
+                        self.player1_hp -= counter_damage
+                    else:
+                        self.player2_hp -= counter_damage
+
+        self_damage_value = int(attack.get("self_damage", 0) or 0)
+        if self_damage_value > 0:
             if self.current_turn == self.player1_id:
-                self.player2_hp -= actual_damage
+                self.player1_hp -= self_damage_value
             else:
-                self.player1_hp -= actual_damage
+                self.player2_hp -= self_damage_value
+
+        heal_data = attack.get("heal")
+        if heal_data is not None:
+            if isinstance(heal_data, list) and len(heal_data) == 2:
+                heal_amount = random.randint(int(heal_data[0]), int(heal_data[1]))
+            else:
+                heal_amount = int(heal_data)
+            self.heal_player(self.current_turn, heal_amount)
+
+        lifesteal_ratio = float(attack.get("lifesteal_ratio", 0.0) or 0.0)
+        if lifesteal_ratio > 0 and attack_hits_enemy and actual_damage > 0:
+            self.heal_player(self.current_turn, int(round(actual_damage * lifesteal_ratio)))
 
         # HP nicht unter 0
         self.player1_hp = max(0, self.player1_hp)
@@ -1022,26 +1425,99 @@ class BattleView(RestrictedView):
         # SIDE EFFECTS: Apply new effects from attack
         effects = attack.get("effects", [])
         confusion_applied = False
-        if attack_hits_enemy:
-            for effect in effects:
-                # 70% Fix-Chance für Verwirrung
-                chance = 0.7 if effect.get('type') == 'confusion' else effect.get('chance', 0)
-                if random.random() < chance:
-                    if effect.get('type') == 'burning':
-                        duration = random.randint(effect["duration"][0], effect["duration"][1])
-                        new_effect = {
-                            'type': 'burning',
-                            'duration': duration,
-                            'damage': effect['damage'],
-                            'applier': self.current_turn
-                        }
-                        self.active_effects[defender_id].append(new_effect)
-                    elif effect.get('type') == 'confusion':
-                        # Confuse defender for next turn + UI marker
-                        self.set_confusion(defender_id, self.current_turn)
-                        confusion_applied = True
+        for effect in effects:
+            # 70% Fix-Chance für Verwirrung
+            chance = 0.7 if effect.get('type') == 'confusion' else effect.get('chance', 1.0)
+            if random.random() >= chance:
+                continue
+            target = effect.get("target", "enemy")
+            target_id = self.current_turn if target == "self" else defender_id
+            eff_type = effect.get("type")
+            if target != "self" and not attack_hits_enemy and eff_type not in {"stun"}:
+                continue
+            if eff_type == "stealth":
+                self.grant_stealth(target_id)
+            elif eff_type == "burning":
+                duration = random.randint(effect["duration"][0], effect["duration"][1])
+                new_effect = {
+                    'type': 'burning',
+                    'duration': duration,
+                    'damage': effect['damage'],
+                    'applier': self.current_turn
+                }
+                self.active_effects[target_id].append(new_effect)
+            elif eff_type == "confusion":
+                # Confuse defender for next turn + UI marker
+                self.set_confusion(target_id, self.current_turn)
+                confusion_applied = True
+            elif eff_type == "stun":
+                self.stunned_next_turn[target_id] = True
+            elif eff_type == "damage_boost":
+                amount = int(effect.get("amount", 0) or 0)
+                uses = int(effect.get("uses", 1) or 1)
+                self.pending_flat_bonus[target_id] = max(self.pending_flat_bonus.get(target_id, 0), amount)
+                self.pending_flat_bonus_uses[target_id] = max(self.pending_flat_bonus_uses.get(target_id, 0), uses)
+            elif eff_type == "damage_multiplier":
+                mult = float(effect.get("multiplier", 1.0) or 1.0)
+                uses = int(effect.get("uses", 1) or 1)
+                self.pending_multiplier[target_id] = max(self.pending_multiplier.get(target_id, 1.0), mult)
+                self.pending_multiplier_uses[target_id] = max(self.pending_multiplier_uses.get(target_id, 0), uses)
+            elif eff_type == "force_max":
+                uses = int(effect.get("uses", 1) or 1)
+                self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
+            elif eff_type == "damage_reduction":
+                percent = float(effect.get("percent", 0.0) or 0.0)
+                turns = int(effect.get("turns", 1) or 1)
+                self.queue_incoming_modifier(target_id, percent=percent, turns=turns)
+            elif eff_type == "damage_reduction_sequence":
+                sequence = effect.get("sequence", [])
+                if isinstance(sequence, list):
+                    for pct in sequence:
+                        self.queue_incoming_modifier(target_id, percent=float(pct or 0.0), turns=1)
+            elif eff_type == "damage_reduction_flat":
+                amount = int(effect.get("amount", 0) or 0)
+                turns = int(effect.get("turns", 1) or 1)
+                self.queue_incoming_modifier(target_id, flat=amount, turns=turns)
+            elif eff_type == "reflect":
+                reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
+                reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
+                self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1)
+            elif eff_type == "absorb_store":
+                percent = float(effect.get("percent", 0.0) or 0.0)
+                self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1)
+            elif eff_type == "cap_damage":
+                max_damage = int(effect.get("max_damage", 0) or 0)
+                self.queue_incoming_modifier(target_id, cap=max_damage, turns=1)
+            elif eff_type == "evade":
+                counter = int(effect.get("counter", 0) or 0)
+                self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1)
+            elif eff_type == "special_lock":
+                self.special_lock_next_turn[target_id] = True
+            elif eff_type == "blind":
+                miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
+                self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
+            elif eff_type == "regen":
+                turns = int(effect.get("turns", 1) or 1)
+                heal = int(effect.get("heal", 0) or 0)
+                self.active_effects[target_id].append({"type": "regen", "duration": turns, "heal": heal, "applier": self.current_turn})
+            elif eff_type == "heal":
+                heal_data_effect = effect.get("amount", 0)
+                if isinstance(heal_data_effect, list) and len(heal_data_effect) == 2:
+                    heal_amount = random.randint(int(heal_data_effect[0]), int(heal_data_effect[1]))
+                else:
+                    heal_amount = int(heal_data_effect or 0)
+                self.heal_player(target_id, heal_amount)
+            elif eff_type == "mix_heal_or_max":
+                heal_amount = int(effect.get("heal", 0) or 0)
+                if random.random() < 0.5:
+                    self.heal_player(target_id, heal_amount)
+                else:
+                    self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), 1)
 
-                # Kein separater Log-Eintrag mehr – Effekt wird in der Angriffszeile signalisiert
+            # Kein separater Log-Eintrag mehr – Effekt wird in der Angriffszeile signalisiert
+
+        if self.special_lock_next_turn.get(self.current_turn, False):
+            self.special_lock_next_turn[self.current_turn] = False
 
         # Prüfen ob Kampf vorbei
         if self.player1_hp <= 0 or self.player2_hp <= 0:
@@ -1074,8 +1550,16 @@ class BattleView(RestrictedView):
             self.stop()
             return
         
-        # COOLDOWN-SYSTEM: Starte Cooldown für starke Attacken (min>90 UND max>99 inkl. Buffs)
-        if self.is_strong_attack(base_damage, damage_buff):
+        if not is_reload_action and attack.get("requires_reload"):
+            self.set_reload_needed(self.current_turn, attack_index, True)
+
+        # COOLDOWN-SYSTEM: Kartenspezifisch oder für starke Attacken
+        custom_cooldown_turns = attack.get("cooldown_turns")
+        if isinstance(custom_cooldown_turns, int) and custom_cooldown_turns > 0:
+            previous_turn = self.current_turn
+            current_cd = self.attack_cooldowns[previous_turn].get(attack_index, 0)
+            self.attack_cooldowns[previous_turn][attack_index] = max(current_cd, custom_cooldown_turns)
+        elif self.is_strong_attack(base_damage, damage_buff):
             # Starke Attacke - 2 Züge Cooldown
             previous_turn = self.current_turn
             self.start_attack_cooldown(previous_turn, attack_index)
@@ -1162,12 +1646,17 @@ class BattleView(RestrictedView):
         attack_damages = []
 
         for i, attack in enumerate(attacks[:4]):
+            if self.special_lock_next_turn.get(0, False) and i != 0:
+                continue
             if not self.is_attack_on_cooldown(0, i):  # Bot ID ist 0
-                base_damage = attack["damage"]
-                if isinstance(base_damage, list) and len(base_damage) == 2:
-                    max_damage = base_damage[1]  # Höchster Schaden
+                if attack.get("requires_reload") and self.is_reload_needed(0, i):
+                    max_damage = 0
                 else:
-                    max_damage = base_damage
+                    base_damage = attack["damage"]
+                    if isinstance(base_damage, list) and len(base_damage) == 2:
+                        max_damage = base_damage[1]  # Höchster Schaden
+                    else:
+                        max_damage = base_damage
 
                 available_attacks.append(i)
                 attack_damages.append(max_damage)
@@ -1176,11 +1665,17 @@ class BattleView(RestrictedView):
             # Alle Attacken auf Cooldown - wähle trotzdem die stärkste
             attack_damages = []
             for i, attack in enumerate(attacks[:4]):
-                base_damage = attack["damage"]
-                if isinstance(base_damage, list) and len(base_damage) == 2:
-                    max_damage = base_damage[1]
+                if self.special_lock_next_turn.get(0, False) and i != 0:
+                    attack_damages.append(-1)
+                    continue
+                if attack.get("requires_reload") and self.is_reload_needed(0, i):
+                    max_damage = 0
                 else:
-                    max_damage = base_damage
+                    base_damage = attack["damage"]
+                    if isinstance(base_damage, list) and len(base_damage) == 2:
+                        max_damage = base_damage[1]
+                    else:
+                        max_damage = base_damage
                 attack_damages.append(max_damage)
 
             # Wähle die stärkste Attacke
@@ -1194,33 +1689,152 @@ class BattleView(RestrictedView):
         # Führe Bot-Angriff aus (simuliere execute_attack Logik)
         attack = attacks[attack_index]
         base_damage = attack["damage"]
-        attack_name = attack["name"]
+        damage_buff = 0
+        attacker_hp = self._hp_for(0)
+        attacker_max_hp = self._max_hp_for(0)
+        defender_hp = self._hp_for(self.player1_id)
+        defender_max_hp = self._max_hp_for(self.player1_id)
+        conditional_self_pct = attack.get("bonus_if_self_hp_below_pct")
+        conditional_self_bonus = int(attack.get("bonus_damage_if_condition", 0) or 0)
+        if conditional_self_pct is not None and attacker_hp <= int(attacker_max_hp * float(conditional_self_pct)):
+            damage_buff += conditional_self_bonus
+        conditional_enemy_pct = attack.get("conditional_enemy_hp_below_pct")
+        if conditional_enemy_pct is not None and defender_hp <= int(defender_max_hp * float(conditional_enemy_pct)):
+            damage_if_condition = attack.get("damage_if_condition")
+            if isinstance(damage_if_condition, list) and len(damage_if_condition) == 2:
+                base_damage = [int(damage_if_condition[0]), int(damage_if_condition[1])]
+            elif isinstance(damage_if_condition, int):
+                base_damage = [damage_if_condition, damage_if_condition]
+        if attack.get("add_absorbed_damage"):
+            damage_buff += int(self.absorbed_damage.get(0, 0))
+            self.absorbed_damage[0] = 0
+        is_damaging_attack = self.get_attack_max_damage(base_damage, 0) > 0
+        attack_multiplier = 1.0
+        force_max_damage = False
+        if is_damaging_attack:
+            if self.pending_flat_bonus_uses.get(0, 0) > 0:
+                damage_buff += int(self.pending_flat_bonus.get(0, 0))
+                self.pending_flat_bonus_uses[0] -= 1
+                if self.pending_flat_bonus_uses[0] <= 0:
+                    self.pending_flat_bonus[0] = 0
+            if self.pending_multiplier_uses.get(0, 0) > 0:
+                attack_multiplier = float(self.pending_multiplier.get(0, 1.0) or 1.0)
+                self.pending_multiplier_uses[0] -= 1
+                if self.pending_multiplier_uses[0] <= 0:
+                    self.pending_multiplier[0] = 1.0
+            if self.force_max_next.get(0, 0) > 0:
+                force_max_damage = True
+                self.force_max_next[0] -= 1
+        is_reload_action = bool(attack.get("requires_reload") and self.is_reload_needed(0, attack_index))
+        attack_name = str(attack.get("reload_name") or "Nachladen") if is_reload_action else attack["name"]
 
         # Confusion: 77% Selbstschaden, 23% normaler Treffer
         bot_hits_enemy = True
-        if self.confused_next_turn.get(0, False):
-            if random.random() < 0.77:
-                self_damage = random.randint(15, 20) if self.get_attack_max_damage(base_damage, 0) <= 100 else random.randint(40, 60)
-                self.player2_hp -= self_damage
-                self.player2_hp = max(0, self.player2_hp)
+        if is_reload_action:
+            actual_damage, is_critical = 0, False
+            bot_hits_enemy = False
+            self.set_reload_needed(0, attack_index, False)
+        else:
+            defender_has_stealth = self.has_stealth(self.player1_id)
+            blind_chance = float(self.blind_next_attack.get(0, 0.0) or 0.0)
+            blind_miss = False
+            if blind_chance > 0:
+                self.blind_next_attack[0] = 0.0
+                blind_miss = random.random() < blind_chance
+            max_damage_threshold = self.get_attack_max_damage(base_damage, damage_buff)
+            if blind_miss:
                 actual_damage, is_critical = 0, False
                 bot_hits_enemy = False
+                if self.confused_next_turn.get(0, False):
+                    try:
+                        self.active_effects[0] = [e for e in self.active_effects.get(0, []) if e.get('type') != 'confusion']
+                    except Exception:
+                        logging.exception("Unexpected error")
+                    self.confused_next_turn[0] = False
+            elif self.confused_next_turn.get(0, False):
+                if random.random() < 0.77:
+                    self_damage = random.randint(15, 20) if max_damage_threshold <= 100 else random.randint(40, 60)
+                    self.player2_hp -= self_damage
+                    self.player2_hp = max(0, self.player2_hp)
+                    actual_damage, is_critical = 0, False
+                    bot_hits_enemy = False
+                else:
+                    actual_damage, is_critical, min_damage, max_damage = calculate_damage(base_damage, damage_buff)
+                    if attack_multiplier != 1.0:
+                        actual_damage = int(round(actual_damage * attack_multiplier))
+                        max_damage = int(round(max_damage * attack_multiplier))
+                        min_damage = int(round(min_damage * attack_multiplier))
+                    if force_max_damage:
+                        actual_damage = max_damage
+                        is_critical = True
+                    if defender_has_stealth:
+                        actual_damage = 0
+                        is_critical = False
+                        bot_hits_enemy = False
+                        self.consume_stealth(self.player1_id)
+                    else:
+                        self.player1_hp -= actual_damage
+                        self.player1_hp = max(0, self.player1_hp)
+                # Confusion verbrauchen + UI Icon entfernen
+                try:
+                    self.active_effects[0] = [e for e in self.active_effects.get(0, []) if e.get('type') != 'confusion']
+                except Exception:
+                    logging.exception("Unexpected error")
+                self.confused_next_turn[0] = False
             else:
-                actual_damage, is_critical, min_damage, max_damage = calculate_damage(base_damage, 0)
-                self.player1_hp -= actual_damage
-                self.player1_hp = max(0, self.player1_hp)
-            # Confusion verbrauchen + UI Icon entfernen
-            try:
-                self.active_effects[0] = [e for e in self.active_effects.get(0, []) if e.get('type') != 'confusion']
-            except Exception:
-                logging.exception("Unexpected error")
-            self.confused_next_turn[0] = False
-        else:
-            # Berechne Schaden normal
-            actual_damage, is_critical, min_damage, max_damage = calculate_damage(base_damage, 0)
-            # Wende Schaden an
-            self.player1_hp -= actual_damage
-            self.player1_hp = max(0, self.player1_hp)
+                # Berechne Schaden normal
+                actual_damage, is_critical, min_damage, max_damage = calculate_damage(base_damage, damage_buff)
+                if attack_multiplier != 1.0:
+                    actual_damage = int(round(actual_damage * attack_multiplier))
+                    max_damage = int(round(max_damage * attack_multiplier))
+                    min_damage = int(round(min_damage * attack_multiplier))
+                if force_max_damage:
+                    actual_damage = max_damage
+                    is_critical = True
+                if defender_has_stealth:
+                    actual_damage = 0
+                    is_critical = False
+                    bot_hits_enemy = False
+                    self.consume_stealth(self.player1_id)
+                else:
+                    # Wende Schaden an
+                    self.player1_hp -= actual_damage
+                    self.player1_hp = max(0, self.player1_hp)
+
+            if bot_hits_enemy and actual_damage > 0:
+                final_damage, reflected_damage, dodged, counter_damage = self.resolve_incoming_modifiers(self.player1_id, actual_damage)
+                if dodged:
+                    self.player1_hp += actual_damage
+                    actual_damage = 0
+                    bot_hits_enemy = False
+                elif final_damage != actual_damage:
+                    delta = actual_damage - final_damage
+                    if delta > 0:
+                        self.player1_hp += delta
+                    actual_damage = final_damage
+                if reflected_damage > 0:
+                    self.player2_hp -= reflected_damage
+                if counter_damage > 0:
+                    self.player2_hp -= counter_damage
+
+        self_damage_value = int(attack.get("self_damage", 0) or 0)
+        if self_damage_value > 0:
+            self.player2_hp -= self_damage_value
+
+        heal_data = attack.get("heal")
+        if heal_data is not None:
+            if isinstance(heal_data, list) and len(heal_data) == 2:
+                heal_amount = random.randint(int(heal_data[0]), int(heal_data[1]))
+            else:
+                heal_amount = int(heal_data)
+            self.heal_player(0, heal_amount)
+
+        lifesteal_ratio = float(attack.get("lifesteal_ratio", 0.0) or 0.0)
+        if lifesteal_ratio > 0 and bot_hits_enemy and actual_damage > 0:
+            self.heal_player(0, int(round(actual_damage * lifesteal_ratio)))
+
+        self.player1_hp = max(0, self.player1_hp)
+        self.player2_hp = max(0, self.player2_hp)
 
         # Aktualisiere Kampf-Log
         self.round_counter += 1
@@ -1262,32 +1876,124 @@ class BattleView(RestrictedView):
 
         # SIDE EFFECTS: Apply new effects from bot attack (nur wenn Treffer)
         effects = attack.get("effects", [])
-        if bot_hits_enemy:
-            for effect in effects:
-                chance = 0.7 if effect.get('type') == 'confusion' else effect.get('chance', 0)
-                if random.random() < chance:
-                    if effect.get('type') == 'burning':
-                        duration = random.randint(effect["duration"][0], effect["duration"][1])
-                        new_effect = {
-                            'type': 'burning',
-                            'duration': duration,
-                            'damage': effect['damage'],
-                            'applier': 0
-                        }
-                        self.active_effects[defender_id].append(new_effect)
-                    elif effect.get('type') == 'confusion':
-                        # set confusion for player + UI marker
-                        try:
-                            self.active_effects[self.player1_id] = [e for e in self.active_effects.get(self.player1_id, []) if e.get('type') != 'confusion']
-                        except Exception:
-                            self.active_effects[self.player1_id] = []
-                        self.active_effects[self.player1_id].append({'type': 'confusion', 'duration': 1, 'applier': 0})
-                        self.confused_next_turn[self.player1_id] = True
+        for effect in effects:
+            chance = 0.7 if effect.get('type') == 'confusion' else effect.get('chance', 1.0)
+            if random.random() >= chance:
+                continue
+            target = effect.get("target", "enemy")
+            target_id = 0 if target == "self" else self.player1_id
+            eff_type = effect.get("type")
+            if target != "self" and not bot_hits_enemy and eff_type not in {"stun"}:
+                continue
+            if eff_type == "stealth":
+                self.grant_stealth(target_id)
+            elif eff_type == 'burning':
+                duration = random.randint(effect["duration"][0], effect["duration"][1])
+                new_effect = {
+                    'type': 'burning',
+                    'duration': duration,
+                    'damage': effect['damage'],
+                    'applier': 0
+                }
+                self.active_effects[target_id].append(new_effect)
+            elif eff_type == 'confusion':
+                self.set_confusion(target_id, 0)
+            elif eff_type == "stun":
+                self.stunned_next_turn[target_id] = True
+            elif eff_type == "damage_boost":
+                amount = int(effect.get("amount", 0) or 0)
+                uses = int(effect.get("uses", 1) or 1)
+                self.pending_flat_bonus[target_id] = max(self.pending_flat_bonus.get(target_id, 0), amount)
+                self.pending_flat_bonus_uses[target_id] = max(self.pending_flat_bonus_uses.get(target_id, 0), uses)
+            elif eff_type == "damage_multiplier":
+                mult = float(effect.get("multiplier", 1.0) or 1.0)
+                uses = int(effect.get("uses", 1) or 1)
+                self.pending_multiplier[target_id] = max(self.pending_multiplier.get(target_id, 1.0), mult)
+                self.pending_multiplier_uses[target_id] = max(self.pending_multiplier_uses.get(target_id, 0), uses)
+            elif eff_type == "force_max":
+                uses = int(effect.get("uses", 1) or 1)
+                self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
+            elif eff_type == "damage_reduction":
+                percent = float(effect.get("percent", 0.0) or 0.0)
+                turns = int(effect.get("turns", 1) or 1)
+                self.queue_incoming_modifier(target_id, percent=percent, turns=turns)
+            elif eff_type == "damage_reduction_sequence":
+                sequence = effect.get("sequence", [])
+                if isinstance(sequence, list):
+                    for pct in sequence:
+                        self.queue_incoming_modifier(target_id, percent=float(pct or 0.0), turns=1)
+            elif eff_type == "damage_reduction_flat":
+                amount = int(effect.get("amount", 0) or 0)
+                turns = int(effect.get("turns", 1) or 1)
+                self.queue_incoming_modifier(target_id, flat=amount, turns=turns)
+            elif eff_type == "reflect":
+                reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
+                reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
+                self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1)
+            elif eff_type == "absorb_store":
+                percent = float(effect.get("percent", 0.0) or 0.0)
+                self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1)
+            elif eff_type == "cap_damage":
+                max_damage = int(effect.get("max_damage", 0) or 0)
+                self.queue_incoming_modifier(target_id, cap=max_damage, turns=1)
+            elif eff_type == "evade":
+                counter = int(effect.get("counter", 0) or 0)
+                self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1)
+            elif eff_type == "special_lock":
+                self.special_lock_next_turn[target_id] = True
+            elif eff_type == "blind":
+                miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
+                self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
+            elif eff_type == "regen":
+                turns = int(effect.get("turns", 1) or 1)
+                heal = int(effect.get("heal", 0) or 0)
+                self.active_effects[target_id].append({"type": "regen", "duration": turns, "heal": heal, "applier": 0})
+            elif eff_type == "heal":
+                heal_data_effect = effect.get("amount", 0)
+                if isinstance(heal_data_effect, list) and len(heal_data_effect) == 2:
+                    heal_amount = random.randint(int(heal_data_effect[0]), int(heal_data_effect[1]))
+                else:
+                    heal_amount = int(heal_data_effect or 0)
+                self.heal_player(target_id, heal_amount)
+            elif eff_type == "mix_heal_or_max":
+                heal_amount = int(effect.get("heal", 0) or 0)
+                if random.random() < 0.5:
+                    self.heal_player(target_id, heal_amount)
+                else:
+                    self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), 1)
         # Kein separater Log-Eintrag – Effekte werden inline in der Angriffszeile angezeigt
 
+        if not is_reload_action and attack.get("requires_reload"):
+            self.set_reload_needed(0, attack_index, True)
+
+        if self.special_lock_next_turn.get(0, False):
+            self.special_lock_next_turn[0] = False
+
         # Cooldown für Bot-Attacke
-        if self.is_strong_attack(base_damage, 0):
+        custom_cooldown_turns = attack.get("cooldown_turns")
+        if isinstance(custom_cooldown_turns, int) and custom_cooldown_turns > 0:
+            current_cd = self.attack_cooldowns[0].get(attack_index, 0)
+            self.attack_cooldowns[0][attack_index] = max(current_cd, custom_cooldown_turns)
+        elif self.is_strong_attack(base_damage, damage_buff):
             self.start_attack_cooldown(0, attack_index)
+
+        if self.player1_hp <= 0 or self.player2_hp <= 0:
+            if self.player2_hp <= 0:
+                winner_id = self.player1_id
+                winner_user = message.guild.get_member(self.player1_id)
+                winner_card = self.player1_card["name"]
+            else:
+                winner_id = self.player2_id
+                winner_user = message.guild.get_member(self.player2_id)
+                winner_card = self.player2_card["name"]
+            if winner_user:
+                winner_mention = winner_user.mention
+            else:
+                winner_mention = "Bot" if winner_id == 0 else f"<@{winner_id}>"
+            winner_embed = discord.Embed(title="🏆 Sieger!", description=f"**{winner_mention} mit {winner_card}** hat gewonnen!")
+            await message.edit(embed=winner_embed, view=None)
+            self.stop()
+            return
 
         # Wechsle zu Spieler
         self.current_turn = self.player1_id
@@ -1824,20 +2530,21 @@ class AdminUserSelectView(RestrictedView):
                 return "🔴"
             return "⚫"
 
-        options = []
-        # Schlanke Liste: wenn wenige User, zeige alle mit Status-Kreis (nach Präsenz sortiert)
-        if len(self.all_members) <= 25:
-            members_sorted = sorted(self.all_members, key=presence_priority)
+        options: list[SelectOption] = []
+        members_sorted = sorted(self.all_members, key=presence_priority)
+
+        if not members_sorted:
+            options.append(SelectOption(label="Keine Nutzer verfügbar", value="none"))
+        elif len(members_sorted) <= 24:
+            # Bis 24 User: alle anzeigen + Suchoption (max. 25 Optionen)
             for member in members_sorted:
                 circle = status_circle(member)
                 label = f"{circle} {member.display_name[:100]}"
                 options.append(SelectOption(label=label, value=str(member.id)))
+            options.append(SelectOption(label="🔍 Nach Name suchen", value="search"))
         else:
-            # Großer Server: Zeige Online/Idle/DnD (nach Präsenz sortiert) + Steuer-Optionen
-            online_like = [m for m in self.all_members if m.status != discord.Status.offline]
-            online_like_sorted = sorted(online_like, key=presence_priority)
-            # bis zu 23 Nutzer + 2 Steuer-Optionen
-            for member in online_like_sorted[:23]:
+            # Größerer Server: kompakte Liste + Such-/Alle-Optionen (max. 25)
+            for member in members_sorted[:23]:
                 circle = status_circle(member)
                 label = f"{circle} {member.display_name[:100]}"
                 options.append(SelectOption(label=label, value=str(member.id)))
@@ -1853,6 +2560,9 @@ class AdminUserSelectView(RestrictedView):
             await interaction.response.send_message("Nur der Admin kann wählen!", ephemeral=True)
             return
         selected = self.select.values[0]
+        if selected == "none":
+            await interaction.response.send_message("❌ Keine Nutzer verfügbar.", ephemeral=True)
+            return
         if selected == "search":
             modal = UserSearchModal(self.guild, interaction.user, parent_view=self, include_bot_option=False)
             await interaction.response.send_modal(modal)
@@ -3507,22 +4217,89 @@ class UserSelectView(RestrictedView):
     def __init__(self, user_id, guild):
         super().__init__(timeout=60)
         self.user_id = user_id
+        self.guild = guild
         self.value = None
-        options = []
-        # Füge alle Guild-Mitglieder hinzu (außer Bots)
-        for member in guild.members:
-            if not member.bot:
-                options.append(SelectOption(label=member.display_name, value=str(member.id)))
-        self.select = ui.Select(placeholder="Wähle einen Nutzer...", min_values=1, max_values=1, options=options)
+        self.members = sorted(
+            [member for member in guild.members if not member.bot],
+            key=lambda m: m.display_name.lower(),
+        )
+        self.pages = [self.members[i:i + 25] for i in range(0, len(self.members), 25)] or [[]]
+        self.page_index = 0
+
+        self.select = ui.Select(
+            placeholder=self._placeholder(),
+            min_values=1,
+            max_values=1,
+            options=self._build_options_for_current_page(),
+            row=0,
+        )
         self.select.callback = self.select_callback
         self.add_item(self.select)
+
+        self.prev_btn = ui.Button(label="Zurück", style=discord.ButtonStyle.secondary, disabled=True, row=1)
+        self.next_btn = ui.Button(
+            label="Weiter",
+            style=discord.ButtonStyle.secondary,
+            disabled=(len(self.pages) <= 1),
+            row=1,
+        )
+        self.prev_btn.callback = self._on_prev
+        self.next_btn.callback = self._on_next
+        self.add_item(self.prev_btn)
+        self.add_item(self.next_btn)
+
+        if not self.members:
+            self.select.disabled = True
+
+    def _placeholder(self) -> str:
+        if not self.members:
+            return "Keine Nutzer verfügbar"
+        return f"Wähle einen Nutzer... (Seite {self.page_index + 1}/{len(self.pages)})"
+
+    def _build_options_for_current_page(self) -> list[SelectOption]:
+        if not self.members:
+            return [SelectOption(label="Keine Nutzer verfügbar", value="__none__")]
+        page_members = self.pages[self.page_index]
+        return [
+            SelectOption(label=member.display_name[:100], value=str(member.id))
+            for member in page_members
+        ]
+
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Nur der Command-User kann den Nutzer wählen!", ephemeral=True)
             return
-        self.value = self.select.values[0]
+        selected_value = self.select.values[0]
+        if selected_value == "__none__":
+            await interaction.response.send_message("❌ Keine Nutzer verfügbar.", ephemeral=True)
+            return
+        self.value = selected_value
         self.stop()
         await interaction.response.defer()
+
+    async def _on_prev(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
+            return
+        if self.page_index > 0:
+            self.page_index -= 1
+            self.select.options = self._build_options_for_current_page()
+            self.select.placeholder = self._placeholder()
+            self.prev_btn.disabled = (self.page_index == 0)
+            self.next_btn.disabled = (self.page_index == len(self.pages) - 1)
+        await interaction.response.edit_message(view=self)
+
+    async def _on_next(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
+            return
+        if self.page_index < len(self.pages) - 1:
+            self.page_index += 1
+            self.select.options = self._build_options_for_current_page()
+            self.select.placeholder = self._placeholder()
+            self.prev_btn.disabled = (self.page_index == 0)
+            self.next_btn.disabled = (self.page_index == len(self.pages) - 1)
+        await interaction.response.edit_message(view=self)
 
 class VaultView(RestrictedView):
     def __init__(self, user_id: int, user_karten):
@@ -3705,11 +4482,39 @@ class GiveCardSelectView(RestrictedView):
         self.target_user_id = target_user_id
         self.value = None
         # Füge alle Karten aus karten.py hinzu + Infinitydust
-        options = [SelectOption(label=karte["name"], value=karte["name"]) for karte in karten]
-        options.append(SelectOption(label="💎 Infinitydust", value="infinitydust"))
-        self.select = ui.Select(placeholder="Wähle eine Karte oder Infinitydust...", min_values=1, max_values=1, options=options)
+        self.options = [SelectOption(label=karte["name"], value=karte["name"]) for karte in karten]
+        self.options.append(SelectOption(label="💎 Infinitydust", value="infinitydust"))
+        self.pages = [self.options[i:i + 25] for i in range(0, len(self.options), 25)] or [[]]
+        self.page_index = 0
+
+        self.select = ui.Select(
+            placeholder=self._placeholder(),
+            min_values=1,
+            max_values=1,
+            options=self._build_options_for_current_page(),
+            row=0,
+        )
         self.select.callback = self.select_callback
         self.add_item(self.select)
+
+        self.prev_btn = ui.Button(label="Zurück", style=discord.ButtonStyle.secondary, disabled=True, row=1)
+        self.next_btn = ui.Button(
+            label="Weiter",
+            style=discord.ButtonStyle.secondary,
+            disabled=(len(self.pages) <= 1),
+            row=1,
+        )
+        self.prev_btn.callback = self._on_prev
+        self.next_btn.callback = self._on_next
+        self.add_item(self.prev_btn)
+        self.add_item(self.next_btn)
+
+    def _placeholder(self) -> str:
+        return f"Wähle eine Karte oder Infinitydust... (Seite {self.page_index + 1}/{len(self.pages)})"
+
+    def _build_options_for_current_page(self) -> list[SelectOption]:
+        return self.pages[self.page_index]
+
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Nur der Command-User kann die Karte wählen!", ephemeral=True)
@@ -3717,6 +4522,30 @@ class GiveCardSelectView(RestrictedView):
         self.value = self.select.values[0]
         self.stop()
         await interaction.response.defer()
+
+    async def _on_prev(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
+            return
+        if self.page_index > 0:
+            self.page_index -= 1
+            self.select.options = self._build_options_for_current_page()
+            self.select.placeholder = self._placeholder()
+            self.prev_btn.disabled = (self.page_index == 0)
+            self.next_btn.disabled = (self.page_index == len(self.pages) - 1)
+        await interaction.response.edit_message(view=self)
+
+    async def _on_next(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
+            return
+        if self.page_index < len(self.pages) - 1:
+            self.page_index += 1
+            self.select.options = self._build_options_for_current_page()
+            self.select.placeholder = self._placeholder()
+            self.prev_btn.disabled = (self.page_index == 0)
+            self.next_btn.disabled = (self.page_index == len(self.pages) - 1)
+        await interaction.response.edit_message(view=self)
 
 # View für Infinitydust-Mengen-Auswahl
 class InfinitydustAmountView(RestrictedView):
@@ -3755,7 +4584,7 @@ async def give(interaction: discord.Interaction):
     ephemeral = visibility != VISIBILITY_PUBLIC
     
     # Schritt 1: Nutzer-Auswahl
-    user_select_view = UserSelectView(interaction.user.id, interaction.guild)
+    user_select_view = AdminUserSelectView(interaction.user.id, interaction.guild)
     await _send_with_visibility(interaction, visibility_key, content="Wähle einen Nutzer, dem du eine Karte geben möchtest:", view=user_select_view)
     await user_select_view.wait()
     
@@ -3916,6 +4745,8 @@ class MissionBattleView(RestrictedView):
         self.result = None
         self.player_hp = player_card.get("hp", 100)
         self.bot_hp = bot_card.get("hp", 100)
+        self.player_max_hp = self.player_hp
+        self.bot_max_hp = self.bot_hp
         self.current_turn = user_id  # Spieler beginnt
         self.attacks = player_card.get("attacks", [
             {"name": "Punch", "damage": 20},
@@ -3942,6 +4773,18 @@ class MissionBattleView(RestrictedView):
         # Format: {attack_index: turns_remaining}
         self.user_attack_cooldowns = {}
         self.bot_attack_cooldowns = {}
+        # Manual reload tracking for player and bot
+        self.manual_reload_needed = {self.user_id: {}, 0: {}}
+        self.stunned_next_turn = {self.user_id: False, 0: False}
+        self.special_lock_next_turn = {self.user_id: False, 0: False}
+        self.blind_next_attack = {self.user_id: 0.0, 0: 0.0}
+        self.pending_flat_bonus = {self.user_id: 0, 0: 0}
+        self.pending_flat_bonus_uses = {self.user_id: 0, 0: 0}
+        self.pending_multiplier = {self.user_id: 1.0, 0: 1.0}
+        self.pending_multiplier_uses = {self.user_id: 0, 0: 0}
+        self.force_max_next = {self.user_id: 0, 0: 0}
+        self.incoming_modifiers = {self.user_id: [], 0: []}
+        self.absorbed_damage = {self.user_id: 0, 0: 0}
         
         # Setze Button-Labels (evtl. nach init_with_buffs erneut aufrufen)
         self.update_attack_buttons_mission()
@@ -3959,6 +4802,7 @@ class MissionBattleView(RestrictedView):
         self.health_bonus = total_health
         self.damage_bonuses = damage_map
         self.player_hp += self.health_bonus
+        self.player_max_hp = self.player_hp
         # Buttons mit Buff-Labeln aktualisieren
         self.update_attack_buttons_mission()
 
@@ -3984,6 +4828,8 @@ class MissionBattleView(RestrictedView):
             icons.append("\U0001f525")
         if any(e.get("type") == "confusion" for e in effects):
             icons.append("\U0001f300")
+        if any(e.get("type") == "stealth" for e in effects):
+            icons.append("\U0001f977")
         return f" {' '.join(icons)}" if icons else ""
 
     async def _safe_edit_battle_log(self, embed) -> None:
@@ -4019,6 +4865,145 @@ class MissionBattleView(RestrictedView):
 
     def start_attack_cooldown_bot(self, attack_index: int, turns: int = 1) -> None:
         self.bot_attack_cooldowns[attack_index] = turns
+
+    def is_reload_needed(self, player_id: int, attack_index: int) -> bool:
+        return bool(self.manual_reload_needed.get(player_id, {}).get(attack_index, False))
+
+    def set_reload_needed(self, player_id: int, attack_index: int, needed: bool) -> None:
+        bucket = self.manual_reload_needed.setdefault(player_id, {})
+        if needed:
+            bucket[attack_index] = True
+        else:
+            bucket.pop(attack_index, None)
+
+    def _find_effect(self, player_id: int, effect_type: str):
+        for effect in self.active_effects.get(player_id, []):
+            if effect.get("type") == effect_type:
+                return effect
+        return None
+
+    def has_stealth(self, player_id: int) -> bool:
+        return self._find_effect(player_id, "stealth") is not None
+
+    def consume_stealth(self, player_id: int) -> bool:
+        effect = self._find_effect(player_id, "stealth")
+        if not effect:
+            return False
+        try:
+            self.active_effects[player_id].remove(effect)
+        except ValueError:
+            pass
+        return True
+
+    def grant_stealth(self, player_id: int) -> None:
+        try:
+            self.active_effects[player_id] = [e for e in self.active_effects.get(player_id, []) if e.get("type") != "stealth"]
+        except Exception:
+            self.active_effects[player_id] = []
+        self.active_effects[player_id].append({"type": "stealth", "duration": 1, "applier": player_id})
+
+    def _max_hp_for(self, player_id: int) -> int:
+        return self.player_max_hp if player_id == self.user_id else self.bot_max_hp
+
+    def _hp_for(self, player_id: int) -> int:
+        return self.player_hp if player_id == self.user_id else self.bot_hp
+
+    def _set_hp_for(self, player_id: int, value: int) -> None:
+        if player_id == self.user_id:
+            self.player_hp = max(0, value)
+        else:
+            self.bot_hp = max(0, value)
+
+    def heal_player(self, player_id: int, amount: int) -> int:
+        if amount <= 0:
+            return 0
+        before = self._hp_for(player_id)
+        after = min(self._max_hp_for(player_id), before + amount)
+        self._set_hp_for(player_id, after)
+        return after - before
+
+    def queue_incoming_modifier(
+        self,
+        player_id: int,
+        *,
+        percent: float = 0.0,
+        flat: int = 0,
+        reflect: float = 0.0,
+        store_ratio: float = 0.0,
+        cap: int | None = None,
+        evade: bool = False,
+        counter: int = 0,
+        turns: int = 1,
+    ) -> None:
+        if turns <= 0:
+            turns = 1
+        for _ in range(turns):
+            self.incoming_modifiers[player_id].append(
+                {
+                    "percent": max(0.0, float(percent)),
+                    "flat": max(0, int(flat)),
+                    "reflect": max(0.0, float(reflect)),
+                    "store_ratio": max(0.0, float(store_ratio)),
+                    "cap": int(cap) if cap is not None else None,
+                    "evade": bool(evade),
+                    "counter": max(0, int(counter)),
+                }
+            )
+
+    def resolve_incoming_modifiers(self, defender_id: int, raw_damage: int) -> tuple[int, int, bool, int]:
+        if raw_damage <= 0 or not self.incoming_modifiers.get(defender_id):
+            return raw_damage, 0, False, 0
+        mod = self.incoming_modifiers[defender_id].pop(0)
+        if mod.get("evade"):
+            return 0, 0, True, int(mod.get("counter", 0) or 0)
+
+        damage = max(0, int(raw_damage))
+        prevented = 0
+
+        percent = float(mod.get("percent", 0.0) or 0.0)
+        if percent > 0:
+            cut = int(round(damage * percent))
+            damage -= cut
+            prevented += cut
+
+        flat = int(mod.get("flat", 0) or 0)
+        if flat > 0:
+            cut = min(flat, damage)
+            damage -= cut
+            prevented += cut
+
+        cap = mod.get("cap")
+        if cap is not None and damage > int(cap):
+            cut = damage - int(cap)
+            damage = int(cap)
+            prevented += cut
+
+        reflect_ratio = float(mod.get("reflect", 0.0) or 0.0)
+        reflected = int(round(prevented * reflect_ratio)) if reflect_ratio > 0 else 0
+
+        store_ratio = float(mod.get("store_ratio", 0.0) or 0.0)
+        if store_ratio > 0 and prevented > 0:
+            self.absorbed_damage[defender_id] += int(round(prevented * store_ratio))
+
+        return max(0, damage), max(0, reflected), False, 0
+
+    def apply_regen_tick(self, player_id: int) -> int:
+        total = 0
+        remove: list[dict] = []
+        for effect in self.active_effects.get(player_id, []):
+            if effect.get("type") != "regen":
+                continue
+            heal = int(effect.get("heal", 0) or 0)
+            total += self.heal_player(player_id, heal)
+            effect["duration"] = int(effect.get("duration", 0) or 0) - 1
+            if effect["duration"] <= 0:
+                remove.append(effect)
+        for effect in remove:
+            try:
+                self.active_effects[player_id].remove(effect)
+            except ValueError:
+                pass
+        return total
 
     def reduce_cooldowns_user(self) -> None:
         for idx in list(self.user_attack_cooldowns.keys()):
@@ -4059,10 +5044,26 @@ class MissionBattleView(RestrictedView):
                         effect_icons.append("🔥")
                     elif t == "confusion" and "🌀" not in effect_icons:
                         effect_icons.append("🌀")
+                    elif t == "stealth" and "🥷" not in effect_icons:
+                        effect_icons.append("🥷")
+                    elif t == "stun" and "🛑" not in effect_icons:
+                        effect_icons.append("🛑")
+                    elif t in {"damage_reduction", "damage_reduction_flat", "reflect", "absorb_store", "cap_damage"} and "🛡️" not in effect_icons:
+                        effect_icons.append("🛡️")
+                    elif t in {"damage_boost", "damage_multiplier"} and "⚡" not in effect_icons:
+                        effect_icons.append("⚡")
+                    elif t in {"force_max", "mix_heal_or_max"} and "🎯" not in effect_icons:
+                        effect_icons.append("🎯")
+                    elif t in {"heal", "regen"} and "❤️" not in effect_icons:
+                        effect_icons.append("❤️")
+                heal_label = _heal_label_for_attack(attack)
+                if heal_label and "❤️" not in effect_icons:
+                    effect_icons.append("❤️")
                 effects_label = f" {' '.join(effect_icons)}" if effect_icons else ""
 
                 # Prüfe Cooldown (nur für Spieler)
                 is_on_cooldown = self.is_attack_on_cooldown_user(i)
+                is_reload_action = bool(attack.get("requires_reload") and self.is_reload_needed(self.user_id, i))
                 
                 if is_on_cooldown:
                     # Grau für Cooldown
@@ -4070,10 +5071,18 @@ class MissionBattleView(RestrictedView):
                     cooldown_turns = self.user_attack_cooldowns[i]
                     button.label = f"{attack['name']} (Cooldown: {cooldown_turns})"
                     button.disabled = True
+                elif is_reload_action:
+                    button.style = discord.ButtonStyle.primary
+                    button.label = str(attack.get("reload_name") or "Nachladen")
+                    button.disabled = False
                 else:
-                    # Rot für normale Attacken
-                    button.style = discord.ButtonStyle.danger
-                    button.label = f"{attack['name']} ({damage_text}){effects_label}"
+                    if heal_label is not None:
+                        button.style = discord.ButtonStyle.success
+                        button.label = f"{attack['name']} (+{heal_label}){effects_label}"
+                    else:
+                        # Rot für normale Attacken
+                        button.style = discord.ButtonStyle.danger
+                        button.label = f"{attack['name']} ({damage_text}){effects_label}"
                     button.disabled = False
             else:
                 button.label = f"Angriff {i+1}"
@@ -4123,6 +5132,8 @@ class MissionBattleView(RestrictedView):
             await interaction.response.send_message("Du bist nicht an der Reihe!", ephemeral=True)
             return
 
+        self.apply_regen_tick(self.user_id)
+
         # SIDE EFFECTS: Apply effects on bot before attack
         defender_id = 0
         effects_to_remove = []
@@ -4152,56 +5163,252 @@ class MissionBattleView(RestrictedView):
         if self.is_attack_on_cooldown_user(attack_index):
             await interaction.response.send_message("Diese Attacke ist noch auf Cooldown!", ephemeral=True)
             return
+        if self.special_lock_next_turn.get(self.user_id, False) and attack_index != 0:
+            await interaction.response.send_message(
+                "Diese Runde sind nur Standard-Angriffe erlaubt (Attacke 1).",
+                ephemeral=True,
+            )
+            return
 
         attack = self.attacks[attack_index]
         damage = attack["damage"]
         dmg_buff = self.damage_bonuses.get(attack_index + 1, 0)
+        is_reload_action = bool(attack.get("requires_reload") and self.is_reload_needed(self.user_id, attack_index))
+        attack_name = str(attack.get("reload_name") or "Nachladen") if is_reload_action else attack["name"]
+
+        attacker_hp = self._hp_for(self.user_id)
+        attacker_max_hp = self._max_hp_for(self.user_id)
+        defender_hp = self._hp_for(0)
+        defender_max_hp = self._max_hp_for(0)
+        conditional_self_pct = attack.get("bonus_if_self_hp_below_pct")
+        conditional_self_bonus = int(attack.get("bonus_damage_if_condition", 0) or 0)
+        if conditional_self_pct is not None and attacker_hp <= int(attacker_max_hp * float(conditional_self_pct)):
+            dmg_buff += conditional_self_bonus
+        conditional_enemy_pct = attack.get("conditional_enemy_hp_below_pct")
+        if conditional_enemy_pct is not None and defender_hp <= int(defender_max_hp * float(conditional_enemy_pct)):
+            damage_if_condition = attack.get("damage_if_condition")
+            if isinstance(damage_if_condition, list) and len(damage_if_condition) == 2:
+                damage = [int(damage_if_condition[0]), int(damage_if_condition[1])]
+            elif isinstance(damage_if_condition, int):
+                damage = [damage_if_condition, damage_if_condition]
+        if attack.get("add_absorbed_damage"):
+            dmg_buff += int(self.absorbed_damage.get(self.user_id, 0))
+            self.absorbed_damage[self.user_id] = 0
+
+        is_damaging_attack = self.mission_get_attack_max_damage(damage, 0) > 0
+        attack_multiplier = 1.0
+        force_max_damage = False
+        if is_damaging_attack:
+            if self.pending_flat_bonus_uses.get(self.user_id, 0) > 0:
+                dmg_buff += int(self.pending_flat_bonus.get(self.user_id, 0))
+                self.pending_flat_bonus_uses[self.user_id] -= 1
+                if self.pending_flat_bonus_uses[self.user_id] <= 0:
+                    self.pending_flat_bonus[self.user_id] = 0
+            if self.pending_multiplier_uses.get(self.user_id, 0) > 0:
+                attack_multiplier = float(self.pending_multiplier.get(self.user_id, 1.0) or 1.0)
+                self.pending_multiplier_uses[self.user_id] -= 1
+                if self.pending_multiplier_uses[self.user_id] <= 0:
+                    self.pending_multiplier[self.user_id] = 1.0
+            if self.force_max_next.get(self.user_id, 0) > 0:
+                force_max_damage = True
+                self.force_max_next[self.user_id] -= 1
 
         # Confusion handling: 77% self-damage vs 23% normal
         hits_enemy = True
-        max_dmg_threshold = self.mission_get_attack_max_damage(damage, dmg_buff)
-        if self.confused_next_turn.get(self.user_id, False):
-            if random.random() < 0.77:
-                self_damage = random.randint(15, 20) if max_dmg_threshold <= 100 else random.randint(40, 60)
-                self.player_hp -= self_damage
-                self.player_hp = max(0, self.player_hp)
+        if is_reload_action:
+            actual_damage, is_critical = 0, False
+            hits_enemy = False
+            self.set_reload_needed(self.user_id, attack_index, False)
+        else:
+            defender_has_stealth = self.has_stealth(0)
+            max_dmg_threshold = self.mission_get_attack_max_damage(damage, dmg_buff)
+            blind_chance = float(self.blind_next_attack.get(self.user_id, 0.0) or 0.0)
+            blind_miss = False
+            if blind_chance > 0:
+                self.blind_next_attack[self.user_id] = 0.0
+                blind_miss = random.random() < blind_chance
+            if blind_miss:
                 actual_damage, is_critical = 0, False
                 hits_enemy = False
+                if self.confused_next_turn.get(self.user_id, False):
+                    try:
+                        self.active_effects[self.user_id] = [e for e in self.active_effects.get(self.user_id, []) if e.get('type') != 'confusion']
+                    except Exception:
+                        logging.exception("Unexpected error")
+                    self.confused_next_turn[self.user_id] = False
+            elif self.confused_next_turn.get(self.user_id, False):
+                if random.random() < 0.77:
+                    self_damage = random.randint(15, 20) if max_dmg_threshold <= 100 else random.randint(40, 60)
+                    self.player_hp -= self_damage
+                    self.player_hp = max(0, self.player_hp)
+                    actual_damage, is_critical = 0, False
+                    hits_enemy = False
+                else:
+                    actual_damage, is_critical, min_damage, max_damage = calculate_damage(damage, dmg_buff)
+                    if attack_multiplier != 1.0:
+                        actual_damage = int(round(actual_damage * attack_multiplier))
+                        max_damage = int(round(max_damage * attack_multiplier))
+                        min_damage = int(round(min_damage * attack_multiplier))
+                    if force_max_damage:
+                        actual_damage = max_damage
+                        is_critical = True
+                    if defender_has_stealth:
+                        actual_damage = 0
+                        is_critical = False
+                        hits_enemy = False
+                        self.consume_stealth(0)
+                    else:
+                        self.bot_hp -= actual_damage
+                        self.bot_hp = max(0, self.bot_hp)
+                # consume confusion + clear UI icon
+                try:
+                    self.active_effects[self.user_id] = [e for e in self.active_effects.get(self.user_id, []) if e.get('type') != 'confusion']
+                except Exception:
+                    logging.exception("Unexpected error")
+                self.confused_next_turn[self.user_id] = False
             else:
                 actual_damage, is_critical, min_damage, max_damage = calculate_damage(damage, dmg_buff)
-                self.bot_hp -= actual_damage
-                self.bot_hp = max(0, self.bot_hp)
-            # consume confusion + clear UI icon
-            try:
-                self.active_effects[self.user_id] = [e for e in self.active_effects.get(self.user_id, []) if e.get('type') != 'confusion']
-            except Exception:
-                logging.exception("Unexpected error")
-            self.confused_next_turn[self.user_id] = False
-        else:
-            actual_damage, is_critical, min_damage, max_damage = calculate_damage(damage, dmg_buff)
-            self.bot_hp -= actual_damage
-            self.bot_hp = max(0, self.bot_hp)
+                if attack_multiplier != 1.0:
+                    actual_damage = int(round(actual_damage * attack_multiplier))
+                    max_damage = int(round(max_damage * attack_multiplier))
+                    min_damage = int(round(min_damage * attack_multiplier))
+                if force_max_damage:
+                    actual_damage = max_damage
+                    is_critical = True
+                if defender_has_stealth:
+                    actual_damage = 0
+                    is_critical = False
+                    hits_enemy = False
+                    self.consume_stealth(0)
+                else:
+                    self.bot_hp -= actual_damage
+                    self.bot_hp = max(0, self.bot_hp)
+
+            if hits_enemy and actual_damage > 0:
+                final_damage, reflected_damage, dodged, counter_damage = self.resolve_incoming_modifiers(0, actual_damage)
+                if dodged:
+                    self.bot_hp += actual_damage
+                    actual_damage = 0
+                    hits_enemy = False
+                elif final_damage != actual_damage:
+                    delta = actual_damage - final_damage
+                    if delta > 0:
+                        self.bot_hp += delta
+                    actual_damage = final_damage
+                if reflected_damage > 0:
+                    self.player_hp -= reflected_damage
+                if counter_damage > 0:
+                    self.player_hp -= counter_damage
+
+        self_damage_value = int(attack.get("self_damage", 0) or 0)
+        if self_damage_value > 0:
+            self.player_hp -= self_damage_value
+
+        heal_data = attack.get("heal")
+        if heal_data is not None:
+            if isinstance(heal_data, list) and len(heal_data) == 2:
+                heal_amount = random.randint(int(heal_data[0]), int(heal_data[1]))
+            else:
+                heal_amount = int(heal_data)
+            self.heal_player(self.user_id, heal_amount)
+
+        lifesteal_ratio = float(attack.get("lifesteal_ratio", 0.0) or 0.0)
+        if lifesteal_ratio > 0 and hits_enemy and actual_damage > 0:
+            self.heal_player(self.user_id, int(round(actual_damage * lifesteal_ratio)))
+
+        self.player_hp = max(0, self.player_hp)
+        self.bot_hp = max(0, self.bot_hp)
 
         self.round_counter += 1
 
-        # Apply new effects from player's attack (only if it hit)
+        # Apply new effects from player's attack
         confusion_applied = False
-        if hits_enemy:
-            effects = attack.get("effects", [])
-            for effect in effects:
-                chance = 0.7 if effect.get('type') == 'confusion' else effect.get('chance', 0)
-                if random.random() < chance:
-                    if effect.get('type') == 'burning':
-                        duration = random.randint(effect["duration"][0], effect["duration"][1])
-                        self.active_effects[0].append({
-                            'type': 'burning',
-                            'duration': duration,
-                            'damage': effect['damage'],
-                            'applier': self.user_id
-                        })
-                    elif effect.get('type') == 'confusion':
-                        self.confused_next_turn[0] = True
-                        confusion_applied = True
+        effects = attack.get("effects", [])
+        for effect in effects:
+            chance = 0.7 if effect.get('type') == 'confusion' else effect.get('chance', 1.0)
+            if random.random() >= chance:
+                continue
+            target = effect.get("target", "enemy")
+            target_id = self.user_id if target == "self" else 0
+            eff_type = effect.get("type")
+            if target != "self" and not hits_enemy and eff_type not in {"stun"}:
+                continue
+            if eff_type == "stealth":
+                self.grant_stealth(target_id)
+            elif eff_type == 'burning':
+                duration = random.randint(effect["duration"][0], effect["duration"][1])
+                self.active_effects[target_id].append({
+                    'type': 'burning',
+                    'duration': duration,
+                    'damage': effect['damage'],
+                    'applier': self.user_id
+                })
+            elif eff_type == 'confusion':
+                self.confused_next_turn[target_id] = True
+                confusion_applied = True
+            elif eff_type == "stun":
+                self.stunned_next_turn[target_id] = True
+            elif eff_type == "damage_boost":
+                amount = int(effect.get("amount", 0) or 0)
+                uses = int(effect.get("uses", 1) or 1)
+                self.pending_flat_bonus[target_id] = max(self.pending_flat_bonus.get(target_id, 0), amount)
+                self.pending_flat_bonus_uses[target_id] = max(self.pending_flat_bonus_uses.get(target_id, 0), uses)
+            elif eff_type == "damage_multiplier":
+                mult = float(effect.get("multiplier", 1.0) or 1.0)
+                uses = int(effect.get("uses", 1) or 1)
+                self.pending_multiplier[target_id] = max(self.pending_multiplier.get(target_id, 1.0), mult)
+                self.pending_multiplier_uses[target_id] = max(self.pending_multiplier_uses.get(target_id, 0), uses)
+            elif eff_type == "force_max":
+                uses = int(effect.get("uses", 1) or 1)
+                self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
+            elif eff_type == "damage_reduction":
+                percent = float(effect.get("percent", 0.0) or 0.0)
+                turns = int(effect.get("turns", 1) or 1)
+                self.queue_incoming_modifier(target_id, percent=percent, turns=turns)
+            elif eff_type == "damage_reduction_sequence":
+                sequence = effect.get("sequence", [])
+                if isinstance(sequence, list):
+                    for pct in sequence:
+                        self.queue_incoming_modifier(target_id, percent=float(pct or 0.0), turns=1)
+            elif eff_type == "damage_reduction_flat":
+                amount = int(effect.get("amount", 0) or 0)
+                turns = int(effect.get("turns", 1) or 1)
+                self.queue_incoming_modifier(target_id, flat=amount, turns=turns)
+            elif eff_type == "reflect":
+                reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
+                reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
+                self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1)
+            elif eff_type == "absorb_store":
+                percent = float(effect.get("percent", 0.0) or 0.0)
+                self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1)
+            elif eff_type == "cap_damage":
+                max_damage = int(effect.get("max_damage", 0) or 0)
+                self.queue_incoming_modifier(target_id, cap=max_damage, turns=1)
+            elif eff_type == "evade":
+                counter = int(effect.get("counter", 0) or 0)
+                self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1)
+            elif eff_type == "special_lock":
+                self.special_lock_next_turn[target_id] = True
+            elif eff_type == "blind":
+                miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
+                self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
+            elif eff_type == "regen":
+                turns = int(effect.get("turns", 1) or 1)
+                heal = int(effect.get("heal", 0) or 0)
+                self.active_effects[target_id].append({"type": "regen", "duration": turns, "heal": heal, "applier": self.user_id})
+            elif eff_type == "heal":
+                heal_data_effect = effect.get("amount", 0)
+                if isinstance(heal_data_effect, list) and len(heal_data_effect) == 2:
+                    heal_amount = random.randint(int(heal_data_effect[0]), int(heal_data_effect[1]))
+                else:
+                    heal_amount = int(heal_data_effect or 0)
+                self.heal_player(target_id, heal_amount)
+            elif eff_type == "mix_heal_or_max":
+                heal_amount = int(effect.get("heal", 0) or 0)
+                if random.random() < 0.5:
+                    self.heal_player(target_id, heal_amount)
+                else:
+                    self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), 1)
 
         # Update Kampf-Log (inkl. vorab angewandter Verbrennung im selben Eintrag)
         if self.battle_log_message:
@@ -4210,7 +5417,7 @@ class MissionBattleView(RestrictedView):
                 log_embed,
                 self.player_card["name"],
                 self.bot_card["name"],
-                attack["name"],
+                attack_name,
                 actual_damage,
                 is_critical,
                 interaction.user,
@@ -4224,11 +5431,21 @@ class MissionBattleView(RestrictedView):
                 defender_status_icons=self._status_icons(0),
             )
             await self._safe_edit_battle_log(log_embed)
+
+        if not is_reload_action and attack.get("requires_reload"):
+            self.set_reload_needed(self.user_id, attack_index, True)
+
+        if self.special_lock_next_turn.get(self.user_id, False):
+            self.special_lock_next_turn[self.user_id] = False
         
-        # Starte Cooldown für starke Attacken (min>90 UND max>99 inkl. Buffs) für nächsten Zug.
+        # Starte Cooldown (kartenspezifisch oder für starke Attacken) für den nächsten Zug.
         # In Missionen soll die stärkste Attacke im nächsten eigenen Zug gesperrt sein.
         # Darum KEINE sofortige Reduktion hier – die Reduktion passiert nach dem Bot-Zug.
-        if self.mission_is_strong_attack(damage, dmg_buff):
+        custom_cooldown_turns = attack.get("cooldown_turns")
+        if isinstance(custom_cooldown_turns, int) and custom_cooldown_turns > 0:
+            current_cd = self.user_attack_cooldowns.get(attack_index, 0)
+            self.user_attack_cooldowns[attack_index] = max(current_cd, custom_cooldown_turns)
+        elif self.mission_is_strong_attack(damage, dmg_buff):
             self.start_attack_cooldown_user(attack_index, 2)
         
         # Prüfen ob Kampf vorbei nach Spieler-Angriff
@@ -4237,9 +5454,14 @@ class MissionBattleView(RestrictedView):
             await interaction.response.edit_message(content=f"🏆 **Welle {self.wave_num} gewonnen!** Du hast **{self.bot_card['name']}** besiegt!", view=None)
             self.stop()
             return
+        if self.player_hp <= 0:
+            self.result = False
+            await interaction.response.edit_message(content=f"❌ **Welle {self.wave_num} verloren!** Du hast dich selbst besiegt.", view=None)
+            self.stop()
+            return
         
         # Bot-Zug nach kurzer Pause
-        await interaction.response.edit_message(content=f"🎯 Du hast **{attack['name']}** verwendet! **{self.bot_card['name']}** ist an der Reihe...", view=None)
+        await interaction.response.edit_message(content=f"🎯 Du hast **{attack_name}** verwendet! **{self.bot_card['name']}** ist an der Reihe...", view=None)
 
         # SIDE EFFECTS: Apply effects on player before bot attack
         defender_id = self.user_id
@@ -4261,15 +5483,39 @@ class MissionBattleView(RestrictedView):
         for effect in effects_to_remove:
             self.active_effects[defender_id].remove(effect)
 
+        self.apply_regen_tick(0)
+
+        if self.stunned_next_turn.get(0, False):
+            self.stunned_next_turn[0] = False
+            self.reduce_cooldowns_user()
+            self.update_attack_buttons_mission()
+            embed = discord.Embed(
+                title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
+                description="🛑 Bot war betäubt und setzt den Zug aus! Du bist wieder an der Reihe!",
+            )
+            player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
+            bot_label = f"🟦 Bot Karte{self._status_icons(0)}"
+            embed.add_field(name=player_label, value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
+            embed.add_field(name=bot_label, value=f"{self.bot_card['name']}\nHP: {self.bot_hp}", inline=True)
+            embed.set_image(url=self.player_card["bild"])
+            embed.set_thumbnail(url=self.bot_card["bild"])
+            await interaction.followup.edit_message(interaction.message.id, embed=embed, view=self)
+            return
+
         # Bot-Angriff
         bot_attacks = self.bot_card.get("attacks", [{"name": "Punch", "damage": 20}])
         # Wähle stärkste verfügbare Bot-Attacke (unter Berücksichtigung von Cooldown)
         available_attacks = []
         attack_damages = []
         for i, atk in enumerate(bot_attacks[:4]):
+            if self.special_lock_next_turn.get(0, False) and i != 0:
+                continue
             if not self.is_attack_on_cooldown_bot(i):
-                damage = atk["damage"]
-                max_dmg = self.mission_get_attack_max_damage(damage) if isinstance(atk, dict) else 0
+                if atk.get("requires_reload") and self.is_reload_needed(0, i):
+                    max_dmg = 0
+                else:
+                    damage = atk["damage"]
+                    max_dmg = self.mission_get_attack_max_damage(damage) if isinstance(atk, dict) else 0
                 available_attacks.append(i)
                 attack_damages.append(max_dmg)
         
@@ -4278,25 +5524,139 @@ class MissionBattleView(RestrictedView):
             best_index = available_attacks[attack_damages.index(max(attack_damages))]
             attack = bot_attacks[best_index]
             damage = attack["damage"]
+            dmg_buff_bot = 0
+            attacker_hp = self._hp_for(0)
+            attacker_max_hp = self._max_hp_for(0)
+            defender_hp = self._hp_for(self.user_id)
+            defender_max_hp = self._max_hp_for(self.user_id)
+            conditional_self_pct = attack.get("bonus_if_self_hp_below_pct")
+            conditional_self_bonus = int(attack.get("bonus_damage_if_condition", 0) or 0)
+            if conditional_self_pct is not None and attacker_hp <= int(attacker_max_hp * float(conditional_self_pct)):
+                dmg_buff_bot += conditional_self_bonus
+            conditional_enemy_pct = attack.get("conditional_enemy_hp_below_pct")
+            if conditional_enemy_pct is not None and defender_hp <= int(defender_max_hp * float(conditional_enemy_pct)):
+                damage_if_condition = attack.get("damage_if_condition")
+                if isinstance(damage_if_condition, list) and len(damage_if_condition) == 2:
+                    damage = [int(damage_if_condition[0]), int(damage_if_condition[1])]
+                elif isinstance(damage_if_condition, int):
+                    damage = [damage_if_condition, damage_if_condition]
+            if attack.get("add_absorbed_damage"):
+                dmg_buff_bot += int(self.absorbed_damage.get(0, 0))
+                self.absorbed_damage[0] = 0
+            is_damaging_attack = self.mission_get_attack_max_damage(damage, 0) > 0
+            attack_multiplier = 1.0
+            force_max_damage = False
+            if is_damaging_attack:
+                if self.pending_flat_bonus_uses.get(0, 0) > 0:
+                    dmg_buff_bot += int(self.pending_flat_bonus.get(0, 0))
+                    self.pending_flat_bonus_uses[0] -= 1
+                    if self.pending_flat_bonus_uses[0] <= 0:
+                        self.pending_flat_bonus[0] = 0
+                if self.pending_multiplier_uses.get(0, 0) > 0:
+                    attack_multiplier = float(self.pending_multiplier.get(0, 1.0) or 1.0)
+                    self.pending_multiplier_uses[0] -= 1
+                    if self.pending_multiplier_uses[0] <= 0:
+                        self.pending_multiplier[0] = 1.0
+                if self.force_max_next.get(0, 0) > 0:
+                    force_max_damage = True
+                    self.force_max_next[0] -= 1
+            is_bot_reload_action = bool(attack.get("requires_reload") and self.is_reload_needed(0, best_index))
+            bot_attack_name = str(attack.get("reload_name") or "Nachladen") if is_bot_reload_action else attack["name"]
             # Bot kann ebenfalls verwirrt sein: 77% Selbstschaden, 23% normaler Treffer
             bot_hits_enemy = True
-            if hasattr(self, 'confused_next_turn') and self.confused_next_turn.get(0, False):
-                if random.random() < 0.77:
-                    self_damage = random.randint(15, 20) if self.mission_get_attack_max_damage(damage) <= 100 else random.randint(40, 60)
-                    self.bot_hp -= self_damage
-                    self.bot_hp = max(0, self.bot_hp)
+            if is_bot_reload_action:
+                actual_damage, is_critical = 0, False
+                bot_hits_enemy = False
+                self.set_reload_needed(0, best_index, False)
+            else:
+                defender_has_stealth = self.has_stealth(self.user_id)
+                blind_chance = float(self.blind_next_attack.get(0, 0.0) or 0.0)
+                blind_miss = False
+                if blind_chance > 0:
+                    self.blind_next_attack[0] = 0.0
+                    blind_miss = random.random() < blind_chance
+                if blind_miss:
                     actual_damage, is_critical = 0, False
                     bot_hits_enemy = False
+                    self.confused_next_turn[0] = False
+                elif hasattr(self, 'confused_next_turn') and self.confused_next_turn.get(0, False):
+                    if random.random() < 0.77:
+                        self_damage = random.randint(15, 20) if self.mission_get_attack_max_damage(damage, dmg_buff_bot) <= 100 else random.randint(40, 60)
+                        self.bot_hp -= self_damage
+                        self.bot_hp = max(0, self.bot_hp)
+                        actual_damage, is_critical = 0, False
+                        bot_hits_enemy = False
+                    else:
+                        actual_damage, is_critical, min_damage, max_damage = calculate_damage(damage, dmg_buff_bot)
+                        if attack_multiplier != 1.0:
+                            actual_damage = int(round(actual_damage * attack_multiplier))
+                            max_damage = int(round(max_damage * attack_multiplier))
+                            min_damage = int(round(min_damage * attack_multiplier))
+                        if force_max_damage:
+                            actual_damage = max_damage
+                            is_critical = True
+                        if defender_has_stealth:
+                            actual_damage = 0
+                            is_critical = False
+                            bot_hits_enemy = False
+                            self.consume_stealth(self.user_id)
+                        else:
+                            self.player_hp -= actual_damage
+                            self.player_hp = max(0, self.player_hp)
+                    # Confusion verbraucht
+                    self.confused_next_turn[0] = False
                 else:
-                    actual_damage, is_critical, min_damage, max_damage = calculate_damage(damage, 0)
-                    self.player_hp -= actual_damage
-                    self.player_hp = max(0, self.player_hp)
-                # Confusion verbraucht
-                self.confused_next_turn[0] = False
-            else:
-                actual_damage, is_critical, min_damage, max_damage = calculate_damage(damage, 0)  # Bot hat keine Buffs
-                self.player_hp -= actual_damage
-                self.player_hp = max(0, self.player_hp)
+                    actual_damage, is_critical, min_damage, max_damage = calculate_damage(damage, dmg_buff_bot)
+                    if attack_multiplier != 1.0:
+                        actual_damage = int(round(actual_damage * attack_multiplier))
+                        max_damage = int(round(max_damage * attack_multiplier))
+                        min_damage = int(round(min_damage * attack_multiplier))
+                    if force_max_damage:
+                        actual_damage = max_damage
+                        is_critical = True
+                    if defender_has_stealth:
+                        actual_damage = 0
+                        is_critical = False
+                        bot_hits_enemy = False
+                        self.consume_stealth(self.user_id)
+                    else:
+                        self.player_hp -= actual_damage
+                        self.player_hp = max(0, self.player_hp)
+
+                if bot_hits_enemy and actual_damage > 0:
+                    final_damage, reflected_damage, dodged, counter_damage = self.resolve_incoming_modifiers(self.user_id, actual_damage)
+                    if dodged:
+                        self.player_hp += actual_damage
+                        actual_damage = 0
+                        bot_hits_enemy = False
+                    elif final_damage != actual_damage:
+                        delta = actual_damage - final_damage
+                        if delta > 0:
+                            self.player_hp += delta
+                        actual_damage = final_damage
+                    if reflected_damage > 0:
+                        self.bot_hp -= reflected_damage
+                    if counter_damage > 0:
+                        self.bot_hp -= counter_damage
+
+            self_damage_value = int(attack.get("self_damage", 0) or 0)
+            if self_damage_value > 0:
+                self.bot_hp -= self_damage_value
+
+            heal_data = attack.get("heal")
+            if heal_data is not None:
+                if isinstance(heal_data, list) and len(heal_data) == 2:
+                    heal_amount = random.randint(int(heal_data[0]), int(heal_data[1]))
+                else:
+                    heal_amount = int(heal_data)
+                self.heal_player(0, heal_amount)
+
+            lifesteal_ratio = float(attack.get("lifesteal_ratio", 0.0) or 0.0)
+            if lifesteal_ratio > 0 and bot_hits_enemy and actual_damage > 0:
+                self.heal_player(0, int(round(actual_damage * lifesteal_ratio)))
+
+            self.player_hp = max(0, self.player_hp)
+            self.bot_hp = max(0, self.bot_hp)
             
             self.round_counter += 1
             
@@ -4307,7 +5667,7 @@ class MissionBattleView(RestrictedView):
                     log_embed,
                     self.bot_card["name"],
                     self.player_card["name"],
-                    attack["name"],
+                    bot_attack_name,
                     actual_damage,
                     is_critical,
                     "Bot",
@@ -4320,28 +5680,103 @@ class MissionBattleView(RestrictedView):
                 )
                 await self._safe_edit_battle_log(log_embed)
     
-            # SIDE EFFECTS: Apply new effects from bot attack (nur wenn Treffer)
+            # SIDE EFFECTS: Apply new effects from bot attack
             effects = attack.get("effects", [])
-            if bot_hits_enemy:
-                for effect in effects:
-                    # 70% Fix-Chance für Verwirrung
-                    chance = 0.7 if effect.get('type') == 'confusion' else effect.get('chance', 0)
-                    if random.random() < chance:
-                        if effect['type'] == 'burning':
-                            duration = random.randint(effect["duration"][0], effect["duration"][1])
-                            new_effect = {
-                                'type': 'burning',
-                                'duration': duration,
-                                'damage': effect['damage'],
-                                'applier': 0
-                            }
-                            self.active_effects[self.user_id].append(new_effect)
-                        elif effect['type'] == 'confusion':
-                            # Confuse player for their next turn in mission mode
-                            if not hasattr(self, 'confused_next_turn'):
-                                self.confused_next_turn = {self.user_id: False, 0: False}
-                            self.confused_next_turn[self.user_id] = True
+            for effect in effects:
+                # 70% Fix-Chance für Verwirrung
+                chance = 0.7 if effect.get('type') == 'confusion' else effect.get('chance', 1.0)
+                if random.random() >= chance:
+                    continue
+                target = effect.get("target", "enemy")
+                target_id = 0 if target == "self" else self.user_id
+                eff_type = effect.get("type")
+                if target != "self" and not bot_hits_enemy and eff_type not in {"stun"}:
+                    continue
+                if eff_type == "stealth":
+                    self.grant_stealth(target_id)
+                elif eff_type == 'burning':
+                    duration = random.randint(effect["duration"][0], effect["duration"][1])
+                    new_effect = {
+                        'type': 'burning',
+                        'duration': duration,
+                        'damage': effect['damage'],
+                        'applier': 0
+                    }
+                    self.active_effects[target_id].append(new_effect)
+                elif eff_type == 'confusion':
+                    if not hasattr(self, 'confused_next_turn'):
+                        self.confused_next_turn = {self.user_id: False, 0: False}
+                    self.confused_next_turn[target_id] = True
+                elif eff_type == "stun":
+                    self.stunned_next_turn[target_id] = True
+                elif eff_type == "damage_boost":
+                    amount = int(effect.get("amount", 0) or 0)
+                    uses = int(effect.get("uses", 1) or 1)
+                    self.pending_flat_bonus[target_id] = max(self.pending_flat_bonus.get(target_id, 0), amount)
+                    self.pending_flat_bonus_uses[target_id] = max(self.pending_flat_bonus_uses.get(target_id, 0), uses)
+                elif eff_type == "damage_multiplier":
+                    mult = float(effect.get("multiplier", 1.0) or 1.0)
+                    uses = int(effect.get("uses", 1) or 1)
+                    self.pending_multiplier[target_id] = max(self.pending_multiplier.get(target_id, 1.0), mult)
+                    self.pending_multiplier_uses[target_id] = max(self.pending_multiplier_uses.get(target_id, 0), uses)
+                elif eff_type == "force_max":
+                    uses = int(effect.get("uses", 1) or 1)
+                    self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
+                elif eff_type == "damage_reduction":
+                    percent = float(effect.get("percent", 0.0) or 0.0)
+                    turns = int(effect.get("turns", 1) or 1)
+                    self.queue_incoming_modifier(target_id, percent=percent, turns=turns)
+                elif eff_type == "damage_reduction_sequence":
+                    sequence = effect.get("sequence", [])
+                    if isinstance(sequence, list):
+                        for pct in sequence:
+                            self.queue_incoming_modifier(target_id, percent=float(pct or 0.0), turns=1)
+                elif eff_type == "damage_reduction_flat":
+                    amount = int(effect.get("amount", 0) or 0)
+                    turns = int(effect.get("turns", 1) or 1)
+                    self.queue_incoming_modifier(target_id, flat=amount, turns=turns)
+                elif eff_type == "reflect":
+                    reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
+                    reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
+                    self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1)
+                elif eff_type == "absorb_store":
+                    percent = float(effect.get("percent", 0.0) or 0.0)
+                    self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1)
+                elif eff_type == "cap_damage":
+                    max_damage = int(effect.get("max_damage", 0) or 0)
+                    self.queue_incoming_modifier(target_id, cap=max_damage, turns=1)
+                elif eff_type == "evade":
+                    counter = int(effect.get("counter", 0) or 0)
+                    self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1)
+                elif eff_type == "special_lock":
+                    self.special_lock_next_turn[target_id] = True
+                elif eff_type == "blind":
+                    miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
+                    self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
+                elif eff_type == "regen":
+                    turns = int(effect.get("turns", 1) or 1)
+                    heal = int(effect.get("heal", 0) or 0)
+                    self.active_effects[target_id].append({"type": "regen", "duration": turns, "heal": heal, "applier": 0})
+                elif eff_type == "heal":
+                    heal_data_effect = effect.get("amount", 0)
+                    if isinstance(heal_data_effect, list) and len(heal_data_effect) == 2:
+                        heal_amount = random.randint(int(heal_data_effect[0]), int(heal_data_effect[1]))
+                    else:
+                        heal_amount = int(heal_data_effect or 0)
+                    self.heal_player(target_id, heal_amount)
+                elif eff_type == "mix_heal_or_max":
+                    heal_amount = int(effect.get("heal", 0) or 0)
+                    if random.random() < 0.5:
+                        self.heal_player(target_id, heal_amount)
+                    else:
+                        self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), 1)
             # Kein separater Log – Effekte werden inline in der Angriffszeile angezeigt
+
+            if not is_bot_reload_action and attack.get("requires_reload"):
+                self.set_reload_needed(0, best_index, True)
+
+            if self.special_lock_next_turn.get(0, False):
+                self.special_lock_next_turn[0] = False
 
             if self.player_hp <= 0:
                 self.result = False
@@ -4349,8 +5784,13 @@ class MissionBattleView(RestrictedView):
                 self.stop()
                 return
 
-            # Cooldown für Bot wenn stark (min>90 UND max>99)
-            if self.mission_is_strong_attack(damage):
+            # Cooldown für Bot (kartenspezifisch oder stark)
+            custom_cooldown_turns = attack.get("cooldown_turns")
+            if isinstance(custom_cooldown_turns, int) and custom_cooldown_turns > 0:
+                current_cd = self.bot_attack_cooldowns.get(best_index, 0)
+                self.bot_attack_cooldowns[best_index] = max(current_cd, custom_cooldown_turns)
+                self.reduce_cooldowns_bot()
+            elif self.mission_is_strong_attack(damage, dmg_buff_bot):
                 self.start_attack_cooldown_bot(best_index, 2)
                 # Reduziere Cooldowns für den Bot direkt nach seinem Zug (entspricht /fight)
                 self.reduce_cooldowns_bot()
@@ -4360,7 +5800,7 @@ class MissionBattleView(RestrictedView):
 
             # Update UI für nächsten Spieler-Zug
             embed = discord.Embed(title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
-                                  description=f"Bot hat **{attack['name']}** verwendet! Dein HP: {self.player_hp}\nDu bist wieder an der Reihe!")
+                                  description=f"Bot hat **{bot_attack_name}** verwendet! Dein HP: {self.player_hp}\nDu bist wieder an der Reihe!")
             player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
             bot_label = f"🟦 Bot Karte{self._status_icons(0)}"
             embed.add_field(name=player_label, value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
