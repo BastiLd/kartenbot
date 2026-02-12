@@ -987,30 +987,6 @@ class BattleView(RestrictedView):
             f"Treffer: {landed}/{hits} | Schaden pro Treffer: {per_hit_text} | Gesamt: {total_damage}.",
         )
 
-    def _append_multi_hit_roll_event(self, effect_events: list[str]) -> None:
-        meta = self._last_damage_roll_meta or {}
-        if meta.get("kind") != "multi_hit":
-            return
-        details = meta.get("details")
-        if not isinstance(details, dict):
-            return
-        hits = int(details.get("hits", 0) or 0)
-        landed = int(details.get("landed_hits", 0) or 0)
-        per_hit = details.get("per_hit_damages", [])
-        per_hit_numbers: list[int] = []
-        if isinstance(per_hit, list):
-            for value in per_hit:
-                try:
-                    per_hit_numbers.append(int(value))
-                except Exception:
-                    continue
-        per_hit_text = ", ".join(str(v) for v in per_hit_numbers) if per_hit_numbers else "-"
-        total_damage = int(details.get("total_damage", 0) or 0)
-        self._append_effect_event(
-            effect_events,
-            f"Treffer: {landed}/{hits} | Schaden pro Treffer: {per_hit_text} | Gesamt: {total_damage}.",
-        )
-
     def _grant_airborne(self, player_id: int) -> None:
         try:
             self.active_effects[player_id] = [e for e in self.active_effects.get(player_id, []) if e.get("type") != "airborne"]
@@ -5676,6 +5652,30 @@ class MissionBattleView(RestrictedView):
         msg = str(text).strip()
         if msg:
             events.append(msg)
+
+    def _append_multi_hit_roll_event(self, effect_events: list[str]) -> None:
+        meta = self._last_damage_roll_meta or {}
+        if meta.get("kind") != "multi_hit":
+            return
+        details = meta.get("details")
+        if not isinstance(details, dict):
+            return
+        hits = int(details.get("hits", 0) or 0)
+        landed = int(details.get("landed_hits", 0) or 0)
+        per_hit = details.get("per_hit_damages", [])
+        per_hit_numbers: list[int] = []
+        if isinstance(per_hit, list):
+            for value in per_hit:
+                try:
+                    per_hit_numbers.append(int(value))
+                except Exception:
+                    continue
+        per_hit_text = ", ".join(str(v) for v in per_hit_numbers) if per_hit_numbers else "-"
+        total_damage = int(details.get("total_damage", 0) or 0)
+        self._append_effect_event(
+            effect_events,
+            f"Treffer: {landed}/{hits} | Schaden pro Treffer: {per_hit_text} | Gesamt: {total_damage}.",
+        )
 
     def _grant_airborne(self, player_id: int) -> None:
         try:

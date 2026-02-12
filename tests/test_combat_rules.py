@@ -380,6 +380,26 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(min_dmg, 33)
         self.assertEqual(max_dmg, 66)
 
+    async def test_battle_view_multi_hit_logs_roll_details(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Triple", "damage": [0, 30], "multi_hit": {"hits": 3, "hit_chance": 1.0, "per_hit_damage": [1, 1]}, "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        effect_events: list[str] = []
+        atk = player_card["attacks"][0]
+        _dmg, _crit, _min_dmg, _max_dmg = view.roll_attack_damage(atk, atk["damage"], 0, 1.0, False, False)
+        view._append_multi_hit_roll_event(effect_events)
+        self.assertTrue(any("Treffer: 3/3" in e for e in effect_events))
+
     async def test_airborne_turn_locks_attack_selection(self) -> None:
         player_card = {
             "name": "PlayerCard",
@@ -519,6 +539,26 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
             current_cd = view.user_attack_cooldowns.get(landing_cd_index, 0)
             view.user_attack_cooldowns[landing_cd_index] = max(current_cd, landing_cd_turns)
         self.assertEqual(view.user_attack_cooldowns.get(3), 3)
+
+    async def test_mission_multi_hit_logs_roll_details(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Triple", "damage": [0, 30], "multi_hit": {"hits": 3, "hit_chance": 1.0, "per_hit_damage": [1, 1]}, "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = MissionBattleView(player_card, bot_card, 1, 1, 1)
+        effect_events: list[str] = []
+        atk = player_card["attacks"][0]
+        _dmg, _crit, _min_dmg, _max_dmg = view.roll_attack_damage(atk, atk["damage"], 0, 1.0, False, False)
+        view._append_multi_hit_roll_event(effect_events)
+        self.assertTrue(any("Treffer: 3/3" in e for e in effect_events))
 
     async def test_mission_airborne_turn_locks_attack_selection(self) -> None:
         player_card = {
