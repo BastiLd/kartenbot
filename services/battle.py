@@ -10,10 +10,20 @@ def resolve_multi_hit_damage(
     attack_multiplier: float = 1.0,
     force_max: bool = False,
     guaranteed_hit: bool = False,
+    return_details: bool = False,
 ):
-    """Resolve multi-hit damage and return (damage, min_possible, max_possible)."""
+    """Resolve multi-hit damage and return (damage, min_possible, max_possible[, details])."""
     hits = max(0, int(multi_hit.get("hits", 0) or 0))
+    details = {
+        "hits": hits,
+        "landed_hits": 0,
+        "per_hit_damages": [],
+        "total_before_multiplier": 0,
+        "total_damage": 0,
+    }
     if hits <= 0:
+        if return_details:
+            return 0, 0, 0, details
         return 0, 0, 0
 
     per_hit = multi_hit.get("per_hit_damage", [0, 0])
@@ -29,20 +39,37 @@ def resolve_multi_hit_damage(
     chance = float(multi_hit.get("hit_chance", 0.0) or 0.0)
     chance = max(0.0, min(1.0, chance))
 
+    guaranteed_min_per_hit = hit_min
+    if guaranteed_hit and not force_max:
+        try:
+            guaranteed_min_per_hit = max(hit_min, int(multi_hit.get("guaranteed_min_per_hit", hit_min) or hit_min))
+        except Exception:
+            guaranteed_min_per_hit = hit_min
+
     if force_max or guaranteed_hit:
         landed = hits
     else:
         landed = sum(1 for _ in range(hits) if random.random() < chance)
 
     total = 0
+    per_hit_damages: list[int] = []
     if landed > 0:
         for _ in range(landed):
-            total += hit_max if force_max else random.randint(hit_min, hit_max)
+            if force_max:
+                rolled = hit_max
+            elif guaranteed_hit:
+                rolled = random.randint(guaranteed_min_per_hit, hit_max)
+            else:
+                rolled = random.randint(hit_min, hit_max)
+            per_hit_damages.append(int(rolled))
+            total += int(rolled)
         total += int(buff_amount)
 
     min_possible = 0
-    if force_max or guaranteed_hit:
+    if force_max:
         min_possible = hits * hit_min + int(buff_amount)
+    elif guaranteed_hit:
+        min_possible = hits * guaranteed_min_per_hit + int(buff_amount)
 
     max_possible = hits * hit_max + int(buff_amount)
 
@@ -51,7 +78,19 @@ def resolve_multi_hit_damage(
         min_possible = int(round(min_possible * attack_multiplier))
         max_possible = int(round(max_possible * attack_multiplier))
 
-    return max(0, total), max(0, min_possible), max(0, max_possible)
+    final_total = max(0, total)
+    details.update(
+        {
+            "hits": hits,
+            "landed_hits": int(landed),
+            "per_hit_damages": per_hit_damages,
+            "total_before_multiplier": int(sum(per_hit_damages) + (int(buff_amount) if landed > 0 else 0)),
+            "total_damage": int(final_total),
+        }
+    )
+    if return_details:
+        return final_total, max(0, min_possible), max(0, max_possible), details
+    return final_total, max(0, min_possible), max(0, max_possible)
 
 
 def apply_outgoing_attack_modifier(raw_damage: int, *, percent: float = 0.0, flat: int = 0) -> tuple[int, int]:

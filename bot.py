@@ -291,6 +291,22 @@ def _starts_cooldown_after_landing(attack: dict) -> bool:
     return False
 
 
+def _resolve_dynamic_cooldown_from_burning(attack: dict, applied_burning_duration: int | None) -> int:
+    if applied_burning_duration is None:
+        return 0
+    bonus_raw = attack.get("cooldown_from_burning_plus")
+    if bonus_raw is None:
+        return 0
+    try:
+        bonus = max(0, int(bonus_raw))
+    except Exception:
+        return 0
+    duration = max(0, int(applied_burning_duration))
+    if duration <= 0:
+        return 0
+    return duration + bonus
+
+
 async def _safe_defer_interaction(interaction: discord.Interaction) -> bool:
     if interaction.response.is_done():
         return True
@@ -885,6 +901,7 @@ class BattleView(RestrictedView):
         self.absorbed_damage = {player1_id: 0, player2_id: 0}
         self.delayed_defense_queue = {player1_id: [], player2_id: []}
         self.airborne_pending_landing = {player1_id: None, player2_id: None}
+        self._last_damage_roll_meta: dict | None = None
 
     def set_confusion(self, player_id: int, applier_id: int) -> None:
         """Mark player as confused for next turn and reflect it in active_effects for UI."""
@@ -945,6 +962,54 @@ class BattleView(RestrictedView):
         msg = str(text).strip()
         if msg:
             events.append(msg)
+
+    def _append_multi_hit_roll_event(self, effect_events: list[str]) -> None:
+        meta = self._last_damage_roll_meta or {}
+        if meta.get("kind") != "multi_hit":
+            return
+        details = meta.get("details")
+        if not isinstance(details, dict):
+            return
+        hits = int(details.get("hits", 0) or 0)
+        landed = int(details.get("landed_hits", 0) or 0)
+        per_hit = details.get("per_hit_damages", [])
+        per_hit_numbers: list[int] = []
+        if isinstance(per_hit, list):
+            for value in per_hit:
+                try:
+                    per_hit_numbers.append(int(value))
+                except Exception:
+                    continue
+        per_hit_text = ", ".join(str(v) for v in per_hit_numbers) if per_hit_numbers else "-"
+        total_damage = int(details.get("total_damage", 0) or 0)
+        self._append_effect_event(
+            effect_events,
+            f"Treffer: {landed}/{hits} | Schaden pro Treffer: {per_hit_text} | Gesamt: {total_damage}.",
+        )
+
+    def _append_multi_hit_roll_event(self, effect_events: list[str]) -> None:
+        meta = self._last_damage_roll_meta or {}
+        if meta.get("kind") != "multi_hit":
+            return
+        details = meta.get("details")
+        if not isinstance(details, dict):
+            return
+        hits = int(details.get("hits", 0) or 0)
+        landed = int(details.get("landed_hits", 0) or 0)
+        per_hit = details.get("per_hit_damages", [])
+        per_hit_numbers: list[int] = []
+        if isinstance(per_hit, list):
+            for value in per_hit:
+                try:
+                    per_hit_numbers.append(int(value))
+                except Exception:
+                    continue
+        per_hit_text = ", ".join(str(v) for v in per_hit_numbers) if per_hit_numbers else "-"
+        total_damage = int(details.get("total_damage", 0) or 0)
+        self._append_effect_event(
+            effect_events,
+            f"Treffer: {landed}/{hits} | Schaden pro Treffer: {per_hit_text} | Gesamt: {total_damage}.",
+        )
 
     def _grant_airborne(self, player_id: int) -> None:
         try:
@@ -1127,16 +1192,19 @@ class BattleView(RestrictedView):
     ) -> tuple[int, bool, int, int]:
         multi_hit = attack.get("multi_hit")
         if isinstance(multi_hit, dict):
-            actual_damage, min_damage, max_damage = resolve_multi_hit_damage(
+            actual_damage, min_damage, max_damage, details = resolve_multi_hit_damage(
                 multi_hit,
                 buff_amount=damage_buff,
                 attack_multiplier=attack_multiplier,
                 force_max=force_max_damage,
                 guaranteed_hit=guaranteed_hit,
+                return_details=True,
             )
+            self._last_damage_roll_meta = {"kind": "multi_hit", "details": details}
             is_critical = bool(force_max_damage and actual_damage >= max_damage and max_damage > 0)
             return actual_damage, is_critical, min_damage, max_damage
 
+        self._last_damage_roll_meta = {"kind": "single_hit"}
         actual_damage, is_critical, min_damage, max_damage = calculate_damage(base_damage, damage_buff)
         if attack_multiplier != 1.0:
             actual_damage = int(round(actual_damage * attack_multiplier))
@@ -1704,6 +1772,7 @@ class BattleView(RestrictedView):
                         force_max_damage,
                         guaranteed_hit,
                     )
+                    self._append_multi_hit_roll_event(effect_events)
                     if defender_has_stealth and not guaranteed_hit:
                         actual_damage = 0
                         is_critical = False
@@ -1727,6 +1796,7 @@ class BattleView(RestrictedView):
                     force_max_damage,
                     guaranteed_hit,
                 )
+                self._append_multi_hit_roll_event(effect_events)
                 if defender_has_stealth and not guaranteed_hit:
                     actual_damage = 0
                     is_critical = False
@@ -1828,6 +1898,7 @@ class BattleView(RestrictedView):
         # SIDE EFFECTS: Apply new effects from attack
         effects = attack.get("effects", [])
         confusion_applied = False
+        burning_duration_for_dynamic_cooldown: int | None = None
         for effect in effects:
             # 70% Fix-Chance für Verwirrung
             chance = 0.7 if effect.get('type') == 'confusion' else effect.get('chance', 1.0)
@@ -1850,6 +1921,9 @@ class BattleView(RestrictedView):
                     'applier': self.current_turn
                 }
                 self.active_effects[target_id].append(new_effect)
+                if attack.get("cooldown_from_burning_plus") is not None:
+                    prev_duration = burning_duration_for_dynamic_cooldown or 0
+                    burning_duration_for_dynamic_cooldown = max(prev_duration, duration)
                 self._append_effect_event(effect_events, f"Verbrennung aktiv: {effect['damage']} Schaden für {duration} Runden.")
             elif eff_type == "confusion":
                 # Confuse defender for next turn + UI marker
@@ -2011,9 +2085,22 @@ class BattleView(RestrictedView):
                 self.set_reload_needed(self.current_turn, attack_index, True)
 
             # COOLDOWN-SYSTEM: Kartenspezifisch oder für starke Attacken
+            dynamic_cooldown_turns = _resolve_dynamic_cooldown_from_burning(
+                attack,
+                burning_duration_for_dynamic_cooldown,
+            )
             custom_cooldown_turns = attack.get("cooldown_turns")
             starts_after_landing = _starts_cooldown_after_landing(attack)
-            if (not starts_after_landing) and isinstance(custom_cooldown_turns, int) and custom_cooldown_turns > 0:
+            if dynamic_cooldown_turns > 0:
+                previous_turn = self.current_turn
+                current_cd = self.attack_cooldowns[previous_turn].get(attack_index, 0)
+                self.attack_cooldowns[previous_turn][attack_index] = max(current_cd, dynamic_cooldown_turns)
+                bonus_for_dynamic_cd = max(0, int(attack.get("cooldown_from_burning_plus", 0) or 0))
+                self._append_effect_event(
+                    effect_events,
+                    f"Gammastrahl-Abklingzeit: {dynamic_cooldown_turns} (Effektdauer {burning_duration_for_dynamic_cooldown} + {bonus_for_dynamic_cd}).",
+                )
+            elif (not starts_after_landing) and isinstance(custom_cooldown_turns, int) and custom_cooldown_turns > 0:
                 previous_turn = self.current_turn
                 current_cd = self.attack_cooldowns[previous_turn].get(attack_index, 0)
                 self.attack_cooldowns[previous_turn][attack_index] = max(current_cd, custom_cooldown_turns)
@@ -2293,6 +2380,7 @@ class BattleView(RestrictedView):
                         force_max_damage,
                         guaranteed_hit,
                     )
+                    self._append_multi_hit_roll_event(effect_events)
                     if defender_has_stealth and not guaranteed_hit:
                         actual_damage = 0
                         is_critical = False
@@ -2319,6 +2407,7 @@ class BattleView(RestrictedView):
                     force_max_damage,
                     guaranteed_hit,
                 )
+                self._append_multi_hit_roll_event(effect_events)
                 if defender_has_stealth and not guaranteed_hit:
                     actual_damage = 0
                     is_critical = False
@@ -2406,6 +2495,7 @@ class BattleView(RestrictedView):
 
         # SIDE EFFECTS: Apply new effects from bot attack (nur wenn Treffer)
         effects = attack.get("effects", [])
+        burning_duration_for_dynamic_cooldown: int | None = None
         for effect in effects:
             chance = 0.7 if effect.get('type') == 'confusion' else effect.get('chance', 1.0)
             if random.random() >= chance:
@@ -2427,6 +2517,9 @@ class BattleView(RestrictedView):
                     'applier': 0
                 }
                 self.active_effects[target_id].append(new_effect)
+                if attack.get("cooldown_from_burning_plus") is not None:
+                    prev_duration = burning_duration_for_dynamic_cooldown or 0
+                    burning_duration_for_dynamic_cooldown = max(prev_duration, duration)
                 self._append_effect_event(effect_events, f"Verbrennung aktiv: {effect['damage']} Schaden für {duration} Runden.")
             elif eff_type == 'confusion':
                 self.set_confusion(target_id, 0)
@@ -2576,9 +2669,21 @@ class BattleView(RestrictedView):
 
         if not is_forced_landing:
             # Cooldown für Bot-Attacke
+            dynamic_cooldown_turns = _resolve_dynamic_cooldown_from_burning(
+                attack,
+                burning_duration_for_dynamic_cooldown,
+            )
             custom_cooldown_turns = attack.get("cooldown_turns")
             starts_after_landing = _starts_cooldown_after_landing(attack)
-            if (not starts_after_landing) and isinstance(custom_cooldown_turns, int) and custom_cooldown_turns > 0:
+            if dynamic_cooldown_turns > 0:
+                current_cd = self.attack_cooldowns[0].get(attack_index, 0)
+                self.attack_cooldowns[0][attack_index] = max(current_cd, dynamic_cooldown_turns)
+                bonus_for_dynamic_cd = max(0, int(attack.get("cooldown_from_burning_plus", 0) or 0))
+                self._append_effect_event(
+                    effect_events,
+                    f"Gammastrahl-Abklingzeit: {dynamic_cooldown_turns} (Effektdauer {burning_duration_for_dynamic_cooldown} + {bonus_for_dynamic_cd}).",
+                )
+            elif (not starts_after_landing) and isinstance(custom_cooldown_turns, int) and custom_cooldown_turns > 0:
                 current_cd = self.attack_cooldowns[0].get(attack_index, 0)
                 self.attack_cooldowns[0][attack_index] = max(current_cd, custom_cooldown_turns)
             elif self.is_strong_attack(base_damage, damage_buff):
@@ -5431,6 +5536,7 @@ class MissionBattleView(RestrictedView):
         self.absorbed_damage = {self.user_id: 0, 0: 0}
         self.delayed_defense_queue = {self.user_id: [], 0: []}
         self.airborne_pending_landing = {self.user_id: None, 0: None}
+        self._last_damage_roll_meta: dict | None = None
         
         # Setze Button-Labels (evtl. nach init_with_buffs erneut aufrufen)
         self.update_attack_buttons_mission()
@@ -5752,16 +5858,19 @@ class MissionBattleView(RestrictedView):
     ) -> tuple[int, bool, int, int]:
         multi_hit = attack.get("multi_hit")
         if isinstance(multi_hit, dict):
-            actual_damage, min_damage, max_damage = resolve_multi_hit_damage(
+            actual_damage, min_damage, max_damage, details = resolve_multi_hit_damage(
                 multi_hit,
                 buff_amount=damage_buff,
                 attack_multiplier=attack_multiplier,
                 force_max=force_max_damage,
                 guaranteed_hit=guaranteed_hit,
+                return_details=True,
             )
+            self._last_damage_roll_meta = {"kind": "multi_hit", "details": details}
             is_critical = bool(force_max_damage and actual_damage >= max_damage and max_damage > 0)
             return actual_damage, is_critical, min_damage, max_damage
 
+        self._last_damage_roll_meta = {"kind": "single_hit"}
         actual_damage, is_critical, min_damage, max_damage = calculate_damage(base_damage, damage_buff)
         if attack_multiplier != 1.0:
             actual_damage = int(round(actual_damage * attack_multiplier))
@@ -6143,6 +6252,7 @@ class MissionBattleView(RestrictedView):
                         force_max_damage,
                         guaranteed_hit,
                     )
+                    self._append_multi_hit_roll_event(effect_events)
                     if defender_has_stealth and not guaranteed_hit:
                         actual_damage = 0
                         is_critical = False
@@ -6168,6 +6278,7 @@ class MissionBattleView(RestrictedView):
                     force_max_damage,
                     guaranteed_hit,
                 )
+                self._append_multi_hit_roll_event(effect_events)
                 if defender_has_stealth and not guaranteed_hit:
                     actual_damage = 0
                     is_critical = False
@@ -6245,6 +6356,7 @@ class MissionBattleView(RestrictedView):
         # Apply new effects from player's attack
         confusion_applied = False
         effects = attack.get("effects", [])
+        burning_duration_for_dynamic_cooldown: int | None = None
         for effect in effects:
             chance = 0.7 if effect.get('type') == 'confusion' else effect.get('chance', 1.0)
             if random.random() >= chance:
@@ -6265,6 +6377,9 @@ class MissionBattleView(RestrictedView):
                     'damage': effect['damage'],
                     'applier': self.user_id
                 })
+                if attack.get("cooldown_from_burning_plus") is not None:
+                    prev_duration = burning_duration_for_dynamic_cooldown or 0
+                    burning_duration_for_dynamic_cooldown = max(prev_duration, duration)
                 self._append_effect_event(effect_events, f"Verbrennung aktiv: {effect['damage']} Schaden für {duration} Runden.")
             elif eff_type == 'confusion':
                 self.set_confusion(target_id, self.user_id)
@@ -6417,9 +6532,21 @@ class MissionBattleView(RestrictedView):
         # In Missionen soll die stärkste Attacke im nächsten eigenen Zug gesperrt sein.
         # Darum KEINE sofortige Reduktion hier – die Reduktion passiert nach dem Bot-Zug.
         if not is_forced_landing:
+            dynamic_cooldown_turns = _resolve_dynamic_cooldown_from_burning(
+                attack,
+                burning_duration_for_dynamic_cooldown,
+            )
             custom_cooldown_turns = attack.get("cooldown_turns")
             starts_after_landing = _starts_cooldown_after_landing(attack)
-            if (not starts_after_landing) and isinstance(custom_cooldown_turns, int) and custom_cooldown_turns > 0:
+            if dynamic_cooldown_turns > 0:
+                current_cd = self.user_attack_cooldowns.get(attack_index, 0)
+                self.user_attack_cooldowns[attack_index] = max(current_cd, dynamic_cooldown_turns)
+                bonus_for_dynamic_cd = max(0, int(attack.get("cooldown_from_burning_plus", 0) or 0))
+                self._append_effect_event(
+                    effect_events,
+                    f"Gammastrahl-Abklingzeit: {dynamic_cooldown_turns} (Effektdauer {burning_duration_for_dynamic_cooldown} + {bonus_for_dynamic_cd}).",
+                )
+            elif (not starts_after_landing) and isinstance(custom_cooldown_turns, int) and custom_cooldown_turns > 0:
                 current_cd = self.user_attack_cooldowns.get(attack_index, 0)
                 self.user_attack_cooldowns[attack_index] = max(current_cd, custom_cooldown_turns)
             elif self.mission_is_strong_attack(damage, dmg_buff):
@@ -6603,6 +6730,7 @@ class MissionBattleView(RestrictedView):
                             force_max_damage,
                             guaranteed_hit,
                         )
+                        self._append_multi_hit_roll_event(bot_effect_events)
                         if defender_has_stealth and not guaranteed_hit:
                             actual_damage = 0
                             is_critical = False
@@ -6624,6 +6752,7 @@ class MissionBattleView(RestrictedView):
                         force_max_damage,
                         guaranteed_hit,
                     )
+                    self._append_multi_hit_roll_event(bot_effect_events)
                     if defender_has_stealth and not guaranteed_hit:
                         actual_damage = 0
                         is_critical = False
@@ -6700,6 +6829,7 @@ class MissionBattleView(RestrictedView):
 
             # SIDE EFFECTS: Apply new effects from bot attack
             effects = attack.get("effects", [])
+            burning_duration_for_dynamic_cooldown: int | None = None
             for effect in effects:
                 # 70% Fix-Chance für Verwirrung
                 chance = 0.7 if effect.get('type') == 'confusion' else effect.get('chance', 1.0)
@@ -6722,6 +6852,9 @@ class MissionBattleView(RestrictedView):
                         'applier': 0
                     }
                     self.active_effects[target_id].append(new_effect)
+                    if attack.get("cooldown_from_burning_plus") is not None:
+                        prev_duration = burning_duration_for_dynamic_cooldown or 0
+                        burning_duration_for_dynamic_cooldown = max(prev_duration, duration)
                     self._append_effect_event(bot_effect_events, f"Verbrennung aktiv: {effect['damage']} Schaden für {duration} Runden.")
                 elif eff_type == 'confusion':
                     self.set_confusion(target_id, 0)
@@ -6875,9 +7008,22 @@ class MissionBattleView(RestrictedView):
 
             if not is_forced_bot_landing:
                 # Cooldown für Bot (kartenspezifisch oder stark)
+                dynamic_cooldown_turns = _resolve_dynamic_cooldown_from_burning(
+                    attack,
+                    burning_duration_for_dynamic_cooldown,
+                )
                 custom_cooldown_turns = attack.get("cooldown_turns")
                 starts_after_landing = _starts_cooldown_after_landing(attack)
-                if (not starts_after_landing) and isinstance(custom_cooldown_turns, int) and custom_cooldown_turns > 0:
+                if dynamic_cooldown_turns > 0:
+                    current_cd = self.bot_attack_cooldowns.get(best_index, 0)
+                    self.bot_attack_cooldowns[best_index] = max(current_cd, dynamic_cooldown_turns)
+                    bonus_for_dynamic_cd = max(0, int(attack.get("cooldown_from_burning_plus", 0) or 0))
+                    self._append_effect_event(
+                        bot_effect_events,
+                        f"Gammastrahl-Abklingzeit: {dynamic_cooldown_turns} (Effektdauer {burning_duration_for_dynamic_cooldown} + {bonus_for_dynamic_cd}).",
+                    )
+                    self.reduce_cooldowns_bot()
+                elif (not starts_after_landing) and isinstance(custom_cooldown_turns, int) and custom_cooldown_turns > 0:
                     current_cd = self.bot_attack_cooldowns.get(best_index, 0)
                     self.bot_attack_cooldowns[best_index] = max(current_cd, custom_cooldown_turns)
                     self.reduce_cooldowns_bot()

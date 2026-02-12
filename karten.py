@@ -1,10 +1,11 @@
-﻿karten = [
+﻿
+karten = [
     {
         "name": "Black Widow",
         "beschreibung": "Spionin mit Präzision, Taser und Tarnung.",
         "bild": "https://i.imgur.com/0u0GRC9.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 150,
+        "hp": 100,
         "attacks": [
             {"name": "Treten", "damage": [10, 15], "info": "Stabiler Nahkampfangriff."},
             {"name": "Taser", "damage": [5, 25], "info": "Riskanter Angriff mit hohem Maximalschaden."},
@@ -29,7 +30,7 @@
         "beschreibung": "Hightech-Avenger im gepanzerten Kampfanzug.",
         "bild": "https://i.imgur.com/HxcQOw5.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 160,
+        "hp": 100,
         "attacks": [
             {"name": "Repulsor Strahlen", "damage": [5, 20], "info": "Standardstrahl mit breiter Schadensspanne."},
             {
@@ -55,17 +56,24 @@
         "beschreibung": "Der erste Avenger mit Schild und Taktik.",
         "bild": "https://i.imgur.com/T1pX1QU.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 165,
+        "hp": 100,
         "attacks": [
-            {"name": "Schildwurf", "damage": [10, 20], "info": "Solider Distanzangriff mit dem Schild."},
-            {"name": "Inspiration", "damage": [0, 0], "heal": 20, "cooldown_turns": 4, "info": "Heilt sofort 20 HP."},
+            {
+                "name": "Schildwurf",
+                "damage": [15, 30],
+                "requires_reload": True,
+                "reload_name": "Aufsammeln",
+                "info": "Wirft das Schild. Danach musst du erst Aufsammeln, bevor du erneut Schildwurf nutzen kannst.",
+            },
+            {"name": "Inspiration", "damage": [0, 0], "heal": 20, "cooldown_turns": 5, "info": "Heilt sofort 20 HP."},
             {
                 "name": "Schild-Block",
                 "damage": [0, 0],
-                "effects": [{"type": "damage_reduction_sequence", "target": "self", "sequence": [0.4, 0.6]}],
+                "cooldown_turns": 4,
+                "effects": [{"type": "damage_reduction_sequence", "target": "self", "sequence": [0.8, 0.4]}],
                 "info": "Blockt den nächsten Treffer um 40%, danach den darauffolgenden um 60%.",
             },
-            {"name": "Hieb", "damage": [15, 25], "info": "Direkter Nahkampfhieb."},
+            {"name": "Hieb", "damage": [10, 20], "info": "Direkter Nahkampfhieb."},
         ],
     },
     {
@@ -73,22 +81,24 @@
         "beschreibung": "Rohe Kraft, Gamma-Wut und pure Zerstörung.",
         "bild": "https://i.imgur.com/PcbEJOS.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 190,
+        "hp": 100,
         "attacks": [
-            {"name": "Smash", "damage": [5, 20], "info": "Unberechenbarer Wuchtangriff."},
+            {"name": "Smash", "damage": [8, 20], "info": "Unberechenbarer Wuchtangriff."},
             {
                 "name": "Gammastrahl",
                 "damage": [0, 0],
+                "cooldown_from_burning_plus": 3,
                 "effects": [{"type": "burning", "chance": 1.0, "duration": [2, 7], "damage": 5}],
-                "info": "Verursacht keinen Direktschaden, aber Brennen für 2-7 Runden (5 pro Tick).",
+                "info": "Verursacht keinen Direktschaden, aber Brennen für 2-7 Runden (5 pro Tick). Cooldown = Effektdauer + 3.",
             },
             {
-                "name": "Unverwundbarkeit",
+                "name": "Gamma-Wut",
                 "damage": [0, 0],
+                "cooldown_turns": 3,
                 "effects": [{"type": "damage_boost", "target": "self", "amount": 5, "uses": 2}],
                 "info": "Nächste 2 Angriffe verursachen jeweils +5 Schaden.",
             },
-            {"name": "Sprung", "damage": [10, 40], "info": "Sprungangriff mit sehr hoher Streuung."},
+            {"name": "Sprung", "damage": [0, 40], "info": "Sprungangriff mit sehr hoher Streuung."},
         ],
     },
     {
@@ -96,14 +106,26 @@
         "beschreibung": "Präziser Fernkämpfer mit Spezialpfeilen.",
         "bild": "https://i.imgur.com/tpRd9by.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 145,
+        "hp": 100,
         "attacks": [
             {
                 "name": "Flammen Pfeil",
                 "damage": [5, 5],
                 "cooldown_turns": 3,
-                "effects": [{"type": "burning", "chance": 1.0, "duration": [3, 3], "damage": 5}],
-                "info": "Macht sofort 5 Schaden und setzt den Gegner 3 Runden in Brand (5 pro Tick).",
+                "damage_breakdown": {
+                    "start_damage": 5,
+                    "burn_damage_per_round": 5,
+                    "burn_duration_rounds": 3,
+                },
+                "effects": [
+                    {
+                        "type": "burning",
+                        "chance": 1.0,
+                        "duration": [3, 3],
+                        "damage": 5,
+                    }
+                ],
+                "info": "Startschaden 5; Brennen 3 Runden x 5 Schaden.",
             },
             {"name": "Pfeil", "damage": [5, 15], "info": "Standardpfeil."},
             {
@@ -116,8 +138,9 @@
             {
                 "name": "Triple Arrow",
                 "damage": [0, 30],
-                "multi_hit": {"hits": 3, "hit_chance": 0.45, "per_hit_damage": [1, 10]},
-                "info": "3 Pfeile mit je 45% Trefferchance; jeder Treffer macht 1-10 Schaden.",
+                "cooldown_turns": 2,
+                "multi_hit": {"hits": 3, "hit_chance": 0.45, "per_hit_damage": [1, 10], "guaranteed_min_per_hit": 3},
+                "info": "3 Pfeile mit je 45% Trefferchance; jeder Treffer macht 1-10 Schaden. Mit Treffsicherheit: mind. 3 pro Treffer.",
             },
         ],
     },
@@ -126,7 +149,7 @@
         "beschreibung": "Meister der mystischen Künste.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 155,
+        "hp": 100,
         "attacks": [
             {"name": "Eldritch-Peitsche", "damage": [10, 18], "info": "Mystischer Peitschenangriff."},
             {
@@ -151,7 +174,7 @@
         "beschreibung": "Königlicher Krieger mit Vibranium-Power.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 165,
+        "hp": 100,
         "attacks": [
             {"name": "Vibranium-Krallen", "damage": [12, 18], "info": "Schneller Krallenangriff."},
             {
@@ -178,7 +201,7 @@
         "beschreibung": "Galaktischer Draufgänger mit Jet-Boots.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 150,
+        "hp": 100,
         "attacks": [
             {"name": "Element-Blaster", "damage": [12, 18], "info": "Zuverlässiger Blasterangriff."},
             {
@@ -212,7 +235,7 @@
         "beschreibung": "Massiver Baumkrieger mit starker Regeneration.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 180,
+        "hp": 100,
         "attacks": [
             {"name": "Rankenschlag", "damage": [10, 18], "info": "Schlag mit schweren Ranken."},
             {
@@ -231,7 +254,7 @@
         "beschreibung": "Kleiner Genius mit großen Waffen.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 135,
+        "hp": 100,
         "attacks": [
             {"name": "Duale Blaster", "damage": [12, 22], "info": "Schneller Doppelbeschuss."},
             {
@@ -262,7 +285,7 @@
         "beschreibung": "Avatar von Khonshu mit chaotischem Stil.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 150,
+        "hp": 100,
         "attacks": [
             {"name": "Mondsicheln", "damage": [12, 18], "info": "Präziser Sichelwurf."},
             {"name": "Chaos-Stil", "damage": [5, 30], "cooldown_turns": 2, "info": "Chaotischer Angriff mit großer Streuung."},
@@ -282,7 +305,7 @@
         "beschreibung": "Daywalker mit Katana und Jagdinstinkt.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 155,
+        "hp": 100,
         "attacks": [
             {"name": "Silber-Katana", "damage": [12, 18], "info": "Schneller Katana-Angriff."},
             {"name": "Daywalker-Biss", "damage": [15, 20], "lifesteal_ratio": 0.5, "cooldown_turns": 3, "info": "Heilt 50% des verursachten Schadens."},
@@ -307,7 +330,7 @@
         "beschreibung": "Unaufhaltsam mit Heilfaktor und Adamantium.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 170,
+        "hp": 100,
         "attacks": [
             {"name": "Adamantium-Krallen", "damage": [12, 18], "info": "Brutaler Krallenhieb."},
             {
@@ -339,7 +362,7 @@
         "beschreibung": "Schneller Netzkämpfer mit Spinnensinn.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 145,
+        "hp": 100,
         "attacks": [
             {"name": "Netzschuss", "damage": [10, 15], "info": "Schneller Netztreffer."},
             {
@@ -360,3 +383,5 @@
         ],
     },
 ]
+
+

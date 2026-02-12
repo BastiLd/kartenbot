@@ -39,15 +39,23 @@ class CardSpecTests(unittest.TestCase):
 
     def test_hawkeye_new_specs(self) -> None:
         hawkeye = _find_card("Hawkeye")
+        flammen_pfeil = _find_attack(hawkeye, "Flammen Pfeil")
+        breakdown = flammen_pfeil.get("damage_breakdown", {})
+        self.assertEqual(int(breakdown.get("start_damage", 0) or 0), 5)
+        self.assertEqual(int(breakdown.get("burn_damage_per_round", 0) or 0), 5)
+        self.assertEqual(int(breakdown.get("burn_duration_rounds", 0) or 0), 3)
+
         treffsicherheit = _find_attack(hawkeye, "Treffsicherheit")
         effects = treffsicherheit.get("effects", [])
         self.assertTrue(any(e.get("type") == "guaranteed_hit" for e in effects))
 
         triple = _find_attack(hawkeye, "Triple Arrow")
         mh = triple.get("multi_hit", {})
+        self.assertEqual(int(triple.get("cooldown_turns", 0) or 0), 2)
         self.assertEqual(mh.get("hits"), 3)
         self.assertAlmostEqual(float(mh.get("hit_chance")), 0.45)
         self.assertEqual(mh.get("per_hit_damage"), [1, 10])
+        self.assertEqual(int(mh.get("guaranteed_min_per_hit", 0) or 0), 3)
 
     def test_ironman_overladung_specs(self) -> None:
         iron = _find_card("Iron-Man")
@@ -58,6 +66,17 @@ class CardSpecTests(unittest.TestCase):
         self.assertAlmostEqual(float(multiplier_effect.get("multiplier", 1.0)), 1.65)
         # Interne Cooldown-Logik reduziert am Rundenwechsel; 2 entspricht 1 voller eigener Runde Cooldown.
         self.assertEqual(int(overladung.get("cooldown_turns", 0) or 0), 2)
+
+    def test_captain_america_shield_throw_requires_collect(self) -> None:
+        cap = _find_card("Captain America")
+        shield_throw = _find_attack(cap, "Schildwurf")
+        self.assertTrue(bool(shield_throw.get("requires_reload")))
+        self.assertEqual(str(shield_throw.get("reload_name") or ""), "Aufsammeln")
+
+    def test_hulk_gamma_dynamic_cooldown_spec(self) -> None:
+        hulk = _find_card("Hulk")
+        gamma = _find_attack(hulk, "Gammastrahl")
+        self.assertEqual(int(gamma.get("cooldown_from_burning_plus", 0) or 0), 3)
 
     def test_outgoing_reduction_cards(self) -> None:
         star_lord = _find_card("Star Lord")
@@ -122,6 +141,30 @@ class BattleUtilityTests(unittest.TestCase):
         self.assertLessEqual(damage, 30)
         self.assertEqual(min_possible, 3)
         self.assertEqual(max_possible, 30)
+
+    def test_multi_hit_guaranteed_min_per_hit(self) -> None:
+        cfg = {"hits": 3, "hit_chance": 0.45, "per_hit_damage": [1, 10], "guaranteed_min_per_hit": 3}
+        damage, min_possible, max_possible = resolve_multi_hit_damage(cfg, guaranteed_hit=True)
+        self.assertGreaterEqual(damage, 9)
+        self.assertLessEqual(damage, 30)
+        self.assertEqual(min_possible, 9)
+        self.assertEqual(max_possible, 30)
+
+    def test_multi_hit_details_payload(self) -> None:
+        cfg = {"hits": 3, "hit_chance": 1.0, "per_hit_damage": [1, 10]}
+        damage, _min_possible, _max_possible, details = resolve_multi_hit_damage(cfg, return_details=True)
+        self.assertEqual(int(details.get("hits", 0) or 0), 3)
+        self.assertEqual(int(details.get("landed_hits", 0) or 0), 3)
+        per_hit = details.get("per_hit_damages")
+        self.assertIsInstance(per_hit, list)
+        self.assertEqual(len(per_hit), 3)
+        self.assertEqual(int(details.get("total_damage", 0) or 0), damage)
+
+    def test_dynamic_burning_cooldown_formula(self) -> None:
+        attack = {"cooldown_from_burning_plus": 3}
+        self.assertEqual(bot_module._resolve_dynamic_cooldown_from_burning(attack, 4), 7)
+        self.assertEqual(bot_module._resolve_dynamic_cooldown_from_burning(attack, 2), 5)
+        self.assertEqual(bot_module._resolve_dynamic_cooldown_from_burning(attack, None), 0)
 
     def test_battle_log_effect_events_rendered(self) -> None:
         embed = create_battle_log_embed()
@@ -376,6 +419,49 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(bool(btn.disabled) for btn in attack_buttons[1:]))
         self.assertIn("Cooldown: 2", str(attack_buttons[3].label))
 
+    async def test_battle_reload_button_for_shield_throw(self) -> None:
+        player_card = {
+            "name": "Captain America",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [
+                {
+                    "name": "Schildwurf",
+                    "damage": [15, 30],
+                    "requires_reload": True,
+                    "reload_name": "Aufsammeln",
+                    "info": "test",
+                },
+                {"name": "A2", "damage": [10, 10], "info": "b"},
+                {"name": "A3", "damage": [10, 10], "info": "c"},
+                {"name": "A4", "damage": [10, 10], "info": "d"},
+            ],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        view.current_turn = 1
+        view.set_reload_needed(1, 0, True)
+        original_get_card_buffs = bot_module.get_card_buffs
+
+        async def _fake_get_card_buffs(_user_id, _card_name):
+            return []
+
+        bot_module.get_card_buffs = _fake_get_card_buffs
+        try:
+            await view.update_attack_buttons()
+        finally:
+            bot_module.get_card_buffs = original_get_card_buffs
+
+        attack_buttons = [c for c in view.children if hasattr(c, "row") and c.row in (0, 1)][:4]
+        self.assertEqual(str(attack_buttons[0].label), "Aufsammeln")
+        self.assertIn("primary", str(attack_buttons[0].style).lower())
+        self.assertFalse(bool(attack_buttons[0].disabled))
+
 
 class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_mission_helpers_for_delayed_and_airborne(self) -> None:
@@ -461,3 +547,35 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(bool(attack_buttons[0].disabled))
         self.assertTrue(all(bool(btn.disabled) for btn in attack_buttons[1:]))
         self.assertIn("Cooldown: 2", str(attack_buttons[3].label))
+
+    async def test_mission_reload_button_for_shield_throw(self) -> None:
+        player_card = {
+            "name": "Captain America",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [
+                {
+                    "name": "Schildwurf",
+                    "damage": [15, 30],
+                    "requires_reload": True,
+                    "reload_name": "Aufsammeln",
+                    "info": "test",
+                },
+                {"name": "A2", "damage": [10, 10], "info": "b"},
+                {"name": "A3", "damage": [10, 10], "info": "c"},
+                {"name": "A4", "damage": [10, 10], "info": "d"},
+            ],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = MissionBattleView(player_card, bot_card, 1, 1, 1)
+        view.set_reload_needed(1, 0, True)
+        view.update_attack_buttons_mission()
+        attack_buttons = [c for c in view.children if hasattr(c, "row") and c.row in (0, 1)][:4]
+        self.assertEqual(str(attack_buttons[0].label), "Aufsammeln")
+        self.assertIn("primary", str(attack_buttons[0].style).lower())
+        self.assertFalse(bool(attack_buttons[0].disabled))
