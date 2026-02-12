@@ -1,11 +1,11 @@
-﻿
+
 karten = [
     {
         "name": "Black Widow",
         "beschreibung": "Spionin mit Präzision, Taser und Tarnung.",
         "bild": "https://i.imgur.com/0u0GRC9.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 100,
+        "hp": 140,
         "attacks": [
             {"name": "Treten", "damage": [10, 15], "info": "Stabiler Nahkampfangriff."},
             {"name": "Taser", "damage": [5, 25], "info": "Riskanter Angriff mit hohem Maximalschaden."},
@@ -30,7 +30,7 @@ karten = [
         "beschreibung": "Hightech-Avenger im gepanzerten Kampfanzug.",
         "bild": "https://i.imgur.com/HxcQOw5.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 100,
+        "hp": 140,
         "attacks": [
             {"name": "Repulsor Strahlen", "damage": [5, 20], "info": "Standardstrahl mit breiter Schadensspanne."},
             {
@@ -56,7 +56,7 @@ karten = [
         "beschreibung": "Der erste Avenger mit Schild und Taktik.",
         "bild": "https://i.imgur.com/T1pX1QU.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 100,
+        "hp": 140,
         "attacks": [
             {
                 "name": "Schildwurf",
@@ -65,7 +65,7 @@ karten = [
                 "reload_name": "Aufsammeln",
                 "info": "Wirft das Schild. Danach musst du erst Aufsammeln, bevor du erneut Schildwurf nutzen kannst.",
             },
-            {"name": "Inspiration", "damage": [0, 0], "heal": 20, "cooldown_turns": 5, "info": "Heilt sofort 20 HP."},
+            {"name": "Inspiration", "damage": [0, 0], "heal": [10, 25], "cooldown_turns": 5, "info": "Heilt sofort 10-25 HP."},
             {
                 "name": "Schild-Block",
                 "damage": [0, 0],
@@ -81,7 +81,7 @@ karten = [
         "beschreibung": "Rohe Kraft, Gamma-Wut und pure Zerstörung.",
         "bild": "https://i.imgur.com/PcbEJOS.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 100,
+        "hp": 140,
         "attacks": [
             {"name": "Smash", "damage": [8, 20], "info": "Unberechenbarer Wuchtangriff."},
             {
@@ -106,16 +106,16 @@ karten = [
         "beschreibung": "Präziser Fernkämpfer mit Spezialpfeilen.",
         "bild": "https://i.imgur.com/tpRd9by.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 100,
+        "hp": 140,
         "attacks": [
             {
                 "name": "Flammen Pfeil",
                 "damage": [5, 5],
-                "cooldown_turns": 3,
+                "cooldown_turns": 5,
                 "damage_breakdown": {
                     "start_damage": 5,
                     "burn_damage_per_round": 5,
-                    "burn_duration_rounds": 3,
+                    "burn_duration_rounds": 4,
                 },
                 "effects": [
                     {
@@ -149,7 +149,7 @@ karten = [
         "beschreibung": "Meister der mystischen Künste.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 100,
+        "hp": 140,
         "attacks": [
             {"name": "Eldritch-Peitsche", "damage": [10, 18], "info": "Mystischer Peitschenangriff."},
             {
@@ -174,7 +174,7 @@ karten = [
         "beschreibung": "Königlicher Krieger mit Vibranium-Power.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 100,
+        "hp": 140,
         "attacks": [
             {"name": "Vibranium-Krallen", "damage": [12, 18], "info": "Schneller Krallenangriff."},
             {
@@ -201,7 +201,7 @@ karten = [
         "beschreibung": "Galaktischer Draufgänger mit Jet-Boots.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 100,
+        "hp": 140,
         "attacks": [
             {"name": "Element-Blaster", "damage": [12, 18], "info": "Zuverlässiger Blasterangriff."},
             {
@@ -235,7 +235,7 @@ karten = [
         "beschreibung": "Massiver Baumkrieger mit starker Regeneration.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 100,
+        "hp": 140,
         "attacks": [
             {"name": "Rankenschlag", "damage": [10, 18], "info": "Schlag mit schweren Ranken."},
             {
@@ -254,7 +254,7 @@ karten = [
         "beschreibung": "Kleiner Genius mit großen Waffen.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 100,
+        "hp": 140,
         "attacks": [
             {"name": "Duale Blaster", "damage": [12, 22], "info": "Schneller Doppelbeschuss."},
             {
@@ -285,7 +285,7 @@ karten = [
         "beschreibung": "Avatar von Khonshu mit chaotischem Stil.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 100,
+        "hp": 140,
         "attacks": [
             {"name": "Mondsicheln", "damage": [12, 18], "info": "Präziser Sichelwurf."},
             {"name": "Chaos-Stil", "damage": [5, 30], "cooldown_turns": 2, "info": "Chaotischer Angriff mit großer Streuung."},
@@ -305,7 +305,7 @@ karten = [
         "beschreibung": "Daywalker mit Katana und Jagdinstinkt.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 100,
+        "hp": 140,
         "attacks": [
             {"name": "Silber-Katana", "damage": [12, 18], "info": "Schneller Katana-Angriff."},
             {"name": "Daywalker-Biss", "damage": [15, 20], "lifesteal_ratio": 0.5, "cooldown_turns": 3, "info": "Heilt 50% des verursachten Schadens."},
@@ -330,7 +330,7 @@ karten = [
         "beschreibung": "Unaufhaltsam mit Heilfaktor und Adamantium.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 100,
+        "hp": 140,
         "attacks": [
             {"name": "Adamantium-Krallen", "damage": [12, 18], "info": "Brutaler Krallenhieb."},
             {
@@ -362,7 +362,7 @@ karten = [
         "beschreibung": "Schneller Netzkämpfer mit Spinnensinn.",
         "bild": "https://i.imgur.com/4mxNv2c.png",
         "seltenheit": "Gewöhnlich",
-        "hp": 100,
+        "hp": 140,
         "attacks": [
             {"name": "Netzschuss", "damage": [10, 15], "info": "Schneller Netztreffer."},
             {
