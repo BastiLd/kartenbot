@@ -3,6 +3,82 @@ import random
 import discord
 
 
+def resolve_multi_hit_damage(
+    multi_hit: dict,
+    *,
+    buff_amount: int = 0,
+    attack_multiplier: float = 1.0,
+    force_max: bool = False,
+    guaranteed_hit: bool = False,
+):
+    """Resolve multi-hit damage and return (damage, min_possible, max_possible)."""
+    hits = max(0, int(multi_hit.get("hits", 0) or 0))
+    if hits <= 0:
+        return 0, 0, 0
+
+    per_hit = multi_hit.get("per_hit_damage", [0, 0])
+    if isinstance(per_hit, list) and len(per_hit) == 2:
+        hit_min = int(per_hit[0])
+        hit_max = int(per_hit[1])
+    else:
+        hit_min = 0
+        hit_max = 0
+    hit_min = max(0, hit_min)
+    hit_max = max(hit_min, hit_max)
+
+    chance = float(multi_hit.get("hit_chance", 0.0) or 0.0)
+    chance = max(0.0, min(1.0, chance))
+
+    if force_max or guaranteed_hit:
+        landed = hits
+    else:
+        landed = sum(1 for _ in range(hits) if random.random() < chance)
+
+    total = 0
+    if landed > 0:
+        for _ in range(landed):
+            total += hit_max if force_max else random.randint(hit_min, hit_max)
+        total += int(buff_amount)
+
+    min_possible = 0
+    if force_max or guaranteed_hit:
+        min_possible = hits * hit_min + int(buff_amount)
+
+    max_possible = hits * hit_max + int(buff_amount)
+
+    if attack_multiplier != 1.0:
+        total = int(round(total * attack_multiplier))
+        min_possible = int(round(min_possible * attack_multiplier))
+        max_possible = int(round(max_possible * attack_multiplier))
+
+    return max(0, total), max(0, min_possible), max(0, max_possible)
+
+
+def apply_outgoing_attack_modifier(raw_damage: int, *, percent: float = 0.0, flat: int = 0) -> tuple[int, int]:
+    """
+    Apply outgoing attack reduction.
+    Returns (final_damage, overflow_self_damage).
+    """
+    damage = max(0, int(raw_damage))
+    if damage <= 0:
+        return 0, 0
+
+    reduction_pct = max(0.0, min(1.0, float(percent or 0.0)))
+    if reduction_pct > 0:
+        damage = max(0, int(round(damage * (1.0 - reduction_pct))))
+
+    reduction_flat = max(0, int(flat or 0))
+    overflow = 0
+    if reduction_flat > 0:
+        if damage >= reduction_flat:
+            damage -= reduction_flat
+        else:
+            overflow = reduction_flat - damage
+            damage = 0
+
+    return max(0, damage), max(0, overflow)
+
+
 def calculate_damage(attack_damage, buff_amount=0):
     """
     Calculate damage with right-skew distribution.
@@ -85,6 +161,7 @@ def update_battle_log(
     self_hit_damage: int = 0,
     attacker_status_icons: str = "",
     defender_status_icons: str = "",
+    effect_events: list[str] | None = None,
 ):
     critical_text = "\U0001f4a5 **VOLLTREFFER!**" if is_critical else ""
 
@@ -100,12 +177,18 @@ def update_battle_log(
     burn_suffix = f" (+{pre_effect_damage} \U0001f525)" if pre_effect_damage and pre_effect_damage > 0 else ""
     confusion_suffix = " (+Verwirrung)" if confusion_applied else ""
     self_hit_suffix = f" (Selbsttreffer: {self_hit_damage})" if (self_hit_damage and self_hit_damage > 0) else ""
+    effect_text = ""
+    if effect_events:
+        lines = [str(event).strip() for event in effect_events if str(event).strip()]
+        if lines:
+            effect_text = "\n" + "\n".join(f"- {line}" for line in lines[:8])
     new_entry = (
         f"\n\n**Runde {round_number}:**\n"
         f"{critical_text}\n"
         f"**{attacker_display}s {attacker_name}** \u27a4 **{attack_name}** \u27a4 "
         f"**{actual_damage} Schaden{burn_suffix}{confusion_suffix}{self_hit_suffix}** an "
-        f"**{defender_display}s {defender_name}**\n"
+        f"**{defender_display}s {defender_name}**"
+        f"{effect_text}\n"
         f"\U0001f6e1\ufe0f {defender_display} hat jetzt noch **{defender_remaining_hp} Leben**."
     )
 
@@ -124,6 +207,7 @@ def create_battle_embed(
     user1,
     user2,
     active_effects=None,
+    current_attack_infos: list[str] | None = None,
 ):
     user1_name = user1.display_name if user1 else "Bot"
     user2_name = user2.display_name if user2 else "Bot"
@@ -149,19 +233,23 @@ def create_battle_embed(
     player2_confused = active_effects and any(e["type"] == "confusion" for e in active_effects.get(player2_id, []))
     player1_stealth = active_effects and any(e["type"] == "stealth" for e in active_effects.get(player1_id, []))
     player2_stealth = active_effects and any(e["type"] == "stealth" for e in active_effects.get(player2_id, []))
+    player1_airborne = active_effects and any(e["type"] == "airborne" for e in active_effects.get(player1_id, []))
+    player2_airborne = active_effects and any(e["type"] == "airborne" for e in active_effects.get(player2_id, []))
 
     if current_turn == (user1.id if user1 else 0):
         player1_label = (
             f"**\U0001f7e5 {user1_name}s Karte"
             f"{'\U0001f525' if player1_burning else ''}"
             f"{' \U0001f300' if player1_confused else ''}"
-            f"{' \U0001f977' if player1_stealth else ''}**"
+            f"{' \U0001f977' if player1_stealth else ''}"
+            f"{' \u2708\ufe0f' if player1_airborne else ''}**"
         )
         player2_label = (
             f"\U0001f7e6 {user2_name}s Karte"
             f"{'\U0001f525' if player2_burning else ''}"
             f"{' \U0001f300' if player2_confused else ''}"
             f"{' \U0001f977' if player2_stealth else ''}"
+            f"{' \u2708\ufe0f' if player2_airborne else ''}"
         )
     else:
         player1_label = (
@@ -169,12 +257,14 @@ def create_battle_embed(
             f"{'\U0001f525' if player1_burning else ''}"
             f"{' \U0001f300' if player1_confused else ''}"
             f"{' \U0001f977' if player1_stealth else ''}"
+            f"{' \u2708\ufe0f' if player1_airborne else ''}"
         )
         player2_label = (
             f"**\U0001f7e6 {user2_name}s Karte"
             f"{'\U0001f525' if player2_burning else ''}"
             f"{' \U0001f300' if player2_confused else ''}"
-            f"{' \U0001f977' if player2_stealth else ''}**"
+            f"{' \U0001f977' if player2_stealth else ''}"
+            f"{' \u2708\ufe0f' if player2_airborne else ''}**"
         )
 
     embed.add_field(name=player1_label, value=f"{player1_card['name']}\nHP: {player1_hp}", inline=True)
@@ -184,6 +274,11 @@ def create_battle_embed(
         value=f"**{user1_mention if current_turn == (user1.id if user1 else 0) else user2_mention} ist an der Reihe**",
         inline=False,
     )
+    if current_attack_infos:
+        info_value = "\n".join(current_attack_infos[:4])
+        if len(info_value) > 1024:
+            info_value = info_value[:1021] + "..."
+        embed.add_field(name="Fähigkeiten", value=info_value, inline=False)
     return embed
 
 

@@ -131,6 +131,14 @@ async def init_db():
     )
     await db.execute(
         """
+        CREATE TABLE IF NOT EXISTS bot_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+    await db.execute(
+        """
         CREATE TABLE IF NOT EXISTS guild_anfang_message (
             guild_id INTEGER PRIMARY KEY,
             channel_id INTEGER,
