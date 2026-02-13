@@ -184,6 +184,87 @@ def _trim_battle_log(text: str, max_len: int = 3800) -> str:
     return trimmed[-max_len:] if len(trimmed) > max_len else trimmed
 
 
+def _keep_last_rounds(text: str, max_rounds: int | None) -> str:
+    if max_rounds is None:
+        return text
+    max_rounds = max(1, int(max_rounds))
+    parts = text.split("\n\n**Runde ")
+    if len(parts) <= 1:
+        return text
+    header = parts[0]
+    rounds = parts[1:]
+    kept = rounds[-max_rounds:]
+    rebuilt = header + "".join("\n\n**Runde " + part for part in kept)
+    return rebuilt
+
+
+def _display_name(user_obj) -> str:
+    if isinstance(user_obj, str):
+        text = user_obj.strip()
+        return text or "Bot"
+    display_name = getattr(user_obj, "display_name", None)
+    if display_name:
+        return str(display_name)
+    mention = getattr(user_obj, "mention", None)
+    if mention:
+        return str(mention)
+    return "Bot"
+
+
+def build_battle_log_entry(
+    attacker_name,
+    defender_name,
+    attack_name,
+    actual_damage,
+    is_critical,
+    attacker_user,
+    defender_user,
+    round_number,
+    defender_remaining_hp,
+    pre_effect_damage: int = 0,
+    confusion_applied: bool = False,
+    self_hit_damage: int = 0,
+    attacker_status_icons: str = "",
+    defender_status_icons: str = "",
+    effect_events: list[str] | None = None,
+) -> tuple[str, str]:
+    critical_text = "\U0001f4a5 **VOLLTREFFER!**" if is_critical else ""
+
+    attacker_display = _display_name(attacker_user)
+    defender_display = _display_name(defender_user)
+    if attacker_status_icons:
+        attacker_display = f"{attacker_display}{attacker_status_icons}"
+    if defender_status_icons:
+        defender_display = f"{defender_display}{defender_status_icons}"
+
+    burn_suffix = f" (+{pre_effect_damage} \U0001f525)" if pre_effect_damage and pre_effect_damage > 0 else ""
+    confusion_suffix = " (+Verwirrung)" if confusion_applied else ""
+    self_hit_suffix = f" (Selbsttreffer: {self_hit_damage})" if (self_hit_damage and self_hit_damage > 0) else ""
+    effect_text = ""
+    if effect_events:
+        lines = [str(event).strip() for event in effect_events if str(event).strip()]
+        if lines:
+            effect_text = "\n" + "\n".join(f"- {line}" for line in lines[:8])
+
+    attack_line = (
+        f"**{attacker_display}s {attacker_name}** \u27a4 **{attack_name}** \u27a4 "
+        f"**{actual_damage} Schaden{burn_suffix}{confusion_suffix}{self_hit_suffix}** an "
+        f"**{defender_display}s {defender_name}**"
+    )
+    new_entry = (
+        f"\n\n**Runde {round_number}:**\n"
+        f"{critical_text}\n"
+        f"{attack_line}"
+        f"{effect_text}\n"
+        f"\U0001f6e1\ufe0f {defender_display} hat jetzt noch **{defender_remaining_hp} Leben**."
+    )
+    summary_line = (
+        f"{attacker_display}s {attacker_name} \u27a4 {attack_name} \u27a4 "
+        f"{actual_damage} Schaden an {defender_display}s {defender_name}"
+    )
+    return new_entry, summary_line
+
+
 def update_battle_log(
     existing_embed,
     attacker_name,
@@ -201,37 +282,29 @@ def update_battle_log(
     attacker_status_icons: str = "",
     defender_status_icons: str = "",
     effect_events: list[str] | None = None,
+    max_rounds: int | None = 4,
 ):
-    critical_text = "\U0001f4a5 **VOLLTREFFER!**" if is_critical else ""
-
     current_desc = existing_embed.description or "*Der Kampf beginnt...*"
-
-    attacker_display = attacker_user.display_name if isinstance(attacker_user, discord.Member) else "Bot"
-    defender_display = defender_user.display_name if isinstance(defender_user, discord.Member) else "Bot"
-    if attacker_status_icons:
-        attacker_display = f"{attacker_display}{attacker_status_icons}"
-    if defender_status_icons:
-        defender_display = f"{defender_display}{defender_status_icons}"
-
-    burn_suffix = f" (+{pre_effect_damage} \U0001f525)" if pre_effect_damage and pre_effect_damage > 0 else ""
-    confusion_suffix = " (+Verwirrung)" if confusion_applied else ""
-    self_hit_suffix = f" (Selbsttreffer: {self_hit_damage})" if (self_hit_damage and self_hit_damage > 0) else ""
-    effect_text = ""
-    if effect_events:
-        lines = [str(event).strip() for event in effect_events if str(event).strip()]
-        if lines:
-            effect_text = "\n" + "\n".join(f"- {line}" for line in lines[:8])
-    new_entry = (
-        f"\n\n**Runde {round_number}:**\n"
-        f"{critical_text}\n"
-        f"**{attacker_display}s {attacker_name}** \u27a4 **{attack_name}** \u27a4 "
-        f"**{actual_damage} Schaden{burn_suffix}{confusion_suffix}{self_hit_suffix}** an "
-        f"**{defender_display}s {defender_name}**"
-        f"{effect_text}\n"
-        f"\U0001f6e1\ufe0f {defender_display} hat jetzt noch **{defender_remaining_hp} Leben**."
+    new_entry, _ = build_battle_log_entry(
+        attacker_name,
+        defender_name,
+        attack_name,
+        actual_damage,
+        is_critical,
+        attacker_user,
+        defender_user,
+        round_number,
+        defender_remaining_hp,
+        pre_effect_damage=pre_effect_damage,
+        confusion_applied=confusion_applied,
+        self_hit_damage=self_hit_damage,
+        attacker_status_icons=attacker_status_icons,
+        defender_status_icons=defender_status_icons,
+        effect_events=effect_events,
     )
-
-    existing_embed.description = _trim_battle_log(current_desc + new_entry)
+    next_desc = current_desc + new_entry
+    next_desc = _keep_last_rounds(next_desc, max_rounds)
+    existing_embed.description = _trim_battle_log(next_desc)
     existing_embed.color = 0xFF6B6B if is_critical else 0x4ECDC4
 
     return existing_embed
@@ -247,15 +320,24 @@ def create_battle_embed(
     user2,
     active_effects=None,
     current_attack_infos: list[str] | None = None,
+    recent_log_lines: list[str] | None = None,
+    highlight_tone: str | None = None,
 ):
     user1_name = user1.display_name if user1 else "Bot"
     user2_name = user2.display_name if user2 else "Bot"
     user1_mention = user1.mention if user1 else "Bot"
     user2_mention = user2.mention if user2 else "Bot"
 
+    tone_color_map = {
+        "crit": 0xE74C3C,
+        "heal": 0x2ECC71,
+        "buff": 0xF1C40F,
+        "hit": 0x3498DB,
+    }
     embed = discord.Embed(
         title="**1v1 Kampf beginnt!**",
         description=f"**{user1_mention} vs {user2_mention}**",
+        color=tone_color_map.get(str(highlight_tone or "").strip().lower(), 0x2F3136),
     )
 
     current_card = player1_card if current_turn == (user1.id if user1 else 0) else player2_card
@@ -313,11 +395,53 @@ def create_battle_embed(
         value=f"**{user1_mention if current_turn == (user1.id if user1 else 0) else user2_mention} ist an der Reihe**",
         inline=False,
     )
+
+    def _effect_status_text(effect_entries: list[dict] | None) -> str:
+        entries = effect_entries or []
+        labels: list[str] = []
+        seen: set[str] = set()
+        for effect in entries:
+            effect_type = str(effect.get("type") or "").strip().lower()
+            if not effect_type or effect_type in seen:
+                continue
+            seen.add(effect_type)
+            duration = int(effect.get("duration", 0) or 0)
+            if effect_type == "burning":
+                labels.append(f"🔥 Brennen({duration})" if duration > 0 else "🔥 Brennen")
+            elif effect_type == "confusion":
+                labels.append(f"🌀 Verwirrt({duration})" if duration > 0 else "🌀 Verwirrt")
+            elif effect_type == "stealth":
+                labels.append("🥷 Tarnung")
+            elif effect_type == "airborne":
+                labels.append("✈️ Flugphase")
+            elif effect_type == "regen":
+                labels.append(f"💚 Regen({duration})" if duration > 0 else "💚 Regen")
+            elif effect_type == "stun":
+                labels.append(f"🛑 Stun({duration})" if duration > 0 else "🛑 Stun")
+        return ", ".join(labels[:4]) if labels else "Keine"
+
+    if active_effects:
+        p1_status = _effect_status_text(active_effects.get(player1_id, []))
+        p2_status = _effect_status_text(active_effects.get(player2_id, []))
+        status_value = f"{user1_name}: {p1_status}\n{user2_name}: {p2_status}"
+        if len(status_value) > 1024:
+            status_value = status_value[:1021] + "..."
+        embed.add_field(name="Status", value=status_value, inline=False)
+
     if current_attack_infos:
         info_value = "\n".join(current_attack_infos[:4])
         if len(info_value) > 1024:
             info_value = info_value[:1021] + "..."
         embed.add_field(name="Fähigkeiten", value=info_value, inline=False)
+
+    if recent_log_lines:
+        cleaned = [str(line).strip() for line in recent_log_lines if str(line).strip()]
+        if cleaned:
+            preview_value = "\n".join(f"• {line}" for line in cleaned[:2])
+            if len(preview_value) > 1024:
+                preview_value = preview_value[:1021] + "..."
+            embed.add_field(name="Letzte Angriffe", value=preview_value, inline=False)
+
     return embed
 
 
@@ -347,3 +471,4 @@ def _presence_to_color(member: discord.Member) -> str:
         return "black"
     except Exception:
         return "black"
+

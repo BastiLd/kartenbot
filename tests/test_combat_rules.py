@@ -1,10 +1,12 @@
 import unittest
+import asyncio
 
 import bot as bot_module
-from bot import BattleView, MissionBattleView
+from bot import BattleView, EFFECT_TYPES_WITH_EFFECT_LOGS, FightFeedbackView, MissionBattleView
 from karten import karten
 from services.battle import (
     apply_outgoing_attack_modifier,
+    create_battle_embed,
     create_battle_log_embed,
     resolve_multi_hit_damage,
     update_battle_log,
@@ -120,6 +122,18 @@ class CardSpecTests(unittest.TestCase):
         spinnensinn_effects = spinnensinn.get("effects", [])
         self.assertTrue(any(e.get("type") == "evade" for e in spinnensinn_effects))
 
+    def test_effect_type_logging_coverage_matches_karten_effect_types(self) -> None:
+        configured_types = {
+            str(effect.get("type"))
+            for card in karten
+            for attack in card.get("attacks", [])
+            for effect in attack.get("effects", [])
+            if isinstance(effect, dict) and effect.get("type")
+        }
+        self.assertTrue(configured_types, "No configured effect types found in karten.py")
+        missing = configured_types.difference(EFFECT_TYPES_WITH_EFFECT_LOGS)
+        self.assertFalse(missing, f"Missing effect-log coverage for: {sorted(missing)}")
+
 
 class BattleUtilityTests(unittest.TestCase):
     def test_outgoing_flat_overflow(self) -> None:
@@ -186,6 +200,64 @@ class BattleUtilityTests(unittest.TestCase):
         self.assertIn("- Nächster Angriff verursacht Maximalschaden.", desc)
 
 
+    def test_cooldown_label_uses_remaining_and_total(self) -> None:
+        attack = {"name": "Fliegen", "cooldown_turns": 3}
+        self.assertEqual(bot_module._format_cooldown_label(attack, 2), "Cooldown: 2/3")
+        self.assertEqual(bot_module._format_cooldown_label(attack, 1), "Cooldown: 1/3")
+
+    def test_feedback_view_split_log_for_dm(self) -> None:
+        text = "\n".join(f"line{i}" for i in range(1, 8))
+        chunks = FightFeedbackView._split_log_for_dm(text, chunk_size=18)
+        self.assertGreaterEqual(len(chunks), 2)
+        self.assertTrue(all(len(chunk) <= 18 for chunk in chunks))
+        flattened = "\n".join(chunks).replace("\n\n", "\n")
+        self.assertIn("line1", flattened)
+        self.assertIn("line7", flattened)
+
+    def test_create_battle_embed_shows_status_and_recent_lines(self) -> None:
+        class _User:
+            def __init__(self, uid: int, name: str):
+                self.id = uid
+                self.display_name = name
+                self.mention = f"<@{uid}>"
+
+        user1 = _User(1, "Player")
+        user2 = _User(2, "Enemy")
+        player_card = {"name": "Iron-Man", "hp": 140, "bild": "https://example.com/p1.png"}
+        enemy_card = {"name": "Groot", "hp": 140, "bild": "https://example.com/p2.png"}
+        embed = create_battle_embed(
+            player_card,
+            enemy_card,
+            120,
+            111,
+            user1.id,
+            user1,
+            user2,
+            active_effects={1: [{"type": "burning", "duration": 2}], 2: [{"type": "airborne", "duration": 1}]},
+            current_attack_infos=["Repulsor (5-20): test"],
+            recent_log_lines=["Player used Repulsor", "Enemy used Root"],
+            highlight_tone="crit",
+        )
+        self.assertEqual(int(embed.color.value), 0xE74C3C)
+        field_names = [str(field.name) for field in embed.fields]
+        self.assertIn("Status", field_names)
+        self.assertIn("Fähigkeiten", field_names)
+        self.assertIn("Letzte Angriffe", field_names)
+
+    def test_feedback_prompt_text_mentions_dm_log_option(self) -> None:
+        async def _build_prompt() -> str:
+            player_card = {"name": "PlayerCard", "hp": 140, "bild": "https://example.com/player.png", "attacks": []}
+            bot_card = {"name": "BotCard", "hp": 140, "bild": "https://example.com/bot.png", "attacks": []}
+            view = BattleView(player_card, bot_card, 1, 0, None)
+            try:
+                return view._feedback_prompt_text(None)
+            finally:
+                view.stop()
+
+        text = asyncio.run(_build_prompt())
+        self.assertIn("Kampf-Log per DM", text)
+
+
 class _DummyMember:
     def __init__(self, member_id: int, name: str):
         self.id = member_id
@@ -212,7 +284,83 @@ class _DummyMessage:
         self.edits.append(kwargs)
 
 
+class _DummyResponse:
+    def __init__(self):
+        self._done = False
+        self.sent_messages = []
+        self.edits = []
+
+    def is_done(self):
+        return self._done
+
+    async def defer(self):
+        self._done = True
+
+    async def send_message(self, content=None, **kwargs):
+        self._done = True
+        self.sent_messages.append({"content": content, **kwargs})
+
+    async def edit_message(self, content=None, **kwargs):
+        self._done = True
+        self.edits.append({"content": content, **kwargs})
+
+
+class _DummyChannel:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, *args, **kwargs):
+        self.sent.append((args, kwargs))
+        return None
+
+
+class _DummyInteraction:
+    def __init__(self, user_id: int, message: _DummyMessage):
+        self.user = _DummyMember(user_id, f"User{user_id}")
+        self.guild = message.guild
+        self.message = message
+        self.channel = _DummyChannel()
+        self.response = _DummyResponse()
+
+
 class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_final_killing_attack_is_in_battle_log(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "FinalHit", "damage": [100, 100], "info": "test"}],
+        }
+        defender_card = {
+            "name": "DefenderCard",
+            "hp": 50,
+            "bild": "https://example.com/defender.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, defender_card, 1, 2, None)
+        view.current_turn = 1
+        async def _noop_feedback(*_args, **_kwargs):
+            return None
+
+        view._send_feedback_prompt = _noop_feedback  # type: ignore[method-assign]
+
+        original_get_card_buffs = bot_module.get_card_buffs
+
+        async def _fake_get_card_buffs(_user_id, _card_name):
+            return []
+
+        bot_module.get_card_buffs = _fake_get_card_buffs
+        try:
+            interaction_message = _DummyMessage()
+            interaction = _DummyInteraction(1, interaction_message)
+            await view.execute_attack(interaction, 0)
+        finally:
+            bot_module.get_card_buffs = original_get_card_buffs
+
+        full_log = view._full_battle_log_text()
+        self.assertIn("Runde 1", full_log)
+        self.assertIn("FinalHit", full_log)
+
     async def test_bot_stun_skips_attack_but_dot_ticks(self) -> None:
         player_card = {
             "name": "PlayerCard",
@@ -400,6 +548,165 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         view._append_multi_hit_roll_event(effect_events)
         self.assertTrue(any("Treffer: 3/3" in e for e in effect_events))
 
+    async def test_public_log_shows_last_4_rounds_but_dm_log_keeps_all(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        attacker = _DummyMember(1, "Player")
+        defender = _DummyMember(2, "Bot")
+        for round_no in range(1, 7):
+            await view._record_battle_log(
+                "PlayerCard",
+                "BotCard",
+                "Hit",
+                10,
+                False,
+                attacker,
+                defender,
+                round_no,
+                100 - round_no,
+            )
+
+        public_desc = str(view._full_battle_log_embed.description or "")
+        self.assertNotIn("Runde 1", public_desc)
+        self.assertNotIn("Runde 2", public_desc)
+        self.assertIn("Runde 3", public_desc)
+        self.assertIn("Runde 6", public_desc)
+
+        dm_text = view._full_battle_log_text()
+        self.assertIn("Runde 1", dm_text)
+        self.assertIn("Runde 6", dm_text)
+
+    async def test_reflect_activation_logged_on_cast_battleview(self) -> None:
+        player_card = {
+            "name": "Doctor Strange",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Spiegeldimension", "damage": [0, 0], "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        effect_events: list[str] = []
+        view.queue_incoming_modifier(1, percent=0.5, reflect=1.0, turns=1)
+        view._append_effect_event(effect_events, "Reflexion aktiv: Schaden wird reduziert und teilweise zurückgeworfen.")
+        self.assertTrue(any("Reflexion aktiv" in e for e in effect_events))
+
+    async def test_reflect_trigger_logged_on_incoming_hit_battleview(self) -> None:
+        player_card = {
+            "name": "Doctor Strange",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        effect_events: list[str] = []
+        view._append_incoming_resolution_events(
+            effect_events,
+            defender_name="Doctor Strange",
+            raw_damage=20,
+            final_damage=10,
+            reflected_damage=10,
+            dodged=False,
+            counter_damage=0,
+            absorbed_before=0,
+            absorbed_after=10,
+        )
+        joined = " | ".join(effect_events)
+        self.assertIn("Schutzwirkung: Schaden von 20 auf 10 reduziert.", joined)
+        self.assertIn("Spiegeldimension/Reflexion durch Doctor Strange: 10 Schaden zurückgeworfen.", joined)
+        self.assertIn("Absorption durch Doctor Strange: 10 Schaden gespeichert.", joined)
+
+    async def test_winner_embed_includes_best_effect_round_and_actor(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        attacker = _DummyMember(1, "Player")
+        defender = _DummyMember(2, "Bot")
+        await view._record_battle_log(
+            "PlayerCard",
+            "BotCard",
+            "Hit",
+            10,
+            False,
+            attacker,
+            defender,
+            1,
+            90,
+            effect_events=["Reflexion aktiv: Schaden wird reduziert und teilweise zurückgeworfen."],
+        )
+        embed = view._winner_embed("<@1>", "PlayerCard")
+        top_field = next((f for f in embed.fields if f.name == "Top-Effekte"), None)
+        self.assertIsNotNone(top_field)
+        text = str(top_field.value)
+        self.assertIn("Runde", text)
+        self.assertIn("Player", text)
+
+    async def test_winner_embed_uses_effect_actor_from_event_text(self) -> None:
+        player_card = {
+            "name": "Doctor Strange",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        attacker = _DummyMember(0, "Bot")
+        defender = _DummyMember(1, "Player")
+        await view._record_battle_log(
+            "BotCard",
+            "Doctor Strange",
+            "Hit",
+            10,
+            False,
+            attacker,
+            defender,
+            7,
+            90,
+            effect_events=["Spiegeldimension/Reflexion durch Doctor Strange: 18 Schaden zurückgeworfen."],
+        )
+        embed = view._winner_embed("<@1>", "Doctor Strange")
+        top_field = next((f for f in embed.fields if f.name == "Top-Effekte"), None)
+        self.assertIsNotNone(top_field)
+        text = str(top_field.value)
+        self.assertIn("Runde 7", text)
+        self.assertIn("Doctor Strange", text)
+
     async def test_airborne_turn_locks_attack_selection(self) -> None:
         player_card = {
             "name": "PlayerCard",
@@ -482,6 +789,41 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("primary", str(attack_buttons[0].style).lower())
         self.assertFalse(bool(attack_buttons[0].disabled))
 
+    async def test_battle_uses_attack_button_style_from_card_data(self) -> None:
+        player_card = {
+            "name": "Doctor Strange",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [
+                {"name": "Spiegeldimension", "damage": [0, 0], "button_style": "primary", "info": "test"},
+                {"name": "Auge von Agamotto", "damage": [0, 0], "button_style": "success", "info": "test"},
+                {"name": "A3", "damage": [10, 10], "info": "c"},
+                {"name": "A4", "damage": [10, 10], "info": "d"},
+            ],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        view.current_turn = 1
+        original_get_card_buffs = bot_module.get_card_buffs
+
+        async def _fake_get_card_buffs(_user_id, _card_name):
+            return []
+
+        bot_module.get_card_buffs = _fake_get_card_buffs
+        try:
+            await view.update_attack_buttons()
+        finally:
+            bot_module.get_card_buffs = original_get_card_buffs
+
+        attack_buttons = [c for c in view.children if hasattr(c, "row") and c.row in (0, 1)][:4]
+        self.assertIn("primary", str(attack_buttons[0].style).lower())
+        self.assertIn("success", str(attack_buttons[1].style).lower())
+
 
 class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_mission_helpers_for_delayed_and_airborne(self) -> None:
@@ -560,6 +902,37 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         view._append_multi_hit_roll_event(effect_events)
         self.assertTrue(any("Treffer: 3/3" in e for e in effect_events))
 
+    async def test_reflect_trigger_logged_on_incoming_hit_mission(self) -> None:
+        player_card = {
+            "name": "Doctor Strange",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = MissionBattleView(player_card, bot_card, 1, 1, 1)
+        effect_events: list[str] = []
+        view._append_incoming_resolution_events(
+            effect_events,
+            defender_name="Doctor Strange",
+            raw_damage=25,
+            final_damage=12,
+            reflected_damage=13,
+            dodged=False,
+            counter_damage=0,
+            absorbed_before=5,
+            absorbed_after=18,
+        )
+        joined = " | ".join(effect_events)
+        self.assertIn("Schutzwirkung: Schaden von 25 auf 12 reduziert.", joined)
+        self.assertIn("Spiegeldimension/Reflexion durch Doctor Strange: 13 Schaden zurückgeworfen.", joined)
+        self.assertIn("Absorption durch Doctor Strange: 13 Schaden gespeichert.", joined)
+
     async def test_mission_airborne_turn_locks_attack_selection(self) -> None:
         player_card = {
             "name": "PlayerCard",
@@ -619,3 +992,27 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(attack_buttons[0].label), "Aufsammeln")
         self.assertIn("primary", str(attack_buttons[0].style).lower())
         self.assertFalse(bool(attack_buttons[0].disabled))
+
+    async def test_mission_uses_attack_button_style_from_card_data(self) -> None:
+        player_card = {
+            "name": "Doctor Strange",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [
+                {"name": "Spiegeldimension", "damage": [0, 0], "button_style": "primary", "info": "test"},
+                {"name": "Auge von Agamotto", "damage": [0, 0], "button_style": "success", "info": "test"},
+                {"name": "A3", "damage": [10, 10], "info": "c"},
+                {"name": "A4", "damage": [10, 10], "info": "d"},
+            ],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = MissionBattleView(player_card, bot_card, 1, 1, 1)
+        view.update_attack_buttons_mission()
+        attack_buttons = [c for c in view.children if hasattr(c, "row") and c.row in (0, 1)][:4]
+        self.assertIn("primary", str(attack_buttons[0].style).lower())
+        self.assertIn("success", str(attack_buttons[1].style).lower())

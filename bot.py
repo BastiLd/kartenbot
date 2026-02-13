@@ -3,6 +3,7 @@ import json
 import logging
 import sys
 import random
+import re
 import sqlite3
 import time
 import os
@@ -10,6 +11,7 @@ from collections import deque
 from pathlib import Path
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from typing import TypedDict
 
 import discord
 from discord import app_commands, ui, SelectOption
@@ -23,6 +25,7 @@ from services.battle import (
     STATUS_PRIORITY_MAP,
     _presence_to_color,
     apply_outgoing_attack_modifier,
+    build_battle_log_entry,
     calculate_damage,
     create_battle_embed,
     create_battle_log_embed,
@@ -152,6 +155,39 @@ BOT_STATUS_LABELS: dict[str, str] = {
     "invisible": "Unsichtbar",
 }
 
+
+class EffectBestMoment(TypedDict):
+    tag: str
+    round: int
+    actor: str
+    event: str
+    score: int
+
+
+EFFECT_TYPES_WITH_EFFECT_LOGS = frozenset(
+    {
+        "absorb_store",
+        "airborne_two_phase",
+        "blind",
+        "burning",
+        "cap_damage",
+        "damage_boost",
+        "damage_multiplier",
+        "damage_reduction_sequence",
+        "delayed_defense_after_next_attack",
+        "enemy_next_attack_reduction_flat",
+        "enemy_next_attack_reduction_percent",
+        "evade",
+        "guaranteed_hit",
+        "mix_heal_or_max",
+        "reflect",
+        "regen",
+        "special_lock",
+        "stun",
+    }
+)
+
+
 def berlin_midnight_epoch() -> int:
     """Gibt den Unix-Timestamp für den heutigen Tagesbeginn in Europe/Berlin zurück."""
     try:
@@ -258,6 +294,45 @@ def _damage_text_for_attack(attack: dict) -> str:
         return str(int(dmg or 0))
     except Exception:
         return "0"
+
+
+def _format_cooldown_label(attack: dict, remaining_turns: int) -> str:
+    remaining = max(0, int(remaining_turns or 0))
+    try:
+        base = int(attack.get("cooldown_turns", 0) or 0)
+    except Exception:
+        base = 0
+    if base > 0:
+        return f"Cooldown: {remaining}/{base}"
+    return f"Cooldown: {remaining}"
+
+
+_ATTACK_BUTTON_STYLE_MAP: dict[str, discord.ButtonStyle] = {
+    "danger": discord.ButtonStyle.danger,
+    "red": discord.ButtonStyle.danger,
+    "rot": discord.ButtonStyle.danger,
+    "success": discord.ButtonStyle.success,
+    "green": discord.ButtonStyle.success,
+    "gruen": discord.ButtonStyle.success,
+    "grün": discord.ButtonStyle.success,
+    "primary": discord.ButtonStyle.primary,
+    "blue": discord.ButtonStyle.primary,
+    "blau": discord.ButtonStyle.primary,
+    "secondary": discord.ButtonStyle.secondary,
+    "gray": discord.ButtonStyle.secondary,
+    "grey": discord.ButtonStyle.secondary,
+    "grau": discord.ButtonStyle.secondary,
+}
+
+
+def _resolve_attack_button_style(attack: dict, default_style: discord.ButtonStyle) -> discord.ButtonStyle:
+    raw_value = attack.get("button_style")
+    if raw_value is None:
+        raw_value = attack.get("button_color")
+    key = str(raw_value or "").strip().lower()
+    if not key:
+        return default_style
+    return _ATTACK_BUTTON_STYLE_MAP.get(key, default_style)
 
 
 def _build_attack_info_lines(card: dict, *, max_attacks: int = 4) -> list[str]:
@@ -877,6 +952,16 @@ class BattleView(RestrictedView):
 
         # KAMPF-LOG SYSTEM: Tracking für Log-Nachrichten
         self.battle_log_message = None
+        self._full_battle_log_embed = create_battle_log_embed()
+        self._all_battle_log_entries: list[str] = []
+        self._all_battle_log_summaries: list[str] = []
+        self._recent_log_lines: list[str] = []
+        self._last_highlight_tone: str = "hit"
+        self._biggest_hit = 0
+        self._critical_hits = 0
+        self._effect_tag_counts: dict[str, int] = {}
+        self._effect_best_moments: dict[str, EffectBestMoment] = {}
+        self._effect_event_history: list[EffectBestMoment] = []
         self.round_counter = 0
         self._last_log_edit_ts = 0.0
 
@@ -962,6 +1047,246 @@ class BattleView(RestrictedView):
         msg = str(text).strip()
         if msg:
             events.append(msg)
+
+    def _effect_tag_for_event(self, text: str) -> str | None:
+        normalized = str(text or "").strip().lower()
+        if not normalized:
+            return None
+        if "heil" in normalized or "regeneration" in normalized or "lebensraub" in normalized:
+            return "Heilung"
+        if "verbrennung" in normalized or "brennen" in normalized:
+            return "Verbrennung"
+        if "betäub" in normalized or "stun" in normalized:
+            return "Betäubung"
+        if (
+            "ausweich" in normalized
+            or "tarn" in normalized
+            or "schutz" in normalized
+            or "reflexion" in normalized
+            or "spiegeldimension" in normalized
+            or "absorption" in normalized
+            or "konter" in normalized
+        ):
+            return "Schutz"
+        if "bonus" in normalized or "verstärkung" in normalized or "maximalschaden" in normalized or "garantiert" in normalized:
+            return "Buffs"
+        return None
+
+    @staticmethod
+    def _effect_score_for_event(text: str) -> int:
+        numbers = [int(m) for m in re.findall(r"\d+", str(text or ""))]
+        if numbers:
+            return max(numbers)
+        return 1
+
+    @staticmethod
+    def _effect_actor_for_event(default_actor: str, event_text: str) -> str:
+        text = str(event_text or "").strip()
+        match = re.search(r"\bdurch\s+([^:,.|]+)", text, flags=re.IGNORECASE)
+        if match:
+            actor = str(match.group(1) or "").strip()
+            if actor:
+                return actor
+        actor = str(default_actor or "").strip()
+        return actor or "Bot"
+
+    def _update_highlight_stats(
+        self,
+        actual_damage: int,
+        is_critical: bool,
+        round_number: int,
+        attacker_display: str,
+        effect_events: list[str] | None = None,
+    ) -> None:
+        self._biggest_hit = max(self._biggest_hit, max(0, int(actual_damage or 0)))
+        if is_critical:
+            self._critical_hits += 1
+        for entry in effect_events or []:
+            text = str(entry or "").strip()
+            tag = self._effect_tag_for_event(text)
+            if not tag:
+                continue
+            self._effect_tag_counts[tag] = int(self._effect_tag_counts.get(tag, 0) or 0) + 1
+            score = self._effect_score_for_event(text)
+            actor = self._effect_actor_for_event(attacker_display, text)
+            record: EffectBestMoment = {
+                "tag": tag,
+                "round": int(round_number),
+                "actor": actor,
+                "event": text,
+                "score": int(score),
+            }
+            self._effect_event_history.append(record)
+            prev = self._effect_best_moments.get(tag)
+            if (
+                prev is None
+                or int(record["score"]) > int(prev["score"])
+                or (int(record["score"]) == int(prev["score"]) and int(record["round"]) < int(prev["round"]))
+            ):
+                self._effect_best_moments[tag] = record
+
+    def _resolve_highlight_tone(self, is_critical: bool, effect_events: list[str] | None = None) -> str:
+        if is_critical:
+            return "crit"
+        for entry in effect_events or []:
+            text = str(entry or "").lower()
+            if "heil" in text or "regeneration" in text or "lebensraub" in text:
+                return "heal"
+        for entry in effect_events or []:
+            text = str(entry or "").lower()
+            if "bonus" in text or "verstärkung" in text or "maximalschaden" in text or "garantiert" in text:
+                return "buff"
+        return "hit"
+
+    def _recent_log_preview_from_embed(self) -> list[str]:
+        return list(self._all_battle_log_summaries[-2:])
+
+    async def _record_battle_log(
+        self,
+        attacker_name,
+        defender_name,
+        attack_name,
+        actual_damage,
+        is_critical,
+        attacker_user,
+        defender_user,
+        round_number,
+        defender_remaining_hp,
+        *,
+        pre_effect_damage: int = 0,
+        confusion_applied: bool = False,
+        self_hit_damage: int = 0,
+        attacker_status_icons: str = "",
+        defender_status_icons: str = "",
+        effect_events: list[str] | None = None,
+    ) -> None:
+        entry_text, summary_line = build_battle_log_entry(
+            attacker_name,
+            defender_name,
+            attack_name,
+            actual_damage,
+            is_critical,
+            attacker_user,
+            defender_user,
+            round_number,
+            defender_remaining_hp,
+            pre_effect_damage=pre_effect_damage,
+            confusion_applied=confusion_applied,
+            self_hit_damage=self_hit_damage,
+            attacker_status_icons=attacker_status_icons,
+            defender_status_icons=defender_status_icons,
+            effect_events=effect_events,
+        )
+        self._all_battle_log_entries.append(entry_text)
+        self._all_battle_log_summaries.append(summary_line)
+        self._full_battle_log_embed = update_battle_log(
+            self._full_battle_log_embed,
+            attacker_name,
+            defender_name,
+            attack_name,
+            actual_damage,
+            is_critical,
+            attacker_user,
+            defender_user,
+            round_number,
+            defender_remaining_hp,
+            pre_effect_damage=pre_effect_damage,
+            confusion_applied=confusion_applied,
+            self_hit_damage=self_hit_damage,
+            attacker_status_icons=attacker_status_icons,
+            defender_status_icons=defender_status_icons,
+            effect_events=effect_events,
+            max_rounds=4,
+        )
+        self._recent_log_lines = self._recent_log_preview_from_embed()
+        self._last_highlight_tone = self._resolve_highlight_tone(is_critical, effect_events)
+        attacker_display = str(getattr(attacker_user, "display_name", "") or getattr(attacker_user, "mention", "") or "Bot")
+        self._update_highlight_stats(
+            actual_damage,
+            is_critical,
+            round_number,
+            attacker_display,
+            effect_events,
+        )
+        if self.battle_log_message:
+            await self._safe_edit_battle_log(self._full_battle_log_embed)
+
+    def _winner_embed(self, winner_mention: str, winner_card: str) -> discord.Embed:
+        embed = discord.Embed(
+            title="🏆 Sieger!",
+            description=f"**{winner_mention} mit {winner_card}** hat gewonnen!",
+        )
+        stats_lines = [
+            f"Runden: {self.round_counter}",
+            f"Größter Treffer: {self._biggest_hit}",
+            f"Kritische Treffer: {self._critical_hits}",
+        ]
+        embed.add_field(name="Kampfstatistik", value="\n".join(stats_lines), inline=False)
+        if self._effect_tag_counts:
+            top = sorted(self._effect_tag_counts.items(), key=lambda x: (-x[1], x[0]))[:3]
+            lines: list[str] = []
+            for name, count in top:
+                base = f"{name}: {count}x"
+                best = self._effect_best_moments.get(name)
+                if best:
+                    event_text = str(best.get("event", "") or "").strip()
+                    if len(event_text) > 80:
+                        event_text = event_text[:77] + "..."
+                    base += (
+                        f" | Runde {int(best.get('round', 0) or 0)}"
+                        f" · {str(best.get('actor', 'Unbekannt') or 'Unbekannt')}"
+                    )
+                    if event_text:
+                        base += f" · {event_text}"
+                lines.append(base)
+            top_text = "\n".join(lines)
+        else:
+            top_text = "Keine markanten Effekte."
+        if len(top_text) > 1024:
+            top_text = top_text[:1021] + "..."
+        embed.add_field(name="Top-Effekte", value=top_text, inline=False)
+        return embed
+
+    def _full_battle_log_text(self) -> str:
+        if not self._all_battle_log_entries:
+            return "*Der Kampf beginnt...*"
+        return "*Der Kampf beginnt...*" + "".join(self._all_battle_log_entries)
+
+    def _feedback_player_ids(self) -> list[int]:
+        ids: list[int] = []
+        for pid in (self.player1_id, self.player2_id):
+            if isinstance(pid, int) and pid > 0 and pid not in ids:
+                ids.append(pid)
+        return ids
+
+    def _feedback_prompt_text(self, guild: discord.Guild | None) -> str:
+        mentions: list[str] = []
+        for pid in self._feedback_player_ids():
+            member = guild.get_member(pid) if guild else None
+            mentions.append(member.mention if member else f"<@{pid}>")
+        prompt = (
+            "Gab es einen Bug/Fehler?\n"
+            "Wenn du willst, klicke auf **Kampf-Log per DM** und ich schicke dir den vollständigen Log privat."
+        )
+        if mentions:
+            return f"{' '.join(mentions)} {prompt}"
+        return prompt
+
+    async def _send_feedback_prompt(self, channel: discord.abc.Messageable, guild: discord.Guild | None) -> None:
+        allowed = set(self._feedback_player_ids())
+        if not allowed:
+            return
+        view = FightFeedbackView(channel, guild, allowed, battle_log_text=self._full_battle_log_text())
+        message_text = (
+            f"{self._feedback_prompt_text(guild)}\n\n"
+            "Buttons unten: **Es gab einen Bug** | **Kampf-Log per DM** | **Kein Log nötig**"
+        )
+        try:
+            await channel.send(message_text, view=view)
+        except Exception:
+            logging.exception("Failed to send fight feedback prompt with buttons")
+            # Fallback, damit immer zumindest die Info im Kanal ankommt.
+            await channel.send(self._feedback_prompt_text(guild))
 
     def _append_multi_hit_roll_event(self, effect_events: list[str]) -> None:
         meta = self._last_damage_roll_meta or {}
@@ -1228,6 +1553,44 @@ class BattleView(RestrictedView):
 
         return max(0, damage), max(0, reflected), False, 0
 
+    def _append_incoming_resolution_events(
+        self,
+        effect_events: list[str],
+        *,
+        defender_name: str,
+        raw_damage: int,
+        final_damage: int,
+        reflected_damage: int,
+        dodged: bool,
+        counter_damage: int,
+        absorbed_before: int | None = None,
+        absorbed_after: int | None = None,
+    ) -> None:
+        defender = str(defender_name or "Verteidiger").strip() or "Verteidiger"
+        if dodged:
+            self._append_effect_event(effect_events, "Ausweichen: Angriff vollständig verfehlt.")
+        elif final_damage < raw_damage:
+            self._append_effect_event(
+                effect_events,
+                f"Schutzwirkung: Schaden von {int(raw_damage)} auf {int(final_damage)} reduziert.",
+            )
+
+        if reflected_damage > 0:
+            self._append_effect_event(
+                effect_events,
+                f"Spiegeldimension/Reflexion durch {defender}: {int(reflected_damage)} Schaden zurückgeworfen.",
+            )
+        if counter_damage > 0:
+            self._append_effect_event(effect_events, f"Konter durch {defender}: {int(counter_damage)} Schaden.")
+
+        if (
+            absorbed_before is not None
+            and absorbed_after is not None
+            and int(absorbed_after) > int(absorbed_before)
+        ):
+            gained = int(absorbed_after) - int(absorbed_before)
+            self._append_effect_event(effect_events, f"Absorption durch {defender}: {gained} Schaden gespeichert.")
+
     def apply_regen_tick(self, player_id: int) -> int:
         total = 0
         remove: list[dict] = []
@@ -1379,7 +1742,7 @@ class BattleView(RestrictedView):
                     blocked_name = str(blocked_attack.get("name") or f"Angriff {i+1}")
                     if self.is_attack_on_cooldown(self.current_turn, i):
                         cooldown_turns = self.attack_cooldowns[self.current_turn].get(i, 0)
-                        btn.label = f"{blocked_name} (Cooldown: {cooldown_turns})"
+                        btn.label = f"{blocked_name} ({_format_cooldown_label(blocked_attack, cooldown_turns)})"
                     else:
                         btn.label = f"{blocked_name} (Blockiert)"
                 else:
@@ -1465,7 +1828,7 @@ class BattleView(RestrictedView):
                     # Grau für Cooldown beim aktuellen Spieler
                     button.style = discord.ButtonStyle.secondary
                     cooldown_turns = self.attack_cooldowns[self.current_turn][i]
-                    button.label = f"{attack['name']} (Cooldown: {cooldown_turns})"
+                    button.label = f"{attack['name']} ({_format_cooldown_label(attack, cooldown_turns)})"
                     button.disabled = True
                 elif is_reload_action:
                     button.style = discord.ButtonStyle.primary
@@ -1473,12 +1836,13 @@ class BattleView(RestrictedView):
                     button.disabled = False
                 else:
                     if heal_label is not None:
-                        button.style = discord.ButtonStyle.success
+                        default_style = discord.ButtonStyle.success
                         button.label = f"{attack['name']} (+{heal_label}){effects_label}"
                     else:
                         # Rot für normale Attacken
-                        button.style = discord.ButtonStyle.danger
+                        default_style = discord.ButtonStyle.danger
                         button.label = f"{attack['name']} ({damage_text}{buff_text}){effects_label}"
+                    button.style = _resolve_attack_button_style(attack, default_style)
                     button.disabled = False
 
         # Deaktiviere restliche Buttons, falls die aktuelle Karte weniger als 4 Attacken hat
@@ -1513,9 +1877,7 @@ class BattleView(RestrictedView):
             embed = discord.Embed(title="⚔️ Kampf abgebrochen", description="Der Kampf wurde abgebrochen.")
             await interaction.response.edit_message(embed=embed, view=None)
             try:
-                allowed = {self.player1_id, self.player2_id}
-                view = FightFeedbackView(interaction.channel, interaction.guild, allowed)
-                await interaction.channel.send("Gab es einen Bug/Fehler?", view=view)
+                await self._send_feedback_prompt(interaction.channel, interaction.guild)
             except Exception:
                 logging.exception("Unexpected error")
             self.stop()
@@ -1554,6 +1916,8 @@ class BattleView(RestrictedView):
                 user2,
                 self.active_effects,
                 current_attack_infos=self._current_attack_infos(),
+                recent_log_lines=self._recent_log_lines,
+                highlight_tone=self._last_highlight_tone,
             )
             battle_embed.description = (battle_embed.description or "") + "\n\n🛑 Der Gegner war betäubt und hat seinen Zug ausgesetzt."
             try:
@@ -1806,10 +2170,24 @@ class BattleView(RestrictedView):
                         self.player2_hp -= overflow_self_damage
                     self._append_effect_event(effect_events, f"Überlauf-Rückstoß: {overflow_self_damage} Selbstschaden.")
 
+                incoming_raw_damage = int(actual_damage)
+                absorbed_before = int(self.absorbed_damage.get(defender_id, 0) or 0)
                 final_damage, reflected_damage, dodged, counter_damage = self.resolve_incoming_modifiers(
                     defender_id,
                     actual_damage,
                     ignore_evade=guaranteed_hit,
+                )
+                absorbed_after = int(self.absorbed_damage.get(defender_id, 0) or 0)
+                self._append_incoming_resolution_events(
+                    effect_events,
+                    defender_name=defender_card,
+                    raw_damage=incoming_raw_damage,
+                    final_damage=int(final_damage),
+                    reflected_damage=int(reflected_damage),
+                    dodged=bool(dodged),
+                    counter_damage=int(counter_damage),
+                    absorbed_before=absorbed_before,
+                    absorbed_after=absorbed_after,
                 )
                 if dodged:
                     if self.current_turn == self.player1_id:
@@ -1963,7 +2341,12 @@ class BattleView(RestrictedView):
                 reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
                 reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
                 self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1)
-                self._append_effect_event(effect_events, "Reflexion aktiv: Schaden wird reduziert und teilweise zurückgeworfen.")
+                reduce_pct = int(round(max(0.0, reduce_percent) * 100))
+                reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
+                self._append_effect_event(
+                    effect_events,
+                    f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert und {reflect_pct}% des verhinderten Schadens werden zurückgeworfen.",
+                )
             elif eff_type == "absorb_store":
                 percent = float(effect.get("percent", 0.0) or 0.0)
                 self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1)
@@ -2025,37 +2408,6 @@ class BattleView(RestrictedView):
         if self.special_lock_next_turn.get(self.current_turn, False):
             self.special_lock_next_turn[self.current_turn] = False
 
-        # Prüfen ob Kampf vorbei
-        if self.player1_hp <= 0 or self.player2_hp <= 0:
-            if self.player2_hp <= 0:
-                winner_id = self.player1_id
-                winner_user = interaction.guild.get_member(self.player1_id)
-                winner_card = self.player1_card["name"]
-            else:
-                winner_id = self.player2_id
-                winner_user = interaction.guild.get_member(self.player2_id)
-                winner_card = self.player2_card["name"]
-            if winner_user:
-                winner_mention = winner_user.mention
-            else:
-                winner_mention = "Bot" if winner_id == 0 else f"<@{winner_id}>"
-            winner_embed = discord.Embed(title="🏆 Sieger!", description=f"**{winner_mention} mit {winner_card}** hat gewonnen!")
-            
-            # Aktualisiere nur die Kampf-Nachricht zum Sieger-Embed
-            try:
-                await interaction.message.edit(embed=winner_embed, view=None)
-            except Exception:
-                await interaction.channel.send(embed=winner_embed)
-            # Feedback nach jedem Kampf anbieten
-            try:
-                allowed = {self.player1_id, self.player2_id}
-                view = FightFeedbackView(interaction.channel, interaction.guild, allowed)
-                await interaction.channel.send("Gab es einen Bug/Fehler?", view=view)
-            except Exception:
-                logging.exception("Unexpected error")
-            self.stop()
-            return
-        
         if not is_forced_landing:
             if not is_reload_action and attack.get("requires_reload"):
                 self.set_reload_needed(self.current_turn, attack_index, True)
@@ -2093,28 +2445,50 @@ class BattleView(RestrictedView):
                 self.attack_cooldowns[previous_turn][landing_cd_index] = max(current_cd, landing_cd_turns)
         
         # Log now including confusion/self-hit if it applied
-        if self.battle_log_message:
-            defender_remaining_hp = self.player2_hp if self.current_turn == self.player1_id else self.player1_hp
-            log_embed = self.battle_log_message.embeds[0] if self.battle_log_message.embeds else create_battle_log_embed()
-            log_embed = update_battle_log(
-                log_embed,
-                attacker_card,
-                defender_card,
-                attack_name,
-                actual_damage,
-                is_critical,
-                attacker_user,
-                defender_user,
-                self.round_counter,
-                defender_remaining_hp,
-                pre_effect_damage=pre_burn_total,
-                confusion_applied=confusion_applied,
-                self_hit_damage=(self_damage if not attack_hits_enemy and 'self_damage' in locals() else 0),
-                attacker_status_icons=self._status_icons(self.current_turn),
-                defender_status_icons=self._status_icons(defender_id),
-                effect_events=effect_events,
-            )
-            await self._safe_edit_battle_log(log_embed)
+        defender_remaining_hp = self.player2_hp if self.current_turn == self.player1_id else self.player1_hp
+        await self._record_battle_log(
+            attacker_card,
+            defender_card,
+            attack_name,
+            actual_damage,
+            is_critical,
+            attacker_user,
+            defender_user,
+            self.round_counter,
+            defender_remaining_hp,
+            pre_effect_damage=pre_burn_total,
+            confusion_applied=confusion_applied,
+            self_hit_damage=(self_damage if not attack_hits_enemy and 'self_damage' in locals() else 0),
+            attacker_status_icons=self._status_icons(self.current_turn),
+            defender_status_icons=self._status_icons(defender_id),
+            effect_events=effect_events,
+        )
+
+        # Nach dem Log-Eintrag auf Kampfende prüfen, damit der finale Treffer immer im Log landet.
+        if self.player1_hp <= 0 or self.player2_hp <= 0:
+            if self.player2_hp <= 0:
+                winner_id = self.player1_id
+                winner_user = interaction.guild.get_member(self.player1_id)
+                winner_card = self.player1_card["name"]
+            else:
+                winner_id = self.player2_id
+                winner_user = interaction.guild.get_member(self.player2_id)
+                winner_card = self.player2_card["name"]
+            if winner_user:
+                winner_mention = winner_user.mention
+            else:
+                winner_mention = "Bot" if winner_id == 0 else f"<@{winner_id}>"
+            winner_embed = self._winner_embed(winner_mention, winner_card)
+            try:
+                await interaction.message.edit(embed=winner_embed, view=None)
+            except Exception:
+                await interaction.channel.send(embed=winner_embed)
+            try:
+                await self._send_feedback_prompt(interaction.channel, interaction.guild)
+            except Exception:
+                logging.exception("Unexpected error")
+            self.stop()
+            return
 
         # Nächster Spieler
         previous_turn = self.current_turn
@@ -2139,6 +2513,8 @@ class BattleView(RestrictedView):
             user2,
             self.active_effects,
             current_attack_infos=self._current_attack_infos(),
+            recent_log_lines=self._recent_log_lines,
+            highlight_tone=self._last_highlight_tone,
         )
         
         # Aktualisiere Kampf-UI (Kampf-Log wurde bereits oben behandelt)
@@ -2200,6 +2576,8 @@ class BattleView(RestrictedView):
                 bot_user,
                 self.active_effects,
                 current_attack_infos=self._current_attack_infos(),
+                recent_log_lines=self._recent_log_lines,
+                highlight_tone=self._last_highlight_tone,
             )
             battle_embed.description = (battle_embed.description or "") + "\n\n🛑 Bot war betäubt und hat seinen Zug ausgesetzt."
             await message.edit(embed=battle_embed, view=self)
@@ -2411,10 +2789,24 @@ class BattleView(RestrictedView):
                     self.player2_hp -= overflow_self_damage
                     self._append_effect_event(effect_events, f"Überlauf-Rückstoß: {overflow_self_damage} Selbstschaden.")
 
+                incoming_raw_damage = int(actual_damage)
+                absorbed_before = int(self.absorbed_damage.get(self.player1_id, 0) or 0)
                 final_damage, reflected_damage, dodged, counter_damage = self.resolve_incoming_modifiers(
                     self.player1_id,
                     actual_damage,
                     ignore_evade=guaranteed_hit,
+                )
+                absorbed_after = int(self.absorbed_damage.get(self.player1_id, 0) or 0)
+                self._append_incoming_resolution_events(
+                    effect_events,
+                    defender_name=self.player1_card["name"],
+                    raw_damage=incoming_raw_damage,
+                    final_damage=int(final_damage),
+                    reflected_damage=int(reflected_damage),
+                    dodged=bool(dodged),
+                    counter_damage=int(counter_damage),
+                    absorbed_before=absorbed_before,
+                    absorbed_after=absorbed_after,
                 )
                 if dodged:
                     self.player1_hp += actual_damage
@@ -2557,7 +2949,12 @@ class BattleView(RestrictedView):
                 reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
                 reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
                 self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1)
-                self._append_effect_event(effect_events, "Reflexion aktiv: Schaden wird reduziert und teilweise zurückgeworfen.")
+                reduce_pct = int(round(max(0.0, reduce_percent) * 100))
+                reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
+                self._append_effect_event(
+                    effect_events,
+                    f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert und {reflect_pct}% des verhinderten Schadens werden zurückgeworfen.",
+                )
             elif eff_type == "absorb_store":
                 percent = float(effect.get("percent", 0.0) or 0.0)
                 self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1)
@@ -2615,27 +3012,23 @@ class BattleView(RestrictedView):
                 )
         # Kein separater Log-Eintrag – Effekte werden inline in der Angriffszeile angezeigt
 
-        if self.battle_log_message:
-            log_embed = self.battle_log_message.embeds[0] if self.battle_log_message.embeds else create_battle_log_embed()
-            log_embed = update_battle_log(
-                log_embed,
-                bot_card["name"],
-                self.player1_card["name"],
-                attack_name,
-                actual_damage,
-                is_critical,
-                bot_user,
-                player_user,
-                self.round_counter,
-                self.player1_hp,
-                pre_effect_damage=pre_burn_total,
-                confusion_applied=False,
-                self_hit_damage=(self_damage if not bot_hits_enemy and 'self_damage' in locals() else 0),
-                attacker_status_icons=self._status_icons(0),
-                defender_status_icons=self._status_icons(self.player1_id),
-                effect_events=effect_events,
-            )
-            await self._safe_edit_battle_log(log_embed)
+        await self._record_battle_log(
+            bot_card["name"],
+            self.player1_card["name"],
+            attack_name,
+            actual_damage,
+            is_critical,
+            bot_user,
+            player_user,
+            self.round_counter,
+            self.player1_hp,
+            pre_effect_damage=pre_burn_total,
+            confusion_applied=False,
+            self_hit_damage=(self_damage if not bot_hits_enemy and 'self_damage' in locals() else 0),
+            attacker_status_icons=self._status_icons(0),
+            defender_status_icons=self._status_icons(self.player1_id),
+            effect_events=effect_events,
+        )
 
         if (not is_forced_landing) and (not is_reload_action) and attack.get("requires_reload"):
             self.set_reload_needed(0, attack_index, True)
@@ -2684,8 +3077,12 @@ class BattleView(RestrictedView):
                 winner_mention = winner_user.mention
             else:
                 winner_mention = "Bot" if winner_id == 0 else f"<@{winner_id}>"
-            winner_embed = discord.Embed(title="🏆 Sieger!", description=f"**{winner_mention} mit {winner_card}** hat gewonnen!")
+            winner_embed = self._winner_embed(winner_mention, winner_card)
             await message.edit(embed=winner_embed, view=None)
+            try:
+                await self._send_feedback_prompt(message.channel, message.guild)
+            except Exception:
+                logging.exception("Unexpected error")
             self.stop()
             return
 
@@ -2709,6 +3106,8 @@ class BattleView(RestrictedView):
             bot_user,
             self.active_effects,
             current_attack_infos=self._current_attack_infos(),
+            recent_log_lines=self._recent_log_lines,
+            highlight_tone=self._last_highlight_tone,
         )
 
         # Aktualisiere Kampf-UI
@@ -3312,6 +3711,7 @@ class FightVisibilityView(RestrictedView):
         super().__init__(timeout=60)
         self.user_id = user_id
         self.value: bool | None = None  # True=privat, False=öffentlich, None=abgebrochen
+        self.cancelled: bool = False
 
     @ui.button(label="Privat", style=discord.ButtonStyle.primary, row=0)
     async def private_btn(self, interaction: discord.Interaction, button: ui.Button):
@@ -3337,6 +3737,7 @@ class FightVisibilityView(RestrictedView):
             await interaction.response.send_message("Nur der Herausforderer kann den Kampf abbrechen!", ephemeral=True)
             return
         self.value = None  # Abgebrochen
+        self.cancelled = True
         self.stop()
         await interaction.response.defer()
 
@@ -3426,11 +3827,14 @@ async def _start_fight_from_challenge(
         return
     battle_view = BattleView(challenger_card, gegner_selected_cards[0], challenger.id, challenged.id, None)
     await battle_view.init_with_buffs()
-    log_embed = create_battle_log_embed()
-    battle_log_message = await _safe_send_channel(interaction, interaction.channel, embed=log_embed)
-    if battle_log_message is None:
-        return
-    battle_view.battle_log_message = battle_log_message
+    log_message = await _safe_send_channel(
+        interaction,
+        interaction.channel,
+        embed=create_battle_log_embed(),
+    )
+    if isinstance(log_message, discord.Message):
+        battle_view.battle_log_message = log_message
+
     embed = create_battle_embed(
         challenger_card,
         gegner_selected_cards[0],
@@ -3440,6 +3844,8 @@ async def _start_fight_from_challenge(
         challenger,
         challenged,
         current_attack_infos=_build_attack_info_lines(challenger_card),
+        recent_log_lines=battle_view._recent_log_lines,
+        highlight_tone=battle_view._last_highlight_tone,
     )
     await _safe_send_channel(interaction, interaction.channel, embed=embed, view=battle_view)
 
@@ -3531,17 +3937,67 @@ class BugReportLinkView(RestrictedView):
             self.add_item(ui.Button(label="Formular öffnen", style=discord.ButtonStyle.link, url=BUG_REPORT_TALLY_URL))
 
 class FightFeedbackView(RestrictedView):
-    def __init__(self, channel, guild: discord.Guild, allowed_user_ids: set[int]):
+    def __init__(
+        self,
+        channel,
+        guild: discord.Guild,
+        allowed_user_ids: set[int],
+        battle_log_text: str | None = None,
+    ):
         super().__init__(timeout=600)  # 10 minutes timeout
         self.channel = channel
         self.guild = guild
         self.allowed_user_ids = allowed_user_ids
+        self.battle_log_text = str(battle_log_text or "").strip()
+        self._bug_reported_by: set[int] = set()
+        self._log_sent_to: set[int] = set()
+        self._opted_out_by: set[int] = set()
+        self._admin_close_posted = False
+
+    async def _is_allowed(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id in self.allowed_user_ids:
+            return True
+        return await is_admin(interaction)
+
+    @staticmethod
+    def _split_log_for_dm(text: str, chunk_size: int = 3800) -> list[str]:
+        raw = str(text or "").strip()
+        if not raw:
+            return []
+        chunks: list[str] = []
+        current = ""
+        for line in raw.splitlines():
+            line_to_add = (line + "\n") if line else "\n"
+            if len(current) + len(line_to_add) > chunk_size:
+                if current.strip():
+                    chunks.append(current.rstrip())
+                current = line_to_add
+            else:
+                current += line_to_add
+        if current.strip():
+            chunks.append(current.rstrip())
+        return chunks
+
+    async def _maybe_post_admin_close_view(self) -> None:
+        if self._admin_close_posted:
+            return
+        if not isinstance(self.channel, discord.Thread):
+            return
+        self._admin_close_posted = True
+        try:
+            await self.channel.send("Ein Admin/Owner kann den Thread jetzt schließen.", view=AdminCloseView(self.channel))
+        except Exception:
+            logging.exception("Unexpected error")
 
     @ui.button(label="Es gab einen Bug", style=discord.ButtonStyle.success)
     async def yes_btn(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id not in self.allowed_user_ids and not await is_admin(interaction):
+        if not await self._is_allowed(interaction):
             await interaction.response.send_message("Nur Teilnehmer oder Admins können antworten.", ephemeral=True)
             return
+        if interaction.user.id in self._bug_reported_by:
+            await interaction.response.send_message("Du hast bereits gemeldet, dass es einen Bug gab.", ephemeral=True)
+            return
+        self._bug_reported_by.add(interaction.user.id)
         if not BUG_REPORT_TALLY_URL or "REPLACE_ME" in BUG_REPORT_TALLY_URL:
             await interaction.response.send_message("❌ Bug-Formular ist noch nicht konfiguriert.", ephemeral=True)
             return
@@ -3551,38 +4007,48 @@ class FightFeedbackView(RestrictedView):
             view=BugReportLinkView(),
             ephemeral=True,
         )
+        await self._maybe_post_admin_close_view()
 
-        try:
-            await interaction.message.edit(view=None)
-        except Exception:
-            logging.exception("Unexpected error")
-
-        try:
-            if isinstance(self.channel, discord.Thread):
-                await self.channel.send("Ein Admin/Owner kann den Thread jetzt schließen.", view=AdminCloseView(self.channel))
-        except Exception:
-            logging.exception("Unexpected error")
-
-        self.stop()
-
-    @ui.button(label="Nein", style=discord.ButtonStyle.danger)
-    async def no_btn(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id not in self.allowed_user_ids and not await is_admin(interaction):
+    @ui.button(label="Kampf-Log per DM", style=discord.ButtonStyle.primary)
+    async def log_btn(self, interaction: discord.Interaction, button: ui.Button):
+        if not await self._is_allowed(interaction):
             await interaction.response.send_message("Nur Teilnehmer oder Admins können antworten.", ephemeral=True)
             return
-        await interaction.response.send_message("✅ Danke!", ephemeral=True)
-
+        if interaction.user.id in self._log_sent_to:
+            await interaction.response.send_message("Ich habe dir den Kampf-Log bereits per DM geschickt.", ephemeral=True)
+            return
+        if not self.battle_log_text:
+            await interaction.response.send_message("Für diesen Kampf ist kein Log verfügbar.", ephemeral=True)
+            return
+        chunks = self._split_log_for_dm(self.battle_log_text)
+        if not chunks:
+            await interaction.response.send_message("Für diesen Kampf ist kein Log verfügbar.", ephemeral=True)
+            return
         try:
-            await interaction.message.edit(view=None)
+            for idx, chunk in enumerate(chunks, start=1):
+                title = "Vollständiger Kampf-Log" if len(chunks) == 1 else f"Vollständiger Kampf-Log ({idx}/{len(chunks)})"
+                dm_embed = discord.Embed(title=title, description=chunk, color=0x2F3136)
+                await interaction.user.send(embed=dm_embed)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ Ich kann dir keine DM senden. Bitte aktiviere DMs für diesen Server.", ephemeral=True)
+            return
         except Exception:
             logging.exception("Unexpected error")
+            await interaction.response.send_message("❌ Beim Senden des Kampf-Logs per DM ist ein Fehler aufgetreten.", ephemeral=True)
+            return
+        self._log_sent_to.add(interaction.user.id)
+        await interaction.response.send_message("📩 Vollständiger Kampf-Log wurde dir per DM gesendet.", ephemeral=True)
 
-        self.stop()
-        try:
-            if isinstance(self.channel, discord.Thread):
-                await self.channel.delete()
-        except Exception:
-            logging.exception("Unexpected error")
+    @ui.button(label="Kein Log nötig", style=discord.ButtonStyle.danger)
+    async def no_btn(self, interaction: discord.Interaction, button: ui.Button):
+        if not await self._is_allowed(interaction):
+            await interaction.response.send_message("Nur Teilnehmer oder Admins können antworten.", ephemeral=True)
+            return
+        if interaction.user.id in self._opted_out_by:
+            await interaction.response.send_message("Du hast bereits geantwortet.", ephemeral=True)
+            return
+        self._opted_out_by.add(interaction.user.id)
+        await interaction.response.send_message("✅ Danke für dein Feedback!", ephemeral=True)
 
 # Helper: Check Admin (Admins oder Owner/Dev)
 async def is_admin(interaction):
@@ -4567,7 +5033,8 @@ async def fight(interaction: discord.Interaction):
         await interaction.followup.send("Wie soll der Kampf sichtbar sein?", view=visibility_view, ephemeral=True)
         await visibility_view.wait()
         if visibility_view.value is None:
-            await interaction.followup.send("⏰ Keine Auswahl getroffen. Kampf abgebrochen.", ephemeral=True)
+            if visibility_view.cancelled:
+                await interaction.followup.send("❌ Kampf abgebrochen.", ephemeral=True)
             return
         is_private = visibility_view.value
     else:
@@ -4657,14 +5124,15 @@ async def fight(interaction: discord.Interaction):
                 )
                 return
 
-        # KAMPF-LOG ZUERST senden (wird über der Kampf-Nachricht angezeigt)
-        log_embed = create_battle_log_embed()
-        battle_log_message = await _safe_send_channel(interaction, target_channel, embed=log_embed)
-        if battle_log_message is None:
-            return
-        battle_view.battle_log_message = battle_log_message
-        
-        # DANN Kampf-Nachricht senden (erscheint unter dem Log)
+        log_message = await _safe_send_channel(
+            interaction,
+            target_channel,
+            embed=create_battle_log_embed(),
+        )
+        if isinstance(log_message, discord.Message):
+            battle_view.battle_log_message = log_message
+
+        # Kampf-Nachricht mit Buttons
         embed = create_battle_embed(
             selected_cards[0],
             bot_card,
@@ -4674,6 +5142,8 @@ async def fight(interaction: discord.Interaction):
             interaction.user,
             bot_user,
             current_attack_infos=_build_attack_info_lines(selected_cards[0]),
+            recent_log_lines=battle_view._recent_log_lines,
+            highlight_tone=battle_view._last_highlight_tone,
         )
         if await _safe_send_channel(interaction, target_channel, embed=embed, view=battle_view) is None:
             return
@@ -5918,6 +6388,44 @@ class MissionBattleView(RestrictedView):
 
         return max(0, damage), max(0, reflected), False, 0
 
+    def _append_incoming_resolution_events(
+        self,
+        effect_events: list[str],
+        *,
+        defender_name: str,
+        raw_damage: int,
+        final_damage: int,
+        reflected_damage: int,
+        dodged: bool,
+        counter_damage: int,
+        absorbed_before: int | None = None,
+        absorbed_after: int | None = None,
+    ) -> None:
+        defender = str(defender_name or "Verteidiger").strip() or "Verteidiger"
+        if dodged:
+            self._append_effect_event(effect_events, "Ausweichen: Angriff vollständig verfehlt.")
+        elif final_damage < raw_damage:
+            self._append_effect_event(
+                effect_events,
+                f"Schutzwirkung: Schaden von {int(raw_damage)} auf {int(final_damage)} reduziert.",
+            )
+
+        if reflected_damage > 0:
+            self._append_effect_event(
+                effect_events,
+                f"Spiegeldimension/Reflexion durch {defender}: {int(reflected_damage)} Schaden zurückgeworfen.",
+            )
+        if counter_damage > 0:
+            self._append_effect_event(effect_events, f"Konter durch {defender}: {int(counter_damage)} Schaden.")
+
+        if (
+            absorbed_before is not None
+            and absorbed_after is not None
+            and int(absorbed_after) > int(absorbed_before)
+        ):
+            gained = int(absorbed_after) - int(absorbed_before)
+            self._append_effect_event(effect_events, f"Absorption durch {defender}: {gained} Schaden gespeichert.")
+
     def apply_regen_tick(self, player_id: int) -> int:
         total = 0
         remove: list[dict] = []
@@ -5972,7 +6480,7 @@ class MissionBattleView(RestrictedView):
                     blocked_name = str(blocked_attack.get("name") or f"Angriff {i+1}")
                     if self.is_attack_on_cooldown_user(i):
                         cooldown_turns = self.user_attack_cooldowns.get(i, 0)
-                        btn.label = f"{blocked_name} (Cooldown: {cooldown_turns})"
+                        btn.label = f"{blocked_name} ({_format_cooldown_label(blocked_attack, cooldown_turns)})"
                     else:
                         btn.label = f"{blocked_name} (Blockiert)"
                 else:
@@ -6038,7 +6546,7 @@ class MissionBattleView(RestrictedView):
                     # Grau für Cooldown
                     button.style = discord.ButtonStyle.secondary
                     cooldown_turns = self.user_attack_cooldowns[i]
-                    button.label = f"{attack['name']} (Cooldown: {cooldown_turns})"
+                    button.label = f"{attack['name']} ({_format_cooldown_label(attack, cooldown_turns)})"
                     button.disabled = True
                 elif is_reload_action:
                     button.style = discord.ButtonStyle.primary
@@ -6046,12 +6554,13 @@ class MissionBattleView(RestrictedView):
                     button.disabled = False
                 else:
                     if heal_label is not None:
-                        button.style = discord.ButtonStyle.success
+                        default_style = discord.ButtonStyle.success
                         button.label = f"{attack['name']} (+{heal_label}){effects_label}"
                     else:
                         # Rot für normale Attacken
-                        button.style = discord.ButtonStyle.danger
+                        default_style = discord.ButtonStyle.danger
                         button.label = f"{attack['name']} ({damage_text}){effects_label}"
+                    button.style = _resolve_attack_button_style(attack, default_style)
                     button.disabled = False
             else:
                 button.label = f"Angriff {i+1}"
@@ -6305,10 +6814,24 @@ class MissionBattleView(RestrictedView):
                     self.player_hp -= overflow_self_damage
                     self._append_effect_event(effect_events, f"Überlauf-Rückstoß: {overflow_self_damage} Selbstschaden.")
 
+                incoming_raw_damage = int(actual_damage)
+                absorbed_before = int(self.absorbed_damage.get(0, 0) or 0)
                 final_damage, reflected_damage, dodged, counter_damage = self.resolve_incoming_modifiers(
                     0,
                     actual_damage,
                     ignore_evade=guaranteed_hit,
+                )
+                absorbed_after = int(self.absorbed_damage.get(0, 0) or 0)
+                self._append_incoming_resolution_events(
+                    effect_events,
+                    defender_name=self.bot_card["name"],
+                    raw_damage=incoming_raw_damage,
+                    final_damage=int(final_damage),
+                    reflected_damage=int(reflected_damage),
+                    dodged=bool(dodged),
+                    counter_damage=int(counter_damage),
+                    absorbed_before=absorbed_before,
+                    absorbed_after=absorbed_after,
                 )
                 if dodged:
                     self.bot_hp += actual_damage
@@ -6442,7 +6965,12 @@ class MissionBattleView(RestrictedView):
                 reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
                 reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
                 self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1)
-                self._append_effect_event(effect_events, "Reflexion aktiv: Schaden wird reduziert und teilweise zurückgeworfen.")
+                reduce_pct = int(round(max(0.0, reduce_percent) * 100))
+                reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
+                self._append_effect_event(
+                    effect_events,
+                    f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert und {reflect_pct}% des verhinderten Schadens werden zurückgeworfen.",
+                )
             elif eff_type == "absorb_store":
                 percent = float(effect.get("percent", 0.0) or 0.0)
                 self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1)
@@ -6779,10 +7307,24 @@ class MissionBattleView(RestrictedView):
                         self.bot_hp -= overflow_self_damage
                         self._append_effect_event(bot_effect_events, f"Überlauf-Rückstoß: {overflow_self_damage} Selbstschaden.")
 
+                    incoming_raw_damage = int(actual_damage)
+                    absorbed_before = int(self.absorbed_damage.get(self.user_id, 0) or 0)
                     final_damage, reflected_damage, dodged, counter_damage = self.resolve_incoming_modifiers(
                         self.user_id,
                         actual_damage,
                         ignore_evade=guaranteed_hit,
+                    )
+                    absorbed_after = int(self.absorbed_damage.get(self.user_id, 0) or 0)
+                    self._append_incoming_resolution_events(
+                        bot_effect_events,
+                        defender_name=self.player_card["name"],
+                        raw_damage=incoming_raw_damage,
+                        final_damage=int(final_damage),
+                        reflected_damage=int(reflected_damage),
+                        dodged=bool(dodged),
+                        counter_damage=int(counter_damage),
+                        absorbed_before=absorbed_before,
+                        absorbed_after=absorbed_after,
                     )
                     if dodged:
                         self.player_hp += actual_damage
@@ -6916,7 +7458,12 @@ class MissionBattleView(RestrictedView):
                     reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
                     reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
                     self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1)
-                    self._append_effect_event(bot_effect_events, "Reflexion aktiv: Schaden wird reduziert und teilweise zurückgeworfen.")
+                    reduce_pct = int(round(max(0.0, reduce_percent) * 100))
+                    reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
+                    self._append_effect_event(
+                        bot_effect_events,
+                        f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert und {reflect_pct}% des verhinderten Schadens werden zurückgeworfen.",
+                    )
                 elif eff_type == "absorb_store":
                     percent = float(effect.get("percent", 0.0) or 0.0)
                     self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1)
@@ -8703,3 +9250,4 @@ if __name__ == "__main__":
         bot.run(token)
     finally:
         asyncio.run(close_db())
+

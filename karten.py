@@ -115,7 +115,7 @@ karten = [
                 "damage_breakdown": {
                     "start_damage": 5,
                     "burn_damage_per_round": 5,
-                    "burn_duration_rounds": 4,
+                    "burn_duration_rounds": 3,
                 },
                 "effects": [
                     {
@@ -155,14 +155,16 @@ karten = [
             {
                 "name": "Auge von Agamotto",
                 "damage": [0, 0],
-                "cooldown_turns": 4,
+                "cooldown_turns": 5,
+                "button_style": "success",
                 "effects": [{"type": "stun", "target": "enemy", "chance": 1.0}],
                 "info": "Der Gegner setzt seine nächste Runde aus.",
             },
             {
                 "name": "Spiegeldimension",
                 "damage": [0, 0],
-                "cooldown_turns": 3,
+                "cooldown_turns": 4,
+                "button_style": "primary",
                 "effects": [{"type": "reflect", "target": "self", "reduce_percent": 0.5, "reflect_ratio": 1.0, "chance": 1.0}],
                 "info": "Nächster Treffer wird halbiert; die verhinderte Hälfte wird zurückgeworfen.",
             },
@@ -383,5 +385,6 @@ karten = [
         ],
     },
 ]
+
 
 
