@@ -214,6 +214,24 @@ async def init_db():
         )
         """
     )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS guild_give_op_users (
+            guild_id INTEGER,
+            user_id INTEGER,
+            PRIMARY KEY (guild_id, user_id)
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS guild_give_op_roles (
+            guild_id INTEGER,
+            role_id INTEGER,
+            PRIMARY KEY (guild_id, role_id)
+        )
+        """
+    )
 
     await _ensure_column(db, "user_daily", "mission_count", "INTEGER DEFAULT 0")
     await _ensure_column(db, "user_daily", "last_mission_reset", "INTEGER")

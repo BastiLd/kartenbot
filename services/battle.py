@@ -1,4 +1,5 @@
 import random
+import re
 
 import discord
 
@@ -130,8 +131,15 @@ def calculate_damage(attack_damage, buff_amount=0):
     else:
         min_damage = max_damage = attack_damage
 
-    min_damage += buff_amount
-    max_damage += buff_amount
+    min_damage = int(min_damage) + int(buff_amount)
+    max_damage = int(max_damage) + int(buff_amount)
+    min_damage = max(0, min_damage)
+    max_damage = max(0, max_damage)
+    if min_damage > max_damage:
+        min_damage = max_damage
+
+    if max_damage <= 0:
+        return 0, False, min_damage, max_damage
 
     if max_damage <= 50:
         critical_chance = 0.12
@@ -211,6 +219,22 @@ def _display_name(user_obj) -> str:
     return "Bot"
 
 
+def _extract_heal_amount_from_effect_events(effect_events: list[str] | None) -> int:
+    if not effect_events:
+        return 0
+    total_heal = 0
+    for event in effect_events:
+        text = str(event or "").strip()
+        if not text:
+            continue
+        for match in re.findall(r"\+(\d+)\s*HP", text, flags=re.IGNORECASE):
+            try:
+                total_heal += int(match)
+            except Exception:
+                continue
+    return max(0, total_heal)
+
+
 def build_battle_log_entry(
     attacker_name,
     defender_name,
@@ -228,7 +252,8 @@ def build_battle_log_entry(
     defender_status_icons: str = "",
     effect_events: list[str] | None = None,
 ) -> tuple[str, str]:
-    critical_text = "\U0001f4a5 **VOLLTREFFER!**" if is_critical else ""
+    effective_critical = bool(is_critical and int(actual_damage or 0) > 0)
+    critical_text = "\U0001f4a5 **VOLLTREFFER!**" if effective_critical else ""
 
     attacker_display = _display_name(attacker_user)
     defender_display = _display_name(defender_user)
@@ -241,16 +266,23 @@ def build_battle_log_entry(
     confusion_suffix = " (+Verwirrung)" if confusion_applied else ""
     self_hit_suffix = f" (Selbsttreffer: {self_hit_damage})" if (self_hit_damage and self_hit_damage > 0) else ""
     effect_text = ""
+    heal_amount = _extract_heal_amount_from_effect_events(effect_events)
     if effect_events:
         lines = [str(event).strip() for event in effect_events if str(event).strip()]
         if lines:
             effect_text = "\n" + "\n".join(f"- {line}" for line in lines[:8])
 
-    attack_line = (
-        f"**{attacker_display}s {attacker_name}** \u27a4 **{attack_name}** \u27a4 "
-        f"**{actual_damage} Schaden{burn_suffix}{confusion_suffix}{self_hit_suffix}** an "
-        f"**{defender_display}s {defender_name}**"
-    )
+    if int(actual_damage or 0) == 0 and heal_amount > 0:
+        attack_line = (
+            f"**{attacker_display}s {attacker_name}** \u27a4 **{attack_name}** \u27a4 "
+            f"**+{heal_amount} HP Heilung**"
+        )
+    else:
+        attack_line = (
+            f"**{attacker_display}s {attacker_name}** \u27a4 **{attack_name}** \u27a4 "
+            f"**{actual_damage} Schaden{burn_suffix}{confusion_suffix}{self_hit_suffix}** an "
+            f"**{defender_display}s {defender_name}**"
+        )
     new_entry = (
         f"\n\n**Runde {round_number}:**\n"
         f"{critical_text}\n"
@@ -258,10 +290,16 @@ def build_battle_log_entry(
         f"{effect_text}\n"
         f"\U0001f6e1\ufe0f {defender_display} hat jetzt noch **{defender_remaining_hp} Leben**."
     )
-    summary_line = (
-        f"{attacker_display}s {attacker_name} \u27a4 {attack_name} \u27a4 "
-        f"{actual_damage} Schaden an {defender_display}s {defender_name}"
-    )
+    if int(actual_damage or 0) == 0 and heal_amount > 0:
+        summary_line = (
+            f"{attacker_display}s {attacker_name} \u27a4 {attack_name} \u27a4 "
+            f"+{heal_amount} HP Heilung"
+        )
+    else:
+        summary_line = (
+            f"{attacker_display}s {attacker_name} \u27a4 {attack_name} \u27a4 "
+            f"{actual_damage} Schaden an {defender_display}s {defender_name}"
+        )
     return new_entry, summary_line
 
 
@@ -305,7 +343,8 @@ def update_battle_log(
     next_desc = current_desc + new_entry
     next_desc = _keep_last_rounds(next_desc, max_rounds)
     existing_embed.description = _trim_battle_log(next_desc)
-    existing_embed.color = 0xFF6B6B if is_critical else 0x4ECDC4
+    effective_critical = bool(is_critical and int(actual_damage or 0) > 0)
+    existing_embed.color = 0xFF6B6B if effective_critical else 0x4ECDC4
 
     return existing_embed
 

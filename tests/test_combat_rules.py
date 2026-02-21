@@ -1,11 +1,14 @@
 import unittest
 import asyncio
+from unittest.mock import patch
 
 import bot as bot_module
-from bot import BattleView, EFFECT_TYPES_WITH_EFFECT_LOGS, FightFeedbackView, MissionBattleView
+from bot import BattleView, EFFECT_TYPES_WITH_EFFECT_LOGS, FightFeedbackView, MAX_ATTACK_DAMAGE_PER_HIT, MissionBattleView
 from karten import karten
 from services.battle import (
     apply_outgoing_attack_modifier,
+    build_battle_log_entry,
+    calculate_damage,
     create_battle_embed,
     create_battle_log_embed,
     resolve_multi_hit_damage,
@@ -97,6 +100,14 @@ class CardSpecTests(unittest.TestCase):
         self.assertIn("enemy_next_attack_reduction_flat", web_types)
         self.assertIn("enemy_next_attack_reduction_percent", root_types)
 
+    def test_rocket_kleines_ziel_caps_to_attack_min(self) -> None:
+        rocket = _find_card("Rocket")
+        kleines_ziel = _find_attack(rocket, "Kleines Ziel")
+        effects = kleines_ziel.get("effects", [])
+        cap_effect = next((e for e in effects if e.get("type") == "cap_damage"), None)
+        self.assertIsNotNone(cap_effect)
+        self.assertEqual(str(cap_effect.get("max_damage") or ""), "attack_min")
+
     def test_delayed_defense_and_airborne_specs(self) -> None:
         widow = _find_card("Black Widow")
         iron = _find_card("Iron-Man")
@@ -136,10 +147,44 @@ class CardSpecTests(unittest.TestCase):
 
 
 class BattleUtilityTests(unittest.TestCase):
+    def test_sort_user_cards_like_karten_order(self) -> None:
+        ordered_names = [str(card.get("name") or "") for card in karten if card.get("name")]
+        self.assertGreaterEqual(len(ordered_names), 4)
+        unsorted_cards = [
+            (ordered_names[2], 1),
+            (ordered_names[0], 2),
+            ("Unknown Card", 3),
+            (ordered_names[3], 4),
+            (ordered_names[1], 5),
+        ]
+        sorted_cards = bot_module._sort_user_cards_like_karten(unsorted_cards)
+        self.assertEqual(
+            [name for name, _amount in sorted_cards],
+            [ordered_names[0], ordered_names[1], ordered_names[2], ordered_names[3], "Unknown Card"],
+        )
+
     def test_outgoing_flat_overflow(self) -> None:
         self.assertEqual(apply_outgoing_attack_modifier(20, flat=15), (5, 0))
         self.assertEqual(apply_outgoing_attack_modifier(15, flat=15), (0, 0))
         self.assertEqual(apply_outgoing_attack_modifier(10, flat=15), (0, 5))
+
+    def test_damage_range_with_max_bonus_keeps_minimum(self) -> None:
+        self.assertEqual(bot_module._damage_range_with_max_bonus([10, 20], max_only_bonus=5, flat_bonus=0), (10, 25))
+        self.assertEqual(bot_module._damage_range_with_max_bonus(10, max_only_bonus=5, flat_bonus=0), (10, 15))
+
+    def test_buff_select_hides_healing_attacks_for_damage_upgrade(self) -> None:
+        karte = {
+            "name": "Testkarte",
+            "attacks": [
+                {"name": "Heilung", "damage": [0, 0], "heal": [10, 20]},
+                {"name": "Treffer", "damage": [10, 20]},
+            ],
+        }
+        select = bot_module.BuffTypeSelect(10, "Testkarte", karte)
+        option_values = {str(opt.value) for opt in select.options}
+        self.assertIn("health_0", option_values)
+        self.assertNotIn("damage_1", option_values)
+        self.assertIn("damage_2", option_values)
 
     def test_multi_hit_force_max(self) -> None:
         cfg = {"hits": 3, "hit_chance": 0.45, "per_hit_damage": [1, 10]}
@@ -199,11 +244,172 @@ class BattleUtilityTests(unittest.TestCase):
         self.assertIn("- Heilung: +15 HP.", desc)
         self.assertIn("- Nächster Angriff verursacht Maximalschaden.", desc)
 
+    def test_battle_log_shows_heal_instead_of_zero_damage(self) -> None:
+        embed = create_battle_log_embed()
+        embed = update_battle_log(
+            embed,
+            "Groot",
+            "BotCard",
+            "Wachstumsschub",
+            0,
+            False,
+            "Basti",
+            "Bot",
+            1,
+            120,
+            effect_events=["Heilung: +18 HP."],
+        )
+        desc = str(embed.description or "")
+        self.assertIn("+18 HP Heilung", desc)
+        self.assertNotIn("0 Schaden", desc)
+
+    def test_recent_summary_shows_heal_instead_of_zero_damage(self) -> None:
+        class _User:
+            def __init__(self, name: str):
+                self.display_name = name
+                self.mention = name
+
+        _entry, summary = build_battle_log_entry(
+            "Moon Knight",
+            "Blade",
+            "Segen des Khonshu",
+            0,
+            False,
+            _User("Basti"),
+            _User("Bot"),
+            1,
+            97,
+            effect_events=["Heilung: +17 HP."],
+        )
+        self.assertIn("+17 HP Heilung", summary)
+        self.assertNotIn("0 Schaden", summary)
+
+    def test_calculate_damage_zero_never_critical(self) -> None:
+        with patch("services.battle.random.random", return_value=0.0):
+            damage, is_critical, min_damage, max_damage = calculate_damage([0, 0], 0)
+        self.assertEqual(damage, 0)
+        self.assertFalse(is_critical)
+        self.assertEqual(min_damage, 0)
+        self.assertEqual(max_damage, 0)
+
+    def test_log_entry_suppresses_critical_at_zero_damage(self) -> None:
+        class _User:
+            def __init__(self, name: str):
+                self.display_name = name
+                self.mention = name
+
+        entry, _summary = build_battle_log_entry(
+            "Spider-Man",
+            "Spider-Man",
+            "Spinnensinn",
+            0,
+            True,
+            _User("Basti"),
+            _User("Bot"),
+            1,
+            140,
+            effect_events=["Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."],
+        )
+        self.assertNotIn("VOLLTREFFER", entry)
 
     def test_cooldown_label_uses_remaining_and_total(self) -> None:
         attack = {"name": "Fliegen", "cooldown_turns": 3}
         self.assertEqual(bot_module._format_cooldown_label(attack, 2), "Cooldown: 2/3")
         self.assertEqual(bot_module._format_cooldown_label(attack, 1), "Cooldown: 1/3")
+
+
+class BattleBotChoiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bot_choice_prefers_heal_at_low_hp(self) -> None:
+        player_card = {"name": "Player", "hp": 140, "attacks": [{"name": "Punch", "damage": [10, 20]}]}
+        bot_card = {
+            "name": "BotCard",
+            "hp": 140,
+            "attacks": [
+                {"name": "Self Repair", "damage": [0, 0], "heal": [30, 30]},
+                {"name": "Laser", "damage": [25, 35]},
+                {"name": "Ping", "damage": [10, 12]},
+                {"name": "Tap", "damage": [1, 2]},
+            ],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        view.player2_hp = 40
+        choice = view._choose_bot_attack_index(bot_card["attacks"])
+        self.assertEqual(choice, 0)
+
+
+class FightFeedbackViewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_close_thread_button_hidden_outside_threads(self) -> None:
+        view = FightFeedbackView(channel=object(), guild=None, allowed_user_ids=set(), battle_log_text="")
+        try:
+            labels = [str(getattr(child, "label", "") or "") for child in view.children]
+            self.assertIn("Es gab keinen Bug", labels)
+            self.assertNotIn("Thread schließen (Admin/Owner)", labels)
+        finally:
+            view.stop()
+    async def test_bot_choice_uses_setup_before_big_hit_when_no_buff(self) -> None:
+        player_card = {"name": "Player", "hp": 160, "attacks": [{"name": "Punch", "damage": [10, 20]}]}
+        bot_card = {
+            "name": "BotCard",
+            "hp": 160,
+            "attacks": [
+                {
+                    "name": "Power Up",
+                    "damage": [0, 0],
+                    "effects": [{"type": "damage_boost", "target": "self", "amount": 20, "uses": 1}],
+                },
+                {"name": "Plasma Beam", "damage": [55, 70]},
+                {"name": "Ping", "damage": [8, 10]},
+                {"name": "Tap", "damage": [1, 2]},
+            ],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        view.player1_hp = 160
+        view.player2_hp = 150
+        choice = view._choose_bot_attack_index(bot_card["attacks"])
+        self.assertEqual(choice, 0)
+
+    async def test_bot_choice_prefers_damage_when_buff_active(self) -> None:
+        player_card = {"name": "Player", "hp": 160, "attacks": [{"name": "Punch", "damage": [10, 20]}]}
+        bot_card = {
+            "name": "BotCard",
+            "hp": 160,
+            "attacks": [
+                {
+                    "name": "Power Up",
+                    "damage": [0, 0],
+                    "effects": [{"type": "damage_boost", "target": "self", "amount": 20, "uses": 1}],
+                },
+                {"name": "Plasma Beam", "damage": [55, 70]},
+                {"name": "Ping", "damage": [8, 10]},
+                {"name": "Tap", "damage": [1, 2]},
+            ],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        view.pending_flat_bonus[0] = 20
+        view.pending_flat_bonus_uses[0] = 1
+        choice = view._choose_bot_attack_index(bot_card["attacks"])
+        self.assertEqual(choice, 1)
+
+    async def test_bot_choice_avoids_wasted_damage_when_outgoing_reduced(self) -> None:
+        player_card = {"name": "Player", "hp": 160, "attacks": [{"name": "Punch", "damage": [10, 20]}]}
+        bot_card = {
+            "name": "BotCard",
+            "hp": 160,
+            "attacks": [
+                {
+                    "name": "Plan Ahead",
+                    "damage": [0, 0],
+                    "effects": [{"type": "enemy_next_attack_reduction_flat", "target": "enemy", "value": 10}],
+                },
+                {"name": "Heavy Shot", "damage": [35, 40]},
+                {"name": "Ping", "damage": [8, 10]},
+                {"name": "Tap", "damage": [1, 2]},
+            ],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        view.outgoing_attack_modifiers[0].append({"type": "flat", "value": 30})
+        choice = view._choose_bot_attack_index(bot_card["attacks"])
+        self.assertEqual(choice, 0)
 
     def test_feedback_view_split_log_for_dm(self) -> None:
         text = "\n".join(f"line{i}" for i in range(1, 8))
@@ -256,6 +462,44 @@ class BattleUtilityTests(unittest.TestCase):
 
         text = asyncio.run(_build_prompt())
         self.assertIn("Kampf-Log per DM", text)
+
+
+class CapDamageRuleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_attack_min_cap_in_pvp_resolver(self) -> None:
+        attacker = {"name": "Attacker", "hp": 140, "attacks": [{"name": "Hit", "damage": [15, 30]}]}
+        defender = {"name": "Defender", "hp": 140, "attacks": [{"name": "Block", "damage": [0, 0]}]}
+        view = BattleView(attacker, defender, 1, 2, None)
+        try:
+            view.queue_incoming_modifier(2, cap="attack_min", turns=1)
+            final_damage, reflected, dodged, counter = view.resolve_incoming_modifiers(
+                2,
+                27,
+                incoming_min_damage=15,
+            )
+            self.assertEqual(final_damage, 15)
+            self.assertEqual(reflected, 0)
+            self.assertFalse(dodged)
+            self.assertEqual(counter, 0)
+        finally:
+            view.stop()
+
+    async def test_attack_min_cap_in_mission_resolver(self) -> None:
+        attacker = {"name": "Attacker", "hp": 140, "attacks": [{"name": "Hit", "damage": [15, 30]}]}
+        defender = {"name": "Defender", "hp": 140, "attacks": [{"name": "Block", "damage": [0, 0]}]}
+        view = MissionBattleView(attacker, defender, 1, 1, 1)
+        try:
+            view.queue_incoming_modifier(0, cap="attack_min", turns=1)
+            final_damage, reflected, dodged, counter = view.resolve_incoming_modifiers(
+                0,
+                27,
+                incoming_min_damage=15,
+            )
+            self.assertEqual(final_damage, 15)
+            self.assertEqual(reflected, 0)
+            self.assertFalse(dodged)
+            self.assertEqual(counter, 0)
+        finally:
+            view.stop()
 
 
 class _DummyMember:
@@ -324,6 +568,87 @@ class _DummyInteraction:
 
 
 class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def _execute_player_attack_without_buffs(self, view: BattleView) -> None:
+        original_get_card_buffs = bot_module.get_card_buffs
+
+        async def _fake_get_card_buffs(_user_id, _card_name):
+            return []
+
+        bot_module.get_card_buffs = _fake_get_card_buffs
+        try:
+            interaction_message = _DummyMessage()
+            interaction = _DummyInteraction(view.player1_id, interaction_message)
+            await view.execute_attack(interaction, 0)
+        finally:
+            bot_module.get_card_buffs = original_get_card_buffs
+
+    async def test_low_hp_defender_no_heal_with_outgoing_flat_reduction(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 140,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [17, 17], "info": "test"}],
+        }
+        defender_card = {
+            "name": "DefenderCard",
+            "hp": 140,
+            "bild": "https://example.com/defender.png",
+            "attacks": [{"name": "Hit", "damage": [0, 0], "info": "test"}],
+        }
+        view = BattleView(player_card, defender_card, 1, 2, None)
+        view.current_turn = 1
+        view.player2_hp = 5
+        view.queue_outgoing_attack_modifier(1, flat=10, turns=1)
+
+        await self._execute_player_attack_without_buffs(view)
+
+        self.assertEqual(view.player2_hp, 0)
+
+    async def test_low_hp_defender_no_heal_with_outgoing_flat_and_evade(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 140,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [17, 17], "info": "test"}],
+        }
+        defender_card = {
+            "name": "DefenderCard",
+            "hp": 140,
+            "bild": "https://example.com/defender.png",
+            "attacks": [{"name": "Hit", "damage": [0, 0], "info": "test"}],
+        }
+        view = BattleView(player_card, defender_card, 1, 2, None)
+        view.current_turn = 1
+        view.player2_hp = 5
+        view.queue_outgoing_attack_modifier(1, flat=10, turns=1)
+        view.queue_incoming_modifier(2, evade=True, turns=1)
+
+        await self._execute_player_attack_without_buffs(view)
+
+        self.assertEqual(view.player2_hp, 5)
+
+    async def test_low_hp_defender_no_heal_with_incoming_flat_reduction(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 140,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [17, 17], "info": "test"}],
+        }
+        defender_card = {
+            "name": "DefenderCard",
+            "hp": 140,
+            "bild": "https://example.com/defender.png",
+            "attacks": [{"name": "Hit", "damage": [0, 0], "info": "test"}],
+        }
+        view = BattleView(player_card, defender_card, 1, 2, None)
+        view.current_turn = 1
+        view.player2_hp = 5
+        view.queue_incoming_modifier(2, flat=10, turns=1)
+
+        await self._execute_player_attack_without_buffs(view)
+
+        self.assertEqual(view.player2_hp, 0)
+
     async def test_final_killing_attack_is_in_battle_log(self) -> None:
         player_card = {
             "name": "PlayerCard",
@@ -360,6 +685,97 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         full_log = view._full_battle_log_text()
         self.assertIn("Runde 1", full_log)
         self.assertIn("FinalHit", full_log)
+
+    async def test_roll_attack_damage_caps_single_hit_to_50(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "MegaHit", "damage": [80, 80], "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        attack = player_card["attacks"][0]
+        damage, _critical, _min_damage, max_damage = view.roll_attack_damage(
+            attack,
+            attack["damage"],
+            0,
+            1.0,
+            False,
+            False,
+        )
+        self.assertLessEqual(damage, MAX_ATTACK_DAMAGE_PER_HIT)
+        self.assertEqual(damage, MAX_ATTACK_DAMAGE_PER_HIT)
+        self.assertEqual(max_damage, MAX_ATTACK_DAMAGE_PER_HIT)
+
+    async def test_roll_attack_damage_caps_multi_hit_total_to_50(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [
+                {
+                    "name": "Multi",
+                    "damage": [0, 0],
+                    "multi_hit": {"hits": 10, "hit_chance": 1.0, "per_hit_damage": [10, 10]},
+                    "info": "test",
+                }
+            ],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        attack = player_card["attacks"][0]
+        damage, _critical, _min_damage, max_damage = view.roll_attack_damage(
+            attack,
+            attack["damage"],
+            0,
+            1.0,
+            True,
+            False,
+        )
+        self.assertEqual(damage, MAX_ATTACK_DAMAGE_PER_HIT)
+        self.assertEqual(max_damage, MAX_ATTACK_DAMAGE_PER_HIT)
+
+    async def test_update_attack_buttons_show_max_only_damage_buff(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 20], "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        view.current_turn = 1
+        original_get_card_buffs = bot_module.get_card_buffs
+
+        async def _fake_get_card_buffs(_user_id, _card_name):
+            return [("damage", 1, 5)]
+
+        bot_module.get_card_buffs = _fake_get_card_buffs
+        try:
+            await view.update_attack_buttons()
+        finally:
+            bot_module.get_card_buffs = original_get_card_buffs
+
+        attack_buttons = [child for child in view.children if isinstance(child, bot_module.ui.Button) and child.row in (0, 1)]
+        first_label = str(attack_buttons[0].label)
+        self.assertIn("10-25", first_label)
+        self.assertIn("(+5 max)", first_label)
 
     async def test_bot_stun_skips_attack_but_dot_ticks(self) -> None:
         player_card = {
@@ -417,6 +833,116 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reflected, 0)
         self.assertFalse(dodged)
         self.assertEqual(counter, 0)
+
+    async def test_force_max_zero_damage_not_critical(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Utility", "damage": [0, 0], "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, bot_card, 1, 2, None)
+        attack = player_card["attacks"][0]
+        dmg, is_critical, min_dmg, max_dmg = view.roll_attack_damage(attack, attack["damage"], 0, 1.0, True, False)
+        self.assertEqual(dmg, 0)
+        self.assertFalse(is_critical)
+        self.assertEqual(min_dmg, 0)
+        self.assertEqual(max_dmg, 0)
+
+    async def test_no_critical_when_attack_is_dodged(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 140,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [20, 20], "info": "test"}],
+        }
+        defender_card = {
+            "name": "DefenderCard",
+            "hp": 140,
+            "bild": "https://example.com/defender.png",
+            "attacks": [{"name": "Hit", "damage": [0, 0], "info": "test"}],
+        }
+        view = BattleView(player_card, defender_card, 1, 2, None)
+        view.current_turn = 1
+        view.queue_incoming_modifier(2, evade=True, turns=1)
+        with patch("services.battle.random.random", return_value=0.0):
+            await self._execute_player_attack_without_buffs(view)
+        full_log = view._full_battle_log_text()
+        self.assertNotIn("VOLLTREFFER", full_log)
+        self.assertIn("Ausweichen: Angriff vollständig verfehlt.", full_log)
+
+    async def test_no_critical_when_damage_reduced_to_zero(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 140,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [20, 20], "info": "test"}],
+        }
+        defender_card = {
+            "name": "DefenderCard",
+            "hp": 140,
+            "bild": "https://example.com/defender.png",
+            "attacks": [{"name": "Hit", "damage": [0, 0], "info": "test"}],
+        }
+        view = BattleView(player_card, defender_card, 1, 2, None)
+        view.current_turn = 1
+        view.queue_outgoing_attack_modifier(1, flat=30, turns=1)
+        with patch("services.battle.random.random", return_value=0.0):
+            await self._execute_player_attack_without_buffs(view)
+        full_log = view._full_battle_log_text()
+        self.assertNotIn("VOLLTREFFER", full_log)
+        self.assertIn("Ausgehender Schaden wurde um 20 reduziert.", full_log)
+        self.assertIn("Überlauf-Rückstoß: 10 Selbstschaden.", full_log)
+        self.assertIn("hat jetzt noch 130 Leben", full_log)
+
+    async def test_real_critical_still_logged_for_positive_final_damage(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 140,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [20, 20], "info": "test"}],
+        }
+        defender_card = {
+            "name": "DefenderCard",
+            "hp": 140,
+            "bild": "https://example.com/defender.png",
+            "attacks": [{"name": "Hit", "damage": [0, 0], "info": "test"}],
+        }
+        view = BattleView(player_card, defender_card, 1, 2, None)
+        view.current_turn = 1
+        with patch("services.battle.random.random", return_value=0.0):
+            await self._execute_player_attack_without_buffs(view)
+        full_log = view._full_battle_log_text()
+        self.assertIn("VOLLTREFFER", full_log)
+        self.assertEqual(view.player2_hp, 120)
+
+    async def test_counter_log_attacker_hp_changes(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 140,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [20, 20], "info": "test"}],
+        }
+        defender_card = {
+            "name": "DefenderCard",
+            "hp": 140,
+            "bild": "https://example.com/defender.png",
+            "attacks": [{"name": "Hit", "damage": [0, 0], "info": "test"}],
+        }
+        view = BattleView(player_card, defender_card, 1, 2, None)
+        view.current_turn = 1
+        view.queue_incoming_modifier(2, evade=True, counter=10, turns=1)
+        await self._execute_player_attack_without_buffs(view)
+        full_log = view._full_battle_log_text()
+        self.assertIn("Konter-Rückschaden: 10 Schaden.", full_log)
+        self.assertIn("hat jetzt noch 130 Leben", full_log)
+        self.assertEqual(view.player1_hp, 130)
 
     async def test_delayed_defense_activation_next_attack(self) -> None:
         player_card = {
@@ -524,9 +1050,9 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
                 view.pending_multiplier[1] = 1.0
         dmg, _crit, min_dmg, max_dmg = view.roll_attack_damage(forced, forced["damage"], 0, attack_multiplier, False, False)
         self.assertGreaterEqual(dmg, 33)
-        self.assertLessEqual(dmg, 66)
+        self.assertLessEqual(dmg, MAX_ATTACK_DAMAGE_PER_HIT)
         self.assertEqual(min_dmg, 33)
-        self.assertEqual(max_dmg, 66)
+        self.assertEqual(max_dmg, MAX_ATTACK_DAMAGE_PER_HIT)
 
     async def test_battle_view_multi_hit_logs_roll_details(self) -> None:
         player_card = {
@@ -826,6 +1352,114 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_mission_force_max_zero_damage_not_critical(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Utility", "damage": [0, 0], "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = MissionBattleView(player_card, bot_card, 1, 1, 1)
+        attack = player_card["attacks"][0]
+        dmg, is_critical, min_dmg, max_dmg = view.roll_attack_damage(attack, attack["damage"], 0, 1.0, True, False)
+        self.assertEqual(dmg, 0)
+        self.assertFalse(is_critical)
+        self.assertEqual(min_dmg, 0)
+        self.assertEqual(max_dmg, 0)
+
+    async def test_mission_roll_attack_damage_caps_to_50(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "MegaHit", "damage": [120, 120], "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = MissionBattleView(player_card, bot_card, 1, 1, 1)
+        attack = player_card["attacks"][0]
+        dmg, _is_critical, _min_dmg, max_dmg = view.roll_attack_damage(
+            attack,
+            attack["damage"],
+            0,
+            1.0,
+            False,
+            False,
+        )
+        self.assertEqual(dmg, MAX_ATTACK_DAMAGE_PER_HIT)
+        self.assertEqual(max_dmg, MAX_ATTACK_DAMAGE_PER_HIT)
+
+    async def test_mission_low_hp_defender_no_heal_with_outgoing_flat_reduction(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 140,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [17, 17], "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 140,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [0, 0], "info": "test"}],
+        }
+        view = MissionBattleView(player_card, bot_card, 1, 1, 1)
+        view.bot_hp = 5
+        defender_hp_before = view._hp_for(0)
+
+        actual_damage = 17
+        view.queue_outgoing_attack_modifier(1, flat=10, turns=1)
+        reduced_damage, overflow_self_damage = view.apply_outgoing_attack_modifiers(1, actual_damage)
+        if overflow_self_damage > 0:
+            view._apply_non_heal_damage(1, overflow_self_damage)
+        final_damage, _reflected, dodged, _counter = view.resolve_incoming_modifiers(0, reduced_damage, ignore_evade=False)
+        if not dodged and final_damage > 0:
+            view._apply_non_heal_damage(0, final_damage)
+        view._guard_non_heal_damage_result(0, defender_hp_before, "test_mission_outgoing_flat")
+
+        self.assertFalse(dodged)
+        self.assertEqual(view.bot_hp, 0)
+
+    async def test_mission_low_hp_defender_no_heal_with_outgoing_flat_and_evade(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 140,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [17, 17], "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 140,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [0, 0], "info": "test"}],
+        }
+        view = MissionBattleView(player_card, bot_card, 1, 1, 1)
+        view.bot_hp = 5
+        defender_hp_before = view._hp_for(0)
+
+        actual_damage = 17
+        view.queue_outgoing_attack_modifier(1, flat=10, turns=1)
+        view.queue_incoming_modifier(0, evade=True, turns=1)
+        reduced_damage, overflow_self_damage = view.apply_outgoing_attack_modifiers(1, actual_damage)
+        if overflow_self_damage > 0:
+            view._apply_non_heal_damage(1, overflow_self_damage)
+        final_damage, _reflected, dodged, _counter = view.resolve_incoming_modifiers(0, reduced_damage, ignore_evade=False)
+        if not dodged and final_damage > 0:
+            view._apply_non_heal_damage(0, final_damage)
+        view._guard_non_heal_damage_result(0, defender_hp_before, "test_mission_outgoing_flat_evade")
+
+        self.assertTrue(dodged)
+        self.assertEqual(view.bot_hp, 5)
+
     async def test_mission_helpers_for_delayed_and_airborne(self) -> None:
         player_card = {
             "name": "PlayerCard",

@@ -147,7 +147,7 @@ karten = [
     {
         "name": "Doctor Strange",
         "beschreibung": "Meister der mystischen Künste.",
-        "bild": "https://i.imgur.com/4mxNv2c.png",
+        "bild": "https://i.imgur.com/DRM6CsN.png",
         "seltenheit": "Gewöhnlich",
         "hp": 140,
         "attacks": [
@@ -174,7 +174,7 @@ karten = [
     {
         "name": "Black Panther",
         "beschreibung": "Königlicher Krieger mit Vibranium-Power.",
-        "bild": "https://i.imgur.com/4mxNv2c.png",
+        "bild": "https://i.imgur.com/Ts6cdlR.png",
         "seltenheit": "Gewöhnlich",
         "hp": 140,
         "attacks": [
@@ -186,7 +186,9 @@ karten = [
                 "effects": [{"type": "absorb_store", "target": "self", "percent": 0.5, "chance": 1.0}],
                 "info": "Reduziert den nächsten Treffer um 50% und speichert den verhinderten Schaden.",
             },
-            {"name": "Kinetische Entladung", "damage": [10, 10], "add_absorbed_damage": True, "info": "10 Grundschaden plus gespeicherter Absorptionsschaden."},
+            {"name": "Kinetische Entladung", "damage": [10, 10], "add_absorbed_damage": True, "cooldown_turns": 3,
+            "info": "10 Grundschaden plus gespeicherter Absorptionsschaden."},
+            
             {
                 "name": "Jagdinstinkt",
                 "damage": [20, 20],
@@ -201,7 +203,7 @@ karten = [
     {
         "name": "Star Lord",
         "beschreibung": "Galaktischer Draufgänger mit Jet-Boots.",
-        "bild": "https://i.imgur.com/4mxNv2c.png",
+        "bild": "https://i.imgur.com/wPKMwOl.png",
         "seltenheit": "Gewöhnlich",
         "hp": 140,
         "attacks": [
@@ -209,14 +211,14 @@ karten = [
             {
                 "name": "Schwerkraft-Mine",
                 "damage": [10, 20],
-                "cooldown_turns": 2,
+                "cooldown_turns": 3,
                 "effects": [{"type": "enemy_next_attack_reduction_flat", "target": "enemy", "amount": 10, "turns": 1, "chance": 1.0}],
                 "info": "Nächster gegnerischer Angriff macht 10 weniger Schaden (mit Überlauf-Rückstoß).",
             },
             {
                 "name": "Jet-Boots",
                 "damage": [0, 0],
-                "cooldown_turns": 3,
+                "cooldown_turns": 4,
                 "effects": [
                     {"type": "delayed_defense_after_next_attack", "target": "self", "defense": "evade", "chance": 1.0},
                     {"type": "damage_boost", "target": "self", "amount": 10, "uses": 1, "chance": 1.0},
@@ -226,7 +228,7 @@ karten = [
             {
                 "name": "Awesome Mix",
                 "damage": [0, 0],
-                "cooldown_turns": 4,
+                "cooldown_turns": 5,
                 "effects": [{"type": "mix_heal_or_max", "target": "self", "heal": 15, "chance": 1.0}],
                 "info": "50/50: heilt 15 oder der nächste Angriff verursacht Maximalschaden.",
             },
@@ -235,7 +237,7 @@ karten = [
     {
         "name": "Groot",
         "beschreibung": "Massiver Baumkrieger mit starker Regeneration.",
-        "bild": "https://i.imgur.com/4mxNv2c.png",
+        "bild": "https://i.imgur.com/YhjJ7KV.png",
         "seltenheit": "Gewöhnlich",
         "hp": 140,
         "attacks": [
@@ -247,14 +249,14 @@ karten = [
                 "effects": [{"type": "enemy_next_attack_reduction_percent", "target": "enemy", "percent": 0.5, "turns": 1, "chance": 1.0}],
                 "info": "Nächster gegnerischer Angriff verursacht 50% weniger Schaden.",
             },
-            {"name": "Wachstumsschub", "damage": [0, 0], "heal": [15, 30], "cooldown_turns": 4, "info": "Regeneriert 15-30 HP."},
+            {"name": "Wachstumsschub", "damage": [0, 0], "heal": [15, 30], "cooldown_turns": 5, "info": "Regeneriert 15-30 HP."},
             {"name": "ICH BIN GROOT!", "damage": [25, 40], "cooldown_turns": 5, "info": "Massiver Schwerangriff."},
         ],
     },
     {
         "name": "Rocket",
         "beschreibung": "Kleiner Genius mit großen Waffen.",
-        "bild": "https://i.imgur.com/4mxNv2c.png",
+        "bild": "https://i.imgur.com/aDQ9RmP.png",
         "seltenheit": "Gewöhnlich",
         "hp": 140,
         "attacks": [
@@ -276,21 +278,21 @@ karten = [
             {
                 "name": "Kleines Ziel",
                 "damage": [0, 0],
-                "cooldown_turns": 3,
-                "effects": [{"type": "cap_damage", "target": "self", "max_damage": 5, "chance": 1.0}],
-                "info": "Der nächste eingehende Treffer wird auf maximal 5 begrenzt.",
+                "cooldown_turns": 4,
+                "effects": [{"type": "cap_damage", "target": "self", "max_damage": "attack_min", "chance": 1.0}],
+                "info": "Der nächste eingehende Treffer wird auf dessen Mindestschaden begrenzt.",
             },
         ],
     },
     {
         "name": "Moon Knight",
         "beschreibung": "Avatar von Khonshu mit chaotischem Stil.",
-        "bild": "https://i.imgur.com/4mxNv2c.png",
+        "bild": "https://i.imgur.com/pYzJYPw.png",
         "seltenheit": "Gewöhnlich",
         "hp": 140,
         "attacks": [
             {"name": "Mondsicheln", "damage": [12, 18], "info": "Präziser Sichelwurf."},
-            {"name": "Chaos-Stil", "damage": [5, 30], "cooldown_turns": 2, "info": "Chaotischer Angriff mit großer Streuung."},
+            {"name": "Chaos-Stil", "damage": [5, 30], "cooldown_turns": 3, "info": "Chaotischer Angriff mit großer Streuung."},
             {"name": "Segen des Khonshu", "damage": [0, 0], "heal": [15, 25], "cooldown_turns": 4, "info": "Heilt 15-25 HP."},
             {
                 "name": "Rache des Avatars",
@@ -305,7 +307,7 @@ karten = [
     {
         "name": "Blade",
         "beschreibung": "Daywalker mit Katana und Jagdinstinkt.",
-        "bild": "https://i.imgur.com/4mxNv2c.png",
+        "bild": "https://i.imgur.com/QN0NwDb.png",
         "seltenheit": "Gewöhnlich",
         "hp": 140,
         "attacks": [
@@ -330,7 +332,7 @@ karten = [
     {
         "name": "Wolverine",
         "beschreibung": "Unaufhaltsam mit Heilfaktor und Adamantium.",
-        "bild": "https://i.imgur.com/4mxNv2c.png",
+        "bild": "https://i.imgur.com/vpyHxDi.png",
         "seltenheit": "Gewöhnlich",
         "hp": 140,
         "attacks": [
@@ -338,14 +340,14 @@ karten = [
             {
                 "name": "Heilfaktor",
                 "damage": [0, 0],
-                "cooldown_turns": 3,
+                "cooldown_turns": 7,
                 "effects": [{"type": "regen", "target": "self", "turns": 3, "heal": 10, "chance": 1.0}],
                 "info": "Heilt 3 Runden lang je 10 HP.",
             },
             {
                 "name": "Berserkerwut",
                 "damage": [20, 30],
-                "cooldown_turns": 3,
+                "cooldown_turns": 4,
                 "bonus_if_self_hp_below_pct": 0.5,
                 "bonus_damage_if_condition": 10,
                 "info": "Macht 20-30, unter 50% eigener HP zusätzlich +10.",
@@ -353,7 +355,7 @@ karten = [
             {
                 "name": "X-Schnitt",
                 "damage": [15, 20],
-                "cooldown_turns": 4,
+                "cooldown_turns": 5,
                 "effects": [{"type": "burning", "chance": 1.0, "duration": [3, 3], "damage": 5}],
                 "info": "Verursacht tiefe Wunde für 3 Runden (5 pro Tick).",
             },
@@ -362,7 +364,7 @@ karten = [
     {
         "name": "Spider-Man",
         "beschreibung": "Schneller Netzkämpfer mit Spinnensinn.",
-        "bild": "https://i.imgur.com/4mxNv2c.png",
+        "bild": "https://i.imgur.com/ivYMZ7H.png",
         "seltenheit": "Gewöhnlich",
         "hp": 140,
         "attacks": [
@@ -385,6 +387,3 @@ karten = [
         ],
     },
 ]
-
-
-
