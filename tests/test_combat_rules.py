@@ -1,6 +1,7 @@
 import unittest
 import asyncio
-from unittest.mock import patch
+import copy
+from unittest.mock import AsyncMock, patch
 
 import bot as bot_module
 from bot import BattleView, EFFECT_TYPES_WITH_EFFECT_LOGS, FightFeedbackView, MAX_ATTACK_DAMAGE_PER_HIT, MissionBattleView
@@ -133,6 +134,13 @@ class CardSpecTests(unittest.TestCase):
         spinnensinn_effects = spinnensinn.get("effects", [])
         self.assertTrue(any(e.get("type") == "evade" for e in spinnensinn_effects))
 
+    def test_card_rarity_color_common_uses_requested_hex(self) -> None:
+        common_card = _find_card("Iron-Man")
+        self.assertEqual(bot_module._card_rarity_color(common_card), 0x3DE835)
+
+    def test_card_rarity_color_non_common_returns_none(self) -> None:
+        self.assertIsNone(bot_module._card_rarity_color({"name": "X", "seltenheit": "Legendary"}))
+
     def test_effect_type_logging_coverage_matches_karten_effect_types(self) -> None:
         configured_types = {
             str(effect.get("type"))
@@ -262,6 +270,26 @@ class BattleUtilityTests(unittest.TestCase):
         desc = str(embed.description or "")
         self.assertIn("+18 HP Heilung", desc)
         self.assertNotIn("0 Schaden", desc)
+
+    def test_battle_log_heal_hp_line_uses_attacker_hp_when_provided(self) -> None:
+        embed = create_battle_log_embed()
+        embed = update_battle_log(
+            embed,
+            "Groot",
+            "BotCard",
+            "Wachstumsschub",
+            0,
+            False,
+            "Basti",
+            "Bot",
+            1,
+            120,
+            attacker_remaining_hp=77,
+            effect_events=["Heilung: +18 HP."],
+        )
+        desc = str(embed.description or "")
+        self.assertIn("hat jetzt noch **77 Leben**", desc)
+        self.assertNotIn("hat jetzt noch **120 Leben**", desc)
 
     def test_recent_summary_shows_heal_instead_of_zero_damage(self) -> None:
         class _User:
@@ -568,6 +596,28 @@ class _DummyInteraction:
 
 
 class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def _execute_attack_without_buffs(
+        self,
+        view: BattleView,
+        *,
+        acting_user_id: int,
+        attack_index: int,
+        interaction_message: _DummyMessage | None = None,
+    ) -> _DummyMessage:
+        original_get_card_buffs = bot_module.get_card_buffs
+
+        async def _fake_get_card_buffs(_user_id, _card_name):
+            return []
+
+        bot_module.get_card_buffs = _fake_get_card_buffs
+        try:
+            message = interaction_message or _DummyMessage()
+            interaction = _DummyInteraction(acting_user_id, message)
+            await view.execute_attack(interaction, attack_index)
+            return message
+        finally:
+            bot_module.get_card_buffs = original_get_card_buffs
+
     async def _execute_player_attack_without_buffs(self, view: BattleView) -> None:
         original_get_card_buffs = bot_module.get_card_buffs
 
@@ -960,9 +1010,168 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         view = BattleView(player_card, bot_card, 1, 0, None)
         effect_events: list[str] = []
         view.queue_delayed_defense(1, "stealth")
-        view.activate_delayed_defense_after_attack(1, effect_events)
+        view.activate_delayed_defense_after_attack(1, effect_events, attack_landed=True)
         self.assertTrue(any(e.get("type") == "stealth" for e in view.active_effects[1]))
         self.assertTrue(any("Schutz aktiv" in e for e in effect_events))
+
+    async def test_delayed_defense_stays_queued_without_hit(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        effect_events: list[str] = []
+        view.queue_delayed_defense(1, "stealth")
+        view.activate_delayed_defense_after_attack(1, effect_events, attack_landed=False)
+        self.assertFalse(any(e.get("type") == "stealth" for e in view.active_effects[1]))
+        self.assertEqual(len(view.delayed_defense_queue[1]), 1)
+        self.assertTrue(any("Aktivierung verschoben" in e for e in effect_events))
+
+    async def test_real_flow_tarnung_blocks_exactly_next_enemy_attack_after_hit(self) -> None:
+        widow = copy.deepcopy(_find_card("Black Widow"))
+        iron = copy.deepcopy(_find_card("Iron-Man"))
+        widow["hp"] = 140
+        iron["hp"] = 140
+        widow["attacks"][0]["damage"] = [10, 10]  # Treten
+        iron["attacks"][0]["damage"] = [10, 10]   # Repulsor Strahlen
+
+        view = BattleView(widow, iron, 1, 2, None)
+        view.current_turn = 1
+        message = _DummyMessage()
+
+        # R1: Black Widow setzt Tarnung (Schutz nur vorbereitet).
+        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=3, interaction_message=message)
+        self.assertEqual(view.current_turn, 2)
+        self.assertEqual(view.player1_hp, 140)
+        self.assertEqual(view.player2_hp, 140)
+
+        # R2: Iron-Man trifft normal (Widow ist in dieser Runde noch verwundbar).
+        await self._execute_attack_without_buffs(view, acting_user_id=2, attack_index=0, interaction_message=message)
+        self.assertEqual(view.current_turn, 1)
+        self.assertEqual(view.player1_hp, 130)
+
+        # R3: Widow trifft -> jetzt wird der Schutz aktiv.
+        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=0, interaction_message=message)
+        self.assertEqual(view.current_turn, 2)
+        self.assertEqual(view.player2_hp, 130)
+
+        # R4: Nächster Iron-Man-Angriff wird geblockt.
+        hp_before_block = view.player1_hp
+        await self._execute_attack_without_buffs(view, acting_user_id=2, attack_index=0, interaction_message=message)
+        self.assertEqual(view.current_turn, 1)
+        self.assertEqual(view.player1_hp, hp_before_block)
+
+        # R5+R6: Danach ist Schutz verbraucht, nächster Gegnerangriff trifft wieder normal.
+        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=0, interaction_message=message)
+        hp_before_next_hit = view.player1_hp
+        await self._execute_attack_without_buffs(view, acting_user_id=2, attack_index=0, interaction_message=message)
+        self.assertEqual(view.player1_hp, hp_before_next_hit - 10)
+
+    async def test_real_flow_fliegen_dodge_then_landing_then_vulnerable_again(self) -> None:
+        iron = copy.deepcopy(_find_card("Iron-Man"))
+        widow = copy.deepcopy(_find_card("Black Widow"))
+        iron["hp"] = 140
+        widow["hp"] = 140
+        iron["attacks"][0]["damage"] = [10, 10]   # Repulsor Strahlen
+        widow["attacks"][0]["damage"] = [10, 10]  # Treten
+        # Deterministische Landung
+        for effect in iron["attacks"][3].get("effects", []):
+            if effect.get("type") == "airborne_two_phase":
+                effect["landing_damage"] = [20, 20]
+
+        view = BattleView(iron, widow, 1, 2, None)
+        view.current_turn = 1
+        message = _DummyMessage()
+
+        # R1: Iron-Man nutzt Fliegen.
+        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=3, interaction_message=message)
+        self.assertEqual(view.current_turn, 2)
+
+        # R2: Gegnerangriff verfehlt wegen Flugphase.
+        hp_after_fliegen = view.player1_hp
+        await self._execute_attack_without_buffs(view, acting_user_id=2, attack_index=0, interaction_message=message)
+        self.assertEqual(view.current_turn, 1)
+        self.assertEqual(view.player1_hp, hp_after_fliegen)
+
+        # R3: Iron-Man landet automatisch und verursacht Schaden.
+        enemy_hp_before_landing = view.player2_hp
+        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=0, interaction_message=message)
+        self.assertEqual(view.current_turn, 2)
+        self.assertEqual(view.player2_hp, enemy_hp_before_landing - 20)
+
+        # R4: Danach kann Iron-Man wieder normalen Schaden bekommen.
+        hp_before_enemy_hit = view.player1_hp
+        await self._execute_attack_without_buffs(view, acting_user_id=2, attack_index=0, interaction_message=message)
+        self.assertEqual(view.player1_hp, hp_before_enemy_hit - 10)
+
+    async def test_real_flow_fliegen_consumes_on_non_damage_enemy_turn(self) -> None:
+        iron = copy.deepcopy(_find_card("Iron-Man"))
+        cap = copy.deepcopy(_find_card("Captain America"))
+        iron["hp"] = 140
+        cap["hp"] = 140
+        cap["attacks"][3]["damage"] = [10, 10]  # Hieb
+        for effect in iron["attacks"][3].get("effects", []):
+            if effect.get("type") == "airborne_two_phase":
+                effect["landing_damage"] = [20, 20]
+
+        view = BattleView(iron, cap, 1, 2, None)
+        view.current_turn = 1
+        message = _DummyMessage()
+
+        # R1: Iron-Man nutzt Fliegen.
+        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=3, interaction_message=message)
+
+        # R2: Gegner nutzt 0-Schaden-Skill (Schild-Block) -> Flugphase muss trotzdem verbraucht werden.
+        hp_after_fliegen = view.player1_hp
+        await self._execute_attack_without_buffs(view, acting_user_id=2, attack_index=2, interaction_message=message)
+        self.assertEqual(view.player1_hp, hp_after_fliegen)
+
+        # R3: Landungsschlag.
+        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=0, interaction_message=message)
+
+        # R4: Danach trifft ein normaler Angriff wieder (kein weiteres Ausweichen).
+        hp_before_hit = view.player1_hp
+        await self._execute_attack_without_buffs(view, acting_user_id=2, attack_index=3, interaction_message=message)
+        self.assertEqual(view.player1_hp, hp_before_hit - 10)
+
+    async def test_real_flow_no_unfair_block_when_tarnung_followup_misses(self) -> None:
+        widow = copy.deepcopy(_find_card("Black Widow"))
+        iron = copy.deepcopy(_find_card("Iron-Man"))
+        widow["hp"] = 140
+        iron["hp"] = 140
+        widow["attacks"][0]["damage"] = [10, 10]  # Treten
+        iron["attacks"][0]["damage"] = [10, 10]   # Repulsor Strahlen
+        for effect in iron["attacks"][3].get("effects", []):
+            if effect.get("type") == "airborne_two_phase":
+                effect["landing_damage"] = [20, 20]
+
+        view = BattleView(widow, iron, 1, 2, None)
+        view.current_turn = 1
+        message = _DummyMessage()
+
+        # R1: Tarnung vorbereiten.
+        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=3, interaction_message=message)
+
+        # R2: Iron-Man nutzt Fliegen.
+        await self._execute_attack_without_buffs(view, acting_user_id=2, attack_index=3, interaction_message=message)
+
+        # R3: Widow-Angriff verfehlt wegen Flugphase -> Schutz darf NICHT aktiv werden, sondern bleibt gequeued.
+        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=0, interaction_message=message)
+        self.assertEqual(len(view.delayed_defense_queue[1]), 1)
+        self.assertFalse(any(e.get("type") == "stealth" for e in view.active_effects[1]))
+
+        # R4: Iron-Man-Landung muss Schaden machen (nicht unverdient geblockt).
+        hp_before_landing = view.player1_hp
+        await self._execute_attack_without_buffs(view, acting_user_id=2, attack_index=0, interaction_message=message)
+        self.assertEqual(view.player1_hp, hp_before_landing - 20)
 
     async def test_airborne_two_phase_helpers(self) -> None:
         player_card = {
@@ -982,6 +1191,7 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         view.start_airborne_two_phase(1, [20, 40], effect_events)
         self.assertTrue(any(e.get("type") == "airborne" for e in view.active_effects[1]))
         self.assertEqual(len(view.incoming_modifiers[1]), 1)
+        self.assertEqual(str(view.incoming_modifiers[1][0].get("source") or ""), "airborne")
         forced = view.resolve_forced_landing_if_due(1, effect_events)
         self.assertIsNotNone(forced)
         self.assertEqual(forced.get("damage"), [20, 40])
@@ -1476,13 +1686,35 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         view = MissionBattleView(player_card, bot_card, 1, 1, 1)
         effect_events: list[str] = []
         view.queue_delayed_defense(1, "evade", counter=10)
-        view.activate_delayed_defense_after_attack(1, effect_events)
+        view.activate_delayed_defense_after_attack(1, effect_events, attack_landed=True)
         self.assertEqual(len(view.incoming_modifiers[1]), 1)
         self.assertEqual(int(view.incoming_modifiers[1][0].get("counter", 0)), 10)
         view.start_airborne_two_phase(1, [20, 40], effect_events)
+        self.assertEqual(str(view.incoming_modifiers[1][1].get("source") or ""), "airborne")
         forced = view.resolve_forced_landing_if_due(1, effect_events)
         self.assertIsNotNone(forced)
         self.assertEqual(forced.get("damage"), [20, 40])
+
+    async def test_mission_delayed_defense_stays_queued_without_hit(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = MissionBattleView(player_card, bot_card, 1, 1, 1)
+        effect_events: list[str] = []
+        view.queue_delayed_defense(1, "evade", counter=10)
+        view.activate_delayed_defense_after_attack(1, effect_events, attack_landed=False)
+        self.assertEqual(len(view.incoming_modifiers[1]), 0)
+        self.assertEqual(len(view.delayed_defense_queue[1]), 1)
+        self.assertTrue(any("Aktivierung verschoben" in e for e in effect_events))
 
     async def test_mission_airborne_cooldown_starts_after_landing(self) -> None:
         player_card = {
@@ -1650,3 +1882,50 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         attack_buttons = [c for c in view.children if hasattr(c, "row") and c.row in (0, 1)][:4]
         self.assertIn("primary", str(attack_buttons[0].style).lower())
         self.assertIn("success", str(attack_buttons[1].style).lower())
+
+
+class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):
+    def test_alpha_intro_text_keeps_full_text(self) -> None:
+        with patch.object(bot_module, "ALPHA_PHASE_ENABLED", True):
+            text = bot_module.build_anfang_intro_text()
+        self.assertIn("/mission", text)
+        self.assertIn("/geschichte", text)
+
+    def test_intro_text_keeps_mission_and_story_when_alpha_disabled(self) -> None:
+        with patch.object(bot_module, "ALPHA_PHASE_ENABLED", False):
+            text = bot_module.build_anfang_intro_text()
+        self.assertIn("/mission", text)
+        self.assertIn("/geschichte", text)
+
+    async def test_anfang_view_hides_mission_and_story_buttons_in_alpha(self) -> None:
+        with patch.object(bot_module, "ALPHA_PHASE_ENABLED", True):
+            view = bot_module.AnfangView()
+        custom_ids = {getattr(child, "custom_id", None) for child in view.children}
+        self.assertNotIn("anfang:mission", custom_ids)
+        self.assertNotIn("anfang:story", custom_ids)
+
+    async def test_anfang_view_hides_mission_and_story_buttons_when_alpha_disabled(self) -> None:
+        with patch.object(bot_module, "ALPHA_PHASE_ENABLED", False):
+            view = bot_module.AnfangView()
+        custom_ids = {getattr(child, "custom_id", None) for child in view.children}
+        self.assertNotIn("anfang:mission", custom_ids)
+        self.assertNotIn("anfang:story", custom_ids)
+
+    def test_alpha_hides_set_mission_from_dev_and_visibility_lists(self) -> None:
+        has_dev_action = ("Set mission reset", "set_mission") in bot_module.DEV_ACTION_OPTIONS
+        has_visibility_item = any(key == "set_mission" for key, _label, _desc in bot_module.PANEL_STATIC_VISIBILITY_ITEMS)
+        if bot_module.ALPHA_PHASE_ENABLED:
+            self.assertFalse(has_dev_action)
+            self.assertFalse(has_visibility_item)
+        else:
+            self.assertTrue(has_dev_action)
+            self.assertTrue(has_visibility_item)
+
+    async def test_resend_pending_requests_skips_missions_in_alpha(self) -> None:
+        with (
+            patch.object(bot_module, "ALPHA_PHASE_ENABLED", True),
+            patch.object(bot_module, "get_pending_fight_requests", new=AsyncMock(return_value=[])),
+            patch.object(bot_module, "get_pending_mission_requests", new=AsyncMock(return_value=[])) as mission_mock,
+        ):
+            await bot_module.resend_pending_requests()
+        mission_mock.assert_not_awaited()

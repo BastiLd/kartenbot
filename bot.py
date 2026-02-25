@@ -59,6 +59,25 @@ KATABUMP_INTERACTION_WINDOW_SEC = 60
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
+
+def _env_flag_enabled(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = str(raw).strip().lower()
+    if value in {"1", "true", "on", "yes", "y", "ja"}:
+        return True
+    if value in {"0", "false", "off", "no", "n", "nein"}:
+        return False
+    logging.warning("Invalid boolean env %s=%r, fallback default=%s", name, raw, default)
+    return default
+
+
+ALPHA_PHASE_ENABLED = _env_flag_enabled("ALPHA_PHASE", default=True)
+ALPHA_HIDDEN_SLASH_COMMANDS = ("mission", "geschichte")
+ALPHA_FEATURE_DISABLED_TEXT = "🧪 Alpha-Phase: Mission und Story sind aktuell deaktiviert."
+
+
 class KatabumpCommandTree(app_commands.CommandTree):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.guild is None or interaction.channel_id is None:
@@ -134,6 +153,21 @@ def prune_admin_slash_commands() -> None:
             removed.append(name)
     if removed:
         logging.info("Pruned admin/dev slash commands: %s", ", ".join(removed))
+
+
+def prune_alpha_slash_commands() -> list[str]:
+    if not ALPHA_PHASE_ENABLED:
+        return []
+    removed = []
+    for name in ALPHA_HIDDEN_SLASH_COMMANDS:
+        cmd = bot.tree.remove_command(name)
+        if cmd is not None:
+            removed.append(name)
+    logging.info(
+        "Alpha phase active, hidden slash commands: %s",
+        ", ".join(removed) if removed else "none (already removed)",
+    )
+    return removed
 
 
 # Rollen-IDs für Admin/Owner (vom Nutzer bestätigt)
@@ -256,6 +290,26 @@ async def run_one_time_migrations() -> None:
         )
         await db.commit()
     logging.info("Applied migration: reset user_card_buffs and stored %s", RESET_BUFFS_MIGRATION_KEY)
+
+
+def build_anfang_intro_text() -> str:
+    text = (
+        "# **Rekrut.**\n\n"
+        "Hör gut zu. Ich bin Nick Fury, und wenn du Teil von etwas Größerem sein willst, bist du hier richtig. Willkommen auf dem Helicarrier. Wir haben alle Hände voll zu tun, und ich hoffe, du bist bereit, dir die Hände schmutzig zu machen.\n\n"
+        "Du willst wissen, wie du an die guten Sachen kommst? Täglich hast du die Chance, eine zufällige Karte aus dem Pool zu ziehen `[/täglich im Chat schreiben]`. Und wenn du eine doppelte Karte ziehst, verschwindet sie nicht einfach. Sie wird zu Staub umgewandelt. Sammle genug davon, um deine Karten zu verbessern und sie so noch mächtiger zu machen `[/verbessern im Chat schreiben]`.\n\n"
+        "Du bist neu hier und brauchst Training? Auf dem Helicarrier kannst du dich mit anderen anlegen und üben, bis deine Strategien sitzen `[/kampf im Chat schreiben]`.\n\n"
+    )
+    text += (
+        "Wenn du bereit für den echten Einsatz bist, stehen dir jeden Tag zwei Missionen zur Verfügung. Schließe sie ab und ich garantiere dir, du bekommst jeweils eine Karte als Belohnung `[/mission im Chat schreiben]`.\n\n"
+        "Für die Verrückten da draußen, die meinen, sie wären unschlagbar: Es gibt den Story-Modus. Du hast drei Leben, um die gesamte Geschichte zu überleben. Schaffst du das, wartet eine mysteriöse Belohnung auf dich `[/geschichte im Chat schreiben]`.\n\n"
+    )
+    text += "**Also los jetzt. Sag mir, was du tun willst. Wir haben keine Zeit zu verlieren.**"
+    return text
+
+
+async def _send_alpha_feature_blocked(interaction: discord.Interaction) -> None:
+    await _send_ephemeral(interaction, content=ALPHA_FEATURE_DISABLED_TEXT)
+
 
 def _format_amount_for_label(value) -> str | None:
     if value is None:
@@ -481,6 +535,7 @@ async def on_ready():
     await run_one_time_migrations()
     await restore_bot_presence_status()
     logging.info("Bot ist online als %s", bot.user)
+    prune_alpha_slash_commands()
     try:
         synced = await bot.tree.sync()
         logging.info("Slash-Commands synchronisiert: %s", len(synced))
@@ -490,6 +545,8 @@ async def on_ready():
     if not _persistent_views_registered:
         try:
             bot.add_view(AnfangView())
+            if ALPHA_PHASE_ENABLED:
+                bot.add_view(AlphaPhaseLegacyAnfangView())
             _persistent_views_registered = True
         except Exception:
             logging.exception("Failed to register persistent views")
@@ -754,7 +811,7 @@ def _build_mission_embed(mission_data: dict) -> discord.Embed:
     description = mission_data.get("description") or "Hier kommt später die Story. Hier kommt später die Story."
     reward_card = mission_data.get("reward_card") or {}
     waves = mission_data.get("waves", 0)
-    embed = discord.Embed(title=title, description=description)
+    embed = discord.Embed(title=title, description=description, color=_card_rarity_color(reward_card))
     embed.add_field(name="Wellen", value=f"{waves}", inline=True)
     if reward_card:
         embed.add_field(name="🎁 Belohnung", value=f"**{reward_card.get('name', '?')}**", inline=True)
@@ -963,7 +1020,11 @@ class ZieheKarteView(RestrictedView):
             return
         karte = random.choice(karten)
         await add_karte(interaction.user.id, karte["name"])
-        embed = discord.Embed(title=karte["name"], description=karte["beschreibung"])
+        embed = discord.Embed(
+            title=karte["name"],
+            description=karte["beschreibung"],
+            color=_card_rarity_color(karte),
+        )
         embed.set_image(url=karte["bild"])
         await interaction.response.send_message(embed=embed, view=ZieheKarteView(self.user_id))
 
@@ -981,12 +1042,20 @@ class MissionView(RestrictedView):
         karte, is_new_card = await add_mission_reward(self.user_id)
         
         if is_new_card:
-            embed = discord.Embed(title="Mission abgeschlossen!", description=f"Du hast **{karte['name']}** erhalten!")
+            embed = discord.Embed(
+                title="Mission abgeschlossen!",
+                description=f"Du hast **{karte['name']}** erhalten!",
+                color=_card_rarity_color(karte),
+            )
             embed.set_image(url=karte["bild"])
             await interaction.response.send_message(embed=embed, view=MissionView(self.user_id))
         else:
             # Karte wurde zu Infinitydust umgewandelt
-            embed = discord.Embed(title="💎 Mission abgeschlossen - Infinitydust!", description=f"Du hattest **{karte['name']}** bereits!")
+            embed = discord.Embed(
+                title="💎 Mission abgeschlossen - Infinitydust!",
+                description=f"Du hattest **{karte['name']}** bereits!",
+                color=_card_rarity_color(karte),
+            )
             embed.add_field(name="Umwandlung", value="Die Karte wurde zu **Infinitydust** umgewandelt!", inline=False)
             embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -1123,6 +1192,9 @@ class BattleView(RestrictedView):
     def has_stealth(self, player_id: int) -> bool:
         return self._find_effect(player_id, "stealth") is not None
 
+    def has_airborne(self, player_id: int) -> bool:
+        return self._find_effect(player_id, "airborne") is not None
+
     def consume_stealth(self, player_id: int) -> bool:
         effect = self._find_effect(player_id, "stealth")
         if not effect:
@@ -1249,6 +1321,7 @@ class BattleView(RestrictedView):
         defender_user,
         round_number,
         defender_remaining_hp,
+        attacker_remaining_hp: int | None = None,
         *,
         pre_effect_damage: int = 0,
         confusion_applied: bool = False,
@@ -1268,6 +1341,7 @@ class BattleView(RestrictedView):
             defender_user,
             round_number,
             defender_remaining_hp,
+            attacker_remaining_hp=attacker_remaining_hp,
             pre_effect_damage=pre_effect_damage,
             confusion_applied=confusion_applied,
             self_hit_damage=self_hit_damage,
@@ -1288,6 +1362,7 @@ class BattleView(RestrictedView):
             defender_user,
             round_number,
             defender_remaining_hp,
+            attacker_remaining_hp=attacker_remaining_hp,
             pre_effect_damage=pre_effect_damage,
             confusion_applied=confusion_applied,
             self_hit_damage=self_hit_damage,
@@ -1472,9 +1547,18 @@ class BattleView(RestrictedView):
             }
         )
 
-    def activate_delayed_defense_after_attack(self, player_id: int, effect_events: list[str]) -> None:
+    def activate_delayed_defense_after_attack(
+        self,
+        player_id: int,
+        effect_events: list[str],
+        *,
+        attack_landed: bool,
+    ) -> None:
         queued = list(self.delayed_defense_queue.get(player_id, []))
         if not queued:
+            return
+        if not attack_landed:
+            self._append_effect_event(effect_events, "Schutz bleibt vorbereitet: Kein Trefferschaden, Aktivierung verschoben.")
             return
         self.delayed_defense_queue[player_id] = []
         for entry in queued:
@@ -1510,7 +1594,7 @@ class BattleView(RestrictedView):
             "cooldown_attack_index": int(source_attack_index) if source_attack_index is not None else None,
             "cooldown_turns": max(0, int(cooldown_turns or 0)),
         }
-        self.queue_incoming_modifier(player_id, evade=True, counter=0, turns=1)
+        self.queue_incoming_modifier(player_id, evade=True, counter=0, turns=1, source="airborne")
         self._grant_airborne(player_id)
         self._append_effect_event(effect_events, "Flugphase aktiv: Der nächste gegnerische Angriff verfehlt.")
 
@@ -1612,6 +1696,7 @@ class BattleView(RestrictedView):
         evade: bool = False,
         counter: int = 0,
         turns: int = 1,
+        source: str | None = None,
     ) -> None:
         if turns <= 0:
             turns = 1
@@ -1625,8 +1710,26 @@ class BattleView(RestrictedView):
                     "cap": ("attack_min" if str(cap).strip().lower() == "attack_min" else (int(cap) if cap is not None else None)),
                     "evade": bool(evade),
                     "counter": max(0, int(counter)),
+                    "source": str(source).strip().lower() if source is not None else None,
                 }
             )
+
+    def _consume_airborne_evade_marker(self, player_id: int) -> bool:
+        modifiers = self.incoming_modifiers.get(player_id) or []
+        for idx, mod in enumerate(modifiers):
+            if not isinstance(mod, dict):
+                continue
+            if not bool(mod.get("evade")):
+                continue
+            if str(mod.get("source") or "").strip().lower() != "airborne":
+                continue
+            try:
+                modifiers.pop(idx)
+            except Exception:
+                logging.exception("Unexpected error")
+                return False
+            return True
+        return False
 
     def queue_outgoing_attack_modifier(
         self,
@@ -2282,6 +2385,10 @@ class BattleView(RestrictedView):
 
         if self.stunned_next_turn.get(self.current_turn, False):
             self.stunned_next_turn[self.current_turn] = False
+            skipped_player_id = self.current_turn
+            airborne_owner_id = self.player2_id if skipped_player_id == self.player1_id else self.player1_id
+            if self.airborne_pending_landing.get(airborne_owner_id):
+                self._consume_airborne_evade_marker(airborne_owner_id)
             await _safe_defer_interaction(interaction)
             self.current_turn = self.player2_id if self.current_turn == self.player1_id else self.player1_id
             self.reduce_cooldowns(self.current_turn)
@@ -2567,7 +2674,7 @@ class BattleView(RestrictedView):
                 final_damage, reflected_damage, dodged, counter_damage = self.resolve_incoming_modifiers(
                     defender_id,
                     actual_damage,
-                    ignore_evade=guaranteed_hit,
+                    ignore_evade=(guaranteed_hit and not self.has_airborne(defender_id)),
                     incoming_min_damage=min_damage,
                 )
                 absorbed_after = int(self.absorbed_damage.get(defender_id, 0) or 0)
@@ -2646,7 +2753,11 @@ class BattleView(RestrictedView):
         self.round_counter += 1
 
         if not is_reload_action:
-            self.activate_delayed_defense_after_attack(self.current_turn, effect_events)
+            self.activate_delayed_defense_after_attack(
+                self.current_turn,
+                effect_events,
+                attack_landed=bool(attack_hits_enemy and int(actual_damage or 0) > 0),
+            )
 
         # SIDE EFFECTS: Apply new effects from attack
         effects = attack.get("effects", [])
@@ -2849,6 +2960,7 @@ class BattleView(RestrictedView):
                 self.attack_cooldowns[previous_turn][landing_cd_index] = max(current_cd, landing_cd_turns)
         
         # Log now including confusion/self-hit if it applied
+        attacker_remaining_hp = self._hp_for(self.current_turn)
         defender_remaining_hp = self.player2_hp if self.current_turn == self.player1_id else self.player1_hp
         await self._record_battle_log(
             attacker_card,
@@ -2860,6 +2972,7 @@ class BattleView(RestrictedView):
             defender_user,
             self.round_counter,
             defender_remaining_hp,
+            attacker_remaining_hp=attacker_remaining_hp,
             pre_effect_damage=pre_burn_total,
             confusion_applied=confusion_applied,
             self_hit_damage=(self_damage if not attack_hits_enemy and 'self_damage' in locals() else 0),
@@ -2867,6 +2980,8 @@ class BattleView(RestrictedView):
             defender_status_icons=self._status_icons(defender_id),
             effect_events=effect_events,
         )
+        if self.airborne_pending_landing.get(defender_id):
+            self._consume_airborne_evade_marker(defender_id)
 
         # Nach dem Log-Eintrag auf Kampfende prüfen, damit der finale Treffer immer im Log landet.
         if self.player1_hp <= 0 or self.player2_hp <= 0:
@@ -2959,6 +3074,8 @@ class BattleView(RestrictedView):
 
         if self.stunned_next_turn.get(0, False):
             self.stunned_next_turn[0] = False
+            if self.airborne_pending_landing.get(self.player1_id):
+                self._consume_airborne_evade_marker(self.player1_id)
             self.current_turn = self.player1_id
             self.reduce_cooldowns(self.player1_id)
             await self.update_attack_buttons()
@@ -3171,7 +3288,7 @@ class BattleView(RestrictedView):
                 final_damage, reflected_damage, dodged, counter_damage = self.resolve_incoming_modifiers(
                     self.player1_id,
                     actual_damage,
-                    ignore_evade=guaranteed_hit,
+                    ignore_evade=(guaranteed_hit and not self.has_airborne(self.player1_id)),
                     incoming_min_damage=min_damage,
                 )
                 absorbed_after = int(self.absorbed_damage.get(self.player1_id, 0) or 0)
@@ -3258,7 +3375,11 @@ class BattleView(RestrictedView):
         player_user = message.guild.get_member(self.player1_id)
 
         if not is_reload_action:
-            self.activate_delayed_defense_after_attack(0, effect_events)
+            self.activate_delayed_defense_after_attack(
+                0,
+                effect_events,
+                attack_landed=bool(bot_hits_enemy and int(actual_damage or 0) > 0),
+            )
 
         # SIDE EFFECTS: Apply new effects from bot attack (nur wenn Treffer)
         effects = attack.get("effects", [])
@@ -3426,6 +3547,7 @@ class BattleView(RestrictedView):
             player_user,
             self.round_counter,
             self.player1_hp,
+            attacker_remaining_hp=self._hp_for(0),
             pre_effect_damage=pre_burn_total,
             confusion_applied=False,
             self_hit_damage=(self_damage if not bot_hits_enemy and 'self_damage' in locals() else 0),
@@ -3433,6 +3555,8 @@ class BattleView(RestrictedView):
             defender_status_icons=self._status_icons(self.player1_id),
             effect_events=effect_events,
         )
+        if self.airborne_pending_landing.get(self.player1_id):
+            self._consume_airborne_evade_marker(self.player1_id)
 
         if (not is_forced_landing) and (not is_reload_action) and attack.get("requires_reload"):
             self.set_reload_needed(0, attack_index, True)
@@ -4428,6 +4552,7 @@ class FightFeedbackView(RestrictedView):
         self._log_sent_to: set[int] = set()
         self._opted_out_by: set[int] = set()
         self._admin_close_posted = False
+        self._thread_close_scheduled = False
         if not isinstance(self.channel, discord.Thread):
             try:
                 self.remove_item(self.close_thread_btn)
@@ -4466,6 +4591,15 @@ class FightFeedbackView(RestrictedView):
         self._admin_close_posted = True
         try:
             await self.channel.send("Ein Admin/Owner kann den Thread jetzt schließen.", view=AdminCloseView(self.channel))
+        except Exception:
+            logging.exception("Unexpected error")
+
+    async def _close_thread_after_delay(self, delay_seconds: int = 3) -> None:
+        if not isinstance(self.channel, discord.Thread):
+            return
+        await asyncio.sleep(delay_seconds)
+        try:
+            await self.channel.delete()
         except Exception:
             logging.exception("Unexpected error")
 
@@ -4528,6 +4662,15 @@ class FightFeedbackView(RestrictedView):
             await interaction.response.send_message("Du hast bereits geantwortet.", ephemeral=True)
             return
         self._opted_out_by.add(interaction.user.id)
+        if isinstance(self.channel, discord.Thread):
+            if self._thread_close_scheduled:
+                await interaction.response.send_message("✅ Danke für dein Feedback! Thread wird bereits geschlossen.", ephemeral=True)
+                return
+            self._thread_close_scheduled = True
+            await interaction.response.send_message("✅ Danke für dein Feedback! Der Thread wird in 3 Sekunden geschlossen.", ephemeral=True)
+            self.stop()
+            asyncio.create_task(self._close_thread_after_delay(3))
+            return
         await interaction.response.send_message("✅ Danke für dein Feedback!", ephemeral=True)
 
     @ui.button(label="Thread schließen (Admin/Owner)", style=discord.ButtonStyle.secondary)
@@ -4646,6 +4789,24 @@ def _cards_by_rarity_group() -> dict[str, list[dict]]:
         grouped.setdefault(key, []).append(card)
     return grouped
 
+def _card_by_name_local(name: str | None) -> dict | None:
+    normalized = str(name or "").strip().lower()
+    if not normalized:
+        return None
+    for card in karten:
+        card_name = str(card.get("name") or "").strip().lower()
+        if card_name == normalized:
+            return card
+    return None
+
+def _card_rarity_color(card: dict | None) -> int | None:
+    if not isinstance(card, dict):
+        return None
+    rarity_key = _normalize_rarity_key(card.get("seltenheit"))
+    if rarity_key == "common":
+        return 0x3DE835
+    return None
+
 async def add_give_op_user(guild_id: int, user_id: int) -> None:
     async with db_context() as db:
         await db.execute(
@@ -4739,10 +4900,11 @@ async def set_maintenance_mode(guild_id: int, enabled: bool) -> None:
 async def täglich(interaction: discord.Interaction):
     visibility_key = command_visibility_key_for_interaction(interaction)
     now = int(time.time())
+    is_admin_user = await is_admin(interaction)
     async with db_context() as db:
         cursor = await db.execute("SELECT last_daily FROM user_daily WHERE user_id = ?", (interaction.user.id,))
         row = await cursor.fetchone()
-        if row and row[0] and now - row[0] < 86400:
+        if (not is_admin_user) and row and row[0] and now - row[0] < 86400:
             stunden = int((86400 - (now - row[0])) / 3600)
             await _send_ephemeral(interaction, content=f"Du kannst deine tägliche Belohnung erst in {stunden} Stunden abholen.")
             return
@@ -4754,19 +4916,31 @@ async def täglich(interaction: discord.Interaction):
     
     # Prüfe ob User die Karte schon hat
     is_new_card = await check_and_add_karte(user_id, karte)
+    card_name_text = str(karte.get("name") or "Unbekannte Karte")
+    embed_color = _card_rarity_color(karte)
     
     if is_new_card:
-        await _send_with_visibility(interaction, visibility_key, content=f"Du hast eine tägliche Belohnung erhalten: **{karte['name']}**!")
+        embed = discord.Embed(title="🎁 Tägliche Belohnung", description="Du hast eine tägliche Belohnung erhalten:", color=embed_color)
+        embed.add_field(name="Karte", value=f"**{card_name_text}**", inline=False)
+        if karte.get("bild"):
+            embed.set_image(url=karte["bild"])
+        await _send_with_visibility(interaction, visibility_key, embed=embed)
     else:
         # Karte wurde zu Infinitydust umgewandelt
-        embed = discord.Embed(title="💎 Tägliche Belohnung - Infinitydust!", description=f"Du hattest **{karte['name']}** bereits!")
+        embed = discord.Embed(title="💎 Tägliche Belohnung - Infinitydust!", description="Du hattest diese Karte bereits:", color=embed_color)
+        embed.add_field(name="Karte", value=f"**{card_name_text}**", inline=False)
         embed.add_field(name="Umwandlung", value="Die Karte wurde zu **Infinitydust** umgewandelt!", inline=False)
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+        if karte.get("bild"):
+            embed.set_image(url=karte["bild"])
         await _send_with_visibility(interaction, visibility_key, embed=embed)
 
 # Slash-Command: Mission starten
 @bot.tree.command(name="mission", description="Schicke dein Team auf eine Mission und erhalte eine Belohnung")
 async def mission(interaction: discord.Interaction):
+    if ALPHA_PHASE_ENABLED:
+        await _send_alpha_feature_blocked(interaction)
+        return
     if not await is_channel_allowed(interaction):
         return
     visibility_key = command_visibility_key_for_interaction(interaction)
@@ -4887,16 +5061,23 @@ async def start_mission_waves(interaction, mission_data, is_admin, ephemeral: bo
     
     # Prüfe ob User die Karte schon hat
     is_new_card = await check_and_add_karte(interaction.user.id, reward_card)
+    reward_color = _card_rarity_color(reward_card)
     
     if is_new_card:
-        success_embed = discord.Embed(title="🏆 Mission erfolgreich!", 
-                                     description=f"Du hast alle {waves} Wellen überstanden und **{reward_card['name']}** erhalten!")
+        success_embed = discord.Embed(
+            title="🏆 Mission erfolgreich!",
+            description=f"Du hast alle {waves} Wellen überstanden und **{reward_card['name']}** erhalten!",
+            color=reward_color,
+        )
         success_embed.set_image(url=reward_card["bild"])
         await interaction.followup.send(embed=success_embed, ephemeral=ephemeral)
     else:
         # Karte wurde zu Infinitydust umgewandelt
-        success_embed = discord.Embed(title="💎 Mission erfolgreich - Infinitydust!", 
-                                     description=f"Du hast alle {waves} Wellen überstanden!")
+        success_embed = discord.Embed(
+            title="💎 Mission erfolgreich - Infinitydust!",
+            description=f"Du hast alle {waves} Wellen überstanden!",
+            color=reward_color,
+        )
         success_embed.add_field(name="Belohnung", value=f"Du hattest **{reward_card['name']}** bereits - wurde zu **Infinitydust** umgewandelt!", inline=False)
         success_embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
         await interaction.followup.send(embed=success_embed, ephemeral=ephemeral)
@@ -4939,6 +5120,9 @@ async def execute_mission_wave(interaction, wave_num, total_waves, player_card, 
 # Slash-Command: Story spielen
 @bot.tree.command(name="geschichte", description="Starte eine interaktive Story")
 async def story(interaction: discord.Interaction):
+    if ALPHA_PHASE_ENABLED:
+        await _send_alpha_feature_blocked(interaction)
+        return
     if not await is_channel_allowed(interaction):
         return
     visibility_key = command_visibility_key_for_interaction(interaction)
@@ -5758,6 +5942,8 @@ async def fight(interaction: discord.Interaction):
 class AnfangView(RestrictedView):
     def __init__(self):
         super().__init__(timeout=None)
+        self.remove_item(self.btn_mission)
+        self.remove_item(self.btn_story)
 
     @ui.button(label="tägliche Karte", style=discord.ButtonStyle.success, row=0, custom_id="anfang:daily")
     async def btn_daily(self, interaction: discord.Interaction, button: ui.Button):
@@ -5776,13 +5962,33 @@ class AnfangView(RestrictedView):
 
     @ui.button(label="Mission", style=discord.ButtonStyle.secondary, row=0, custom_id="anfang:mission")
     async def btn_mission(self, interaction: discord.Interaction, button: ui.Button):
+        if ALPHA_PHASE_ENABLED:
+            await _send_alpha_feature_blocked(interaction)
+            return
         # Leitet zum Missions-Flow weiter
         await mission.callback(interaction)
 
     @ui.button(label="Story", style=discord.ButtonStyle.secondary, row=0, custom_id="anfang:story")
     async def btn_story(self, interaction: discord.Interaction, button: ui.Button):
+        if ALPHA_PHASE_ENABLED:
+            await _send_alpha_feature_blocked(interaction)
+            return
         # Leitet zum Story-Flow weiter
         await story.callback(interaction)
+
+
+class AlphaPhaseLegacyAnfangView(RestrictedView):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="Mission", style=discord.ButtonStyle.secondary, custom_id="anfang:mission")
+    async def legacy_block_mission(self, interaction: discord.Interaction, button: ui.Button):
+        await _send_alpha_feature_blocked(interaction)
+
+    @ui.button(label="Story", style=discord.ButtonStyle.secondary, custom_id="anfang:story")
+    async def legacy_block_story(self, interaction: discord.Interaction, button: ui.Button):
+        await _send_alpha_feature_blocked(interaction)
+
 
 class IntroEphemeralPromptView(RestrictedView):
     def __init__(self, user_id: int):
@@ -5795,15 +6001,7 @@ class IntroEphemeralPromptView(RestrictedView):
             await interaction.response.send_message("Das ist nicht für dich gedacht.", ephemeral=True)
             return
         view = AnfangView()
-        text = (
-            "# **Rekrut.**\n\n"
-            "Hör gut zu. Ich bin Nick Fury, und wenn du Teil von etwas Größerem sein willst, bist du hier richtig. Willkommen auf dem Helicarrier. Wir haben alle Hände voll zu tun, und ich hoffe, du bist bereit, dir die Hände schmutzig zu machen.\n\n"
-            "Du willst wissen, wie du an die guten Sachen kommst? Täglich hast du die Chance, eine zufällige Karte aus dem Pool zu ziehen `[/täglich im Chat schreiben]`. Und wenn du eine doppelte Karte ziehst, verschwindet sie nicht einfach. Sie wird zu Staub umgewandelt. Sammle genug davon, um deine Karten zu verbessern und sie so noch mächtiger zu machen `[/verbessern im Chat schreiben]`.\n\n"
-            "Du bist neu hier und brauchst Training? Auf dem Helicarrier kannst du dich mit anderen anlegen und üben, bis deine Strategien sitzen `[/kampf im Chat schreiben]`.\n\n"
-            "Wenn du bereit für den echten Einsatz bist, stehen dir jeden Tag zwei Missionen zur Verfügung. Schließe sie ab und ich garantiere dir, du bekommst jeweils eine Karte als Belohnung `[/mission im Chat schreiben]`.\n\n"
-            "Für die Verrückten da draußen, die meinen, sie wären unschlagbar: Es gibt den Story-Modus. Du hast drei Leben, um die gesamte Geschichte zu überleben. Schaffst du das, wartet eine mysteriöse Belohnung auf dich `[/geschichte im Chat schreiben]`.\n\n"
-            "**Also los jetzt. Sag mir, was du tun willst. Wir haben keine Zeit zu verlieren.**"
-        )
+        text = build_anfang_intro_text()
         await interaction.response.send_message(content=text, view=view, ephemeral=True)
 
 
@@ -5819,15 +6017,7 @@ async def anfang(interaction: discord.Interaction, action: str | None = None):
     if not await is_channel_allowed(interaction):
         return
 
-    text = (
-        "# **Rekrut.**\n\n"
-        "Hör gut zu. Ich bin Nick Fury, und wenn du Teil von etwas Größerem sein willst, bist du hier richtig. Willkommen auf dem Helicarrier. Wir haben alle Hände voll zu tun, und ich hoffe, du bist bereit, dir die Hände schmutzig zu machen.\n\n"
-        "Du willst wissen, wie du an die guten Sachen kommst? Täglich hast du die Chance, eine zufällige Karte aus dem Pool zu ziehen `[/täglich im Chat schreiben]`. Und wenn du eine doppelte Karte ziehst, verschwindet sie nicht einfach. Sie wird zu Staub umgewandelt. Sammle genug davon, um deine Karten zu verbessern und sie so noch mächtiger zu machen `[/verbessern im Chat schreiben]`.\n\n"
-        "Du bist neu hier und brauchst Training? Auf dem Helicarrier kannst du dich mit anderen anlegen und üben, bis deine Strategien sitzen `[/kampf im Chat schreiben]`.\n\n"
-        "Wenn du bereit für den echten Einsatz bist, stehen dir jeden Tag zwei Missionen zur Verfügung. Schließe sie ab und ich garantiere dir, du bekommst jeweils eine Karte als Belohnung `[/mission im Chat schreiben]`.\n\n"
-        "Für die Verrückten da draußen, die meinen, sie wären unschlagbar: Es gibt den Story-Modus. Du hast drei Leben, um die gesamte Geschichte zu überleben. Schaffst du das, wartet eine mysteriöse Belohnung auf dich `[/geschichte im Chat schreiben]`.\n\n"
-        "**Also los jetzt. Sag mir, was du tun willst. Wir haben keine Zeit zu verlieren.**"
-    )
+    text = build_anfang_intro_text()
 
     view = AnfangView()
     if interaction.guild is None:
@@ -6048,7 +6238,11 @@ class VaultView(RestrictedView):
                 if not karte:
                     await inter.response.send_message("Karte nicht gefunden.", ephemeral=True)
                     return
-                embed = discord.Embed(title=karte["name"], description=karte["beschreibung"])
+                embed = discord.Embed(
+                    title=karte["name"],
+                    description=karte["beschreibung"],
+                    color=_card_rarity_color(karte),
+                )
                 embed.set_image(url=karte["bild"])
                 
                 # Attacken + Schaden unter der Karte anzeigen (inkl. /verbessern-Buffs des Users)
@@ -6111,7 +6305,11 @@ class VaultView(RestrictedView):
                     if not karte:
                         await ii.response.send_message("Karte nicht gefunden.", ephemeral=True)
                         return
-                    embed = discord.Embed(title=karte["name"], description=karte["beschreibung"])
+                    embed = discord.Embed(
+                        title=karte["name"],
+                        description=karte["beschreibung"],
+                        color=_card_rarity_color(karte),
+                    )
                     embed.set_image(url=karte["bild"])
                     
                     # Attacken + Schaden unter der Karte anzeigen (inkl. /verbessern-Buffs des Users)
@@ -6433,16 +6631,25 @@ async def give(interaction: discord.Interaction):
     # Normale Karte dem Nutzer geben
     selected_card = await get_karte_by_name(selected_card_name)
     is_new_card = await check_and_add_karte(target_user_id, selected_card)
+    selected_color = _card_rarity_color(selected_card) if selected_card else _card_rarity_color(_card_by_name_local(selected_card_name))
     
     # Erfolgsnachricht (öffentlich)
     if is_new_card:
-        embed = discord.Embed(title="🎁 Karte verschenkt!", description=f"{interaction.user.mention} hat **{selected_card_name}** an {target_user.mention} gegeben!")
+        embed = discord.Embed(
+            title="🎁 Karte verschenkt!",
+            description=f"{interaction.user.mention} hat **{selected_card_name}** an {target_user.mention} gegeben!",
+            color=selected_color,
+        )
         if selected_card:
             embed.set_image(url=selected_card["bild"])
         await _send_with_visibility(interaction, visibility_key, embed=embed)
     else:
         # Karte wurde zu Infinitydust umgewandelt
-        embed = discord.Embed(title="💎 Karte verschenkt - Infinitydust!", description=f"{interaction.user.mention} hat **{selected_card_name}** an {target_user.mention} gegeben!")
+        embed = discord.Embed(
+            title="💎 Karte verschenkt - Infinitydust!",
+            description=f"{interaction.user.mention} hat **{selected_card_name}** an {target_user.mention} gegeben!",
+            color=selected_color,
+        )
         embed.add_field(name="Umwandlung", value=f"{target_user.mention} hatte die Karte bereits - wurde zu **Infinitydust** umgewandelt!", inline=False)
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
         await _send_with_visibility(interaction, visibility_key, embed=embed)
@@ -6874,6 +7081,9 @@ class MissionBattleView(RestrictedView):
     def has_stealth(self, player_id: int) -> bool:
         return self._find_effect(player_id, "stealth") is not None
 
+    def has_airborne(self, player_id: int) -> bool:
+        return self._find_effect(player_id, "airborne") is not None
+
     def consume_stealth(self, player_id: int) -> bool:
         effect = self._find_effect(player_id, "stealth")
         if not effect:
@@ -6944,9 +7154,18 @@ class MissionBattleView(RestrictedView):
             }
         )
 
-    def activate_delayed_defense_after_attack(self, player_id: int, effect_events: list[str]) -> None:
+    def activate_delayed_defense_after_attack(
+        self,
+        player_id: int,
+        effect_events: list[str],
+        *,
+        attack_landed: bool,
+    ) -> None:
         queued = list(self.delayed_defense_queue.get(player_id, []))
         if not queued:
+            return
+        if not attack_landed:
+            self._append_effect_event(effect_events, "Schutz bleibt vorbereitet: Kein Trefferschaden, Aktivierung verschoben.")
             return
         self.delayed_defense_queue[player_id] = []
         for entry in queued:
@@ -6982,7 +7201,7 @@ class MissionBattleView(RestrictedView):
             "cooldown_attack_index": int(source_attack_index) if source_attack_index is not None else None,
             "cooldown_turns": max(0, int(cooldown_turns or 0)),
         }
-        self.queue_incoming_modifier(player_id, evade=True, counter=0, turns=1)
+        self.queue_incoming_modifier(player_id, evade=True, counter=0, turns=1, source="airborne")
         self._grant_airborne(player_id)
         self._append_effect_event(effect_events, "Flugphase aktiv: Der nächste gegnerische Angriff verfehlt.")
 
@@ -7084,6 +7303,7 @@ class MissionBattleView(RestrictedView):
         evade: bool = False,
         counter: int = 0,
         turns: int = 1,
+        source: str | None = None,
     ) -> None:
         if turns <= 0:
             turns = 1
@@ -7097,8 +7317,26 @@ class MissionBattleView(RestrictedView):
                     "cap": ("attack_min" if str(cap).strip().lower() == "attack_min" else (int(cap) if cap is not None else None)),
                     "evade": bool(evade),
                     "counter": max(0, int(counter)),
+                    "source": str(source).strip().lower() if source is not None else None,
                 }
             )
+
+    def _consume_airborne_evade_marker(self, player_id: int) -> bool:
+        modifiers = self.incoming_modifiers.get(player_id) or []
+        for idx, mod in enumerate(modifiers):
+            if not isinstance(mod, dict):
+                continue
+            if not bool(mod.get("evade")):
+                continue
+            if str(mod.get("source") or "").strip().lower() != "airborne":
+                continue
+            try:
+                modifiers.pop(idx)
+            except Exception:
+                logging.exception("Unexpected error")
+                return False
+            return True
+        return False
 
     def queue_outgoing_attack_modifier(
         self,
@@ -7676,7 +7914,7 @@ class MissionBattleView(RestrictedView):
                 final_damage, reflected_damage, dodged, counter_damage = self.resolve_incoming_modifiers(
                     0,
                     actual_damage,
-                    ignore_evade=guaranteed_hit,
+                    ignore_evade=(guaranteed_hit and not self.has_airborne(0)),
                     incoming_min_damage=min_damage,
                 )
                 absorbed_after = int(self.absorbed_damage.get(0, 0) or 0)
@@ -7753,7 +7991,11 @@ class MissionBattleView(RestrictedView):
         self.round_counter += 1
 
         if not is_reload_action:
-            self.activate_delayed_defense_after_attack(self.user_id, effect_events)
+            self.activate_delayed_defense_after_attack(
+                self.user_id,
+                effect_events,
+                attack_landed=bool(hits_enemy and int(actual_damage or 0) > 0),
+            )
 
         # Apply new effects from player's attack
         confusion_applied = False
@@ -7925,6 +8167,7 @@ class MissionBattleView(RestrictedView):
                 "Bot",
                 self.round_counter,
                 self.bot_hp,
+                attacker_remaining_hp=self.player_hp,
                 pre_effect_damage=pre_burn_total,
                 confusion_applied=confusion_applied,
                 self_hit_damage=(self_damage if not hits_enemy and 'self_damage' in locals() else 0),
@@ -7933,6 +8176,8 @@ class MissionBattleView(RestrictedView):
                 effect_events=effect_events,
             )
             await self._safe_edit_battle_log(log_embed)
+        if self.airborne_pending_landing.get(0):
+            self._consume_airborne_evade_marker(0)
 
         if (not is_forced_landing) and (not is_reload_action) and attack.get("requires_reload"):
             self.set_reload_needed(self.user_id, attack_index, True)
@@ -8009,6 +8254,8 @@ class MissionBattleView(RestrictedView):
 
         if self.stunned_next_turn.get(0, False):
             self.stunned_next_turn[0] = False
+            if self.airborne_pending_landing.get(self.user_id):
+                self._consume_airborne_evade_marker(self.user_id)
             self.reduce_cooldowns_user()
             self.update_attack_buttons_mission()
             embed = discord.Embed(
@@ -8213,7 +8460,7 @@ class MissionBattleView(RestrictedView):
                     final_damage, reflected_damage, dodged, counter_damage = self.resolve_incoming_modifiers(
                         self.user_id,
                         actual_damage,
-                        ignore_evade=guaranteed_hit,
+                        ignore_evade=(guaranteed_hit and not self.has_airborne(self.user_id)),
                         incoming_min_damage=min_damage,
                     )
                     absorbed_after = int(self.absorbed_damage.get(self.user_id, 0) or 0)
@@ -8290,7 +8537,11 @@ class MissionBattleView(RestrictedView):
             self.round_counter += 1
 
             if not is_bot_reload_action:
-                self.activate_delayed_defense_after_attack(0, bot_effect_events)
+                self.activate_delayed_defense_after_attack(
+                    0,
+                    bot_effect_events,
+                    attack_landed=bool(bot_hits_enemy and int(actual_damage or 0) > 0),
+                )
 
             # SIDE EFFECTS: Apply new effects from bot attack
             effects = attack.get("effects", [])
@@ -8462,12 +8713,15 @@ class MissionBattleView(RestrictedView):
                     interaction.user,
                     self.round_counter,
                     self.player_hp,
+                    attacker_remaining_hp=self.bot_hp,
                     pre_effect_damage=pre_burn_total_player,
                     attacker_status_icons=self._status_icons(0),
                     defender_status_icons=self._status_icons(self.user_id),
                     effect_events=bot_effect_events,
                 )
                 await self._safe_edit_battle_log(log_embed)
+            if self.airborne_pending_landing.get(self.user_id):
+                self._consume_airborne_evade_marker(self.user_id)
 
             if (not is_forced_bot_landing) and (not is_bot_reload_action) and attack.get("requires_reload"):
                 self.set_reload_needed(0, best_index, True)
@@ -8535,6 +8789,8 @@ class MissionBattleView(RestrictedView):
             await interaction.followup.edit_message(interaction.message.id, embed=embed, view=self)
         else:
             # Bot hat keine Attacken verfügbar (alle auf Cooldown) - überspringe Bot-Zug
+            if self.airborne_pending_landing.get(self.user_id):
+                self._consume_airborne_evade_marker(self.user_id)
             self.reduce_cooldowns_user()
             self.update_attack_buttons_mission()
             
@@ -8661,6 +8917,10 @@ async def resend_pending_requests() -> None:
         except Exception:
             logging.exception("Failed to resend fight request")
 
+    if ALPHA_PHASE_ENABLED:
+        logging.info("Alpha phase active: skipping mission request resend.")
+        return
+
     try:
         mission_rows = await get_pending_mission_requests()
     except Exception:
@@ -8733,6 +8993,8 @@ PANEL_STATIC_VISIBILITY_ITEMS: list[tuple[str, str, str]] = [
     ("bot_status", "Bot-Status", "Status-Menü"),
     ("test_report", "Command-Report", "Slash-Command Bericht"),
 ]
+if ALPHA_PHASE_ENABLED:
+    PANEL_STATIC_VISIBILITY_ITEMS = [item for item in PANEL_STATIC_VISIBILITY_ITEMS if item[0] != "set_mission"]
 
 def _visibility_label(value: str) -> str:
     return "öffentlich" if value == VISIBILITY_PUBLIC else "nur sichtbar"
@@ -9214,8 +9476,9 @@ async def send_debug_user(interaction: discord.Interaction, user_id: int, user_n
     embed.add_field(name="Infinitydust", value=str(infinitydust), inline=True)
     embed.add_field(name="Buffs", value=str(buffs), inline=True)
     embed.add_field(name="Daily", value=str(last_daily), inline=True)
-    embed.add_field(name="Mission Count", value=str(mission_count), inline=True)
-    embed.add_field(name="Mission Reset", value=str(last_mission_reset), inline=True)
+    if not ALPHA_PHASE_ENABLED:
+        embed.add_field(name="Mission Count", value=str(mission_count), inline=True)
+        embed.add_field(name="Mission Reset", value=str(last_mission_reset), inline=True)
     await _send_with_visibility(interaction, visibility_key, embed=embed)
 
 async def send_logs_last(interaction: discord.Interaction, count: int, visibility_key: str | None = None):
@@ -9501,6 +9764,8 @@ DEV_ACTION_OPTIONS: list[tuple[str, str]] = [
     ("Command-Report", "test_report"),
     ("Nachrichten-Sichtbarkeit", "visibility_settings"),
 ]
+if ALPHA_PHASE_ENABLED:
+    DEV_ACTION_OPTIONS = [item for item in DEV_ACTION_OPTIONS if item[1] != "set_mission"]
 
 class DevActionSelect(ui.Select):
     def __init__(
@@ -9760,6 +10025,13 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
         await _send_with_visibility(interaction, "set_daily", content=f"Daily für {user_name} zurückgesetzt.")
         return
     if action == "set_mission":
+        if ALPHA_PHASE_ENABLED:
+            await _send_with_visibility(
+                interaction,
+                "set_mission",
+                content="🧪 Alpha-Phase: Mission-Reset ist aktuell deaktiviert.",
+            )
+            return
         user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Mission-Reset:")
         if not user_id:
             return
@@ -9790,6 +10062,7 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
         await send_debug_user(interaction, user_id, user_name, visibility_key="debug_user")
         return
     if action == "debug_sync":
+        prune_alpha_slash_commands()
         synced = await bot.tree.sync()
         logging.info("Debug sync by %s; synced=%s", interaction.user.id, len(synced))
         await _send_with_visibility(interaction, "debug_sync", content=f"Sync abgeschlossen: {len(synced)} Commands.")

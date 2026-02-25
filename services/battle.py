@@ -245,6 +245,7 @@ def build_battle_log_entry(
     defender_user,
     round_number,
     defender_remaining_hp,
+    attacker_remaining_hp: int | None = None,
     pre_effect_damage: int = 0,
     confusion_applied: bool = False,
     self_hit_damage: int = 0,
@@ -283,12 +284,17 @@ def build_battle_log_entry(
             f"**{actual_damage} Schaden{burn_suffix}{confusion_suffix}{self_hit_suffix}** an "
             f"**{defender_display}s {defender_name}**"
         )
+    hp_display = defender_display
+    hp_value = int(defender_remaining_hp or 0)
+    if int(actual_damage or 0) == 0 and heal_amount > 0 and attacker_remaining_hp is not None:
+        hp_display = attacker_display
+        hp_value = int(attacker_remaining_hp)
     new_entry = (
         f"\n\n**Runde {round_number}:**\n"
         f"{critical_text}\n"
         f"{attack_line}"
         f"{effect_text}\n"
-        f"\U0001f6e1\ufe0f {defender_display} hat jetzt noch **{defender_remaining_hp} Leben**."
+        f"\U0001f6e1\ufe0f {hp_display} hat jetzt noch **{hp_value} Leben**."
     )
     if int(actual_damage or 0) == 0 and heal_amount > 0:
         summary_line = (
@@ -314,6 +320,7 @@ def update_battle_log(
     defender_user,
     round_number,
     defender_remaining_hp,
+    attacker_remaining_hp: int | None = None,
     pre_effect_damage: int = 0,
     confusion_applied: bool = False,
     self_hit_damage: int = 0,
@@ -333,6 +340,7 @@ def update_battle_log(
         defender_user,
         round_number,
         defender_remaining_hp,
+        attacker_remaining_hp=attacker_remaining_hp,
         pre_effect_damage=pre_effect_damage,
         confusion_applied=confusion_applied,
         self_hit_damage=self_hit_damage,
