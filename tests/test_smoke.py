@@ -3,6 +3,7 @@ import random
 import time
 import unittest
 
+import bot
 from botcore.bootstrap import BOT_START_TIME, build_bot_intents
 from db import close_db, init_db
 from services.battle import calculate_damage
@@ -19,6 +20,41 @@ class SmokeTests(unittest.TestCase):
 
     def test_bot_start_time_initialized(self) -> None:
         self.assertGreater(BOT_START_TIME, 0)
+
+    def test_command_registration_stays_complete_after_split(self) -> None:
+        def flatten(commands, prefix="") -> set[str]:
+            names: set[str] = set()
+            for command in commands:
+                if getattr(command, "commands", None):
+                    names.update(flatten(command.commands, prefix=f"{prefix}{command.name} "))
+                else:
+                    names.add(f"{prefix}{command.name}")
+            return names
+
+        command_names = flatten(bot.bot.tree.get_commands())
+        expected = {
+            "anfang",
+            "bot-status",
+            "eingeladen",
+            "entwicklerpanel",
+            "geschichte",
+            "intro-zuruecksetzen",
+            "kampf",
+            "kanal-freigeben",
+            "karte-geben",
+            "konfigurieren entfernen",
+            "konfigurieren hinzufuegen",
+            "konfigurieren liste",
+            "mission",
+            "op-verwaltung",
+            "sammlung",
+            "sammlung-ansehen",
+            "statistik balance",
+            "täglich",
+            "test-bericht",
+            "verbessern",
+        }
+        self.assertTrue(expected.issubset(command_names))
 
     def test_calculate_damage_bounds(self) -> None:
         random.seed(42)
