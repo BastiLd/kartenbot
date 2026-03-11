@@ -4,14 +4,19 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $venvPython = Join-Path $root ".venv\Scripts\python.exe"
 $requirements = Join-Path $root "requirements.txt"
+$pythonLauncher = $null
 
-if (-not (Get-Command py -ErrorAction SilentlyContinue)) {
-    throw "Python launcher 'py' wurde nicht gefunden. Installiere Python mit aktiviertem PATH/Launcher."
+if (Get-Command py -ErrorAction SilentlyContinue) {
+    $pythonLauncher = "py"
+} elseif (Get-Command python -ErrorAction SilentlyContinue) {
+    $pythonLauncher = "python"
+} else {
+    throw "Weder 'py' noch 'python' wurde gefunden. Installiere Python mit aktiviertem PATH/Launcher."
 }
 
 if (-not (Test-Path $venvPython)) {
     Write-Host "Erstelle .venv ..."
-    & py -m venv (Join-Path $root ".venv")
+    & $pythonLauncher -m venv (Join-Path $root ".venv")
 }
 
 Write-Host "Installiere Abhängigkeiten ..."
