@@ -17,7 +17,8 @@ import discord
 from discord import app_commands, ui, SelectOption
 from discord.ext import commands
 
-from config import get_bot_token
+from botcore.bootstrap import BOT_START_TIME, build_bot, run_bot
+from botcore.logging_utils import LOG_PATH, configure_logging, get_error_count
 from db import DB_PATH, close_db, db_context, init_db
 from karten import karten
 from services.battle import (
@@ -34,26 +35,8 @@ from services.battle import (
 )
 import secrets
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+configure_logging()
 
-LOG_PATH = Path("bot.log")
-ERROR_COUNT = 0
-
-class ErrorCounter(logging.Handler):
-    def emit(self, record):
-        global ERROR_COUNT
-        if record.levelno >= logging.ERROR:
-            ERROR_COUNT += 1
-
-error_counter = ErrorCounter()
-logging.getLogger().addHandler(error_counter)
-
-file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
-file_handler.setLevel(logging.INFO)
-file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-logging.getLogger().addHandler(file_handler)
-
-BOT_START_TIME = time.time()
 KATABUMP_MAX_INTERACTIONS_PER_MIN = 200
 KATABUMP_INTERACTION_WINDOW_SEC = 60
 _interaction_timestamps = deque()
@@ -123,11 +106,7 @@ class KatabumpCommandTree(app_commands.CommandTree):
         return True
 
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-intents.presences = True
-bot = commands.Bot(command_prefix="!", intents=intents, tree_cls=KatabumpCommandTree)
+bot = build_bot(tree_cls=KatabumpCommandTree)
 
 def create_bot() -> commands.Bot:
     return bot
@@ -5582,7 +5561,7 @@ class InviteUserSelect(ui.Select):
             return
 
         invited_user_id = int(self.values[0])
-        print(f"[INVITED] selected_inviter_id={invited_user_id} by user={interaction.user.id}")
+        logging.info("[INVITED] selected_inviter_id=%s user=%s", invited_user_id, interaction.user.id)
 
         # Prüfe nochmal ob der Einlader den Command schon mal genutzt hat (nur für Nicht-Admins)
         is_admin_user = await is_admin(interaction)
@@ -5593,7 +5572,7 @@ class InviteUserSelect(ui.Select):
                     (self.inviter_id,),
                 )
                 row = await cursor.fetchone()
-                print(f"[INVITED] used_invite check inviter={self.inviter_id} row={row}")
+                logging.info("[INVITED] used_invite check inviter=%s row=%s", self.inviter_id, row)
                 if row and row[0] == 1:
                     await interaction.response.send_message("❌ Du hast den `/eingeladen` Command bereits verwendet! Nur Admins können ihn mehrfach nutzen.", ephemeral=True)
                     return
@@ -5614,7 +5593,11 @@ class InviteUserSelect(ui.Select):
         # Gib beiden Usern 1x Infinitydust
         await add_infinitydust(self.inviter_id, 1)
         await add_infinitydust(invited_user_id, 1)
-        print(f"[INVITED] awarded infinitydust to inviter={self.inviter_id} and invited={invited_user_id}")
+        logging.info(
+            "[INVITED] awarded infinitydust inviter=%s invited=%s",
+            self.inviter_id,
+            invited_user_id,
+        )
 
         # Hole User-Namen für die Nachricht
         inviter = interaction.user
@@ -5657,7 +5640,12 @@ class DustAmountView(RestrictedView):
 @bot.tree.command(name="eingeladen", description="Wähle wer dich eingeladen hat - beide erhalten 1x Infinitydust [Einmalig]")
 async def eingeladen(interaction: discord.Interaction):
     try:
-        print(f"[INVITED] /eingeladen invoked by user={interaction.user.id} guild={interaction.guild_id} channel={interaction.channel_id}")
+        logging.info(
+            "[INVITED] command invoked user=%s guild=%s channel=%s",
+            interaction.user.id,
+            interaction.guild_id,
+            interaction.channel_id,
+        )
         visibility_key = command_visibility_key_for_interaction(interaction)
         visibility = await get_message_visibility(interaction.guild_id, visibility_key) if visibility_key else VISIBILITY_PRIVATE
         ephemeral = visibility != VISIBILITY_PUBLIC
@@ -5665,7 +5653,7 @@ async def eingeladen(interaction: discord.Interaction):
         
         user_id = interaction.user.id
         is_admin_user = await is_admin(interaction)
-        print(f"[INVITED] is_admin_user={is_admin_user} for user={interaction.user.id}")
+        logging.info("[INVITED] is_admin_user=%s user=%s", is_admin_user, interaction.user.id)
         
         # Hole alle User die den Bot schon mal genutzt haben
         async with db_context() as db:
@@ -5695,7 +5683,7 @@ async def eingeladen(interaction: discord.Interaction):
             
             # Eigene User ID entfernen
             all_user_ids.discard(user_id)
-            print(f"[INVITED] candidates_found={len(all_user_ids)} for user={user_id}")
+            logging.info("[INVITED] candidates_found=%s user=%s", len(all_user_ids), user_id)
             
             if not all_user_ids:
                 await interaction.followup.send("❌ Keine anderen Spieler gefunden! Es müssen andere Spieler den Bot bereits genutzt haben.", ephemeral=True)
@@ -5720,8 +5708,8 @@ async def eingeladen(interaction: discord.Interaction):
         
     except discord.NotFound:
         logging.info("Invite interaction message no longer exists")
-    except Exception as e:
-        print(f"Fehler in eingeladen command: {e}")
+    except Exception:
+        logging.exception("Fehler in eingeladen command")
         try:
             await interaction.followup.send("❌ Ein Fehler ist aufgetreten. Bitte versuche es erneut.", ephemeral=True)
         except:
@@ -9434,7 +9422,7 @@ async def send_health(interaction: discord.Interaction, visibility_key: str | No
     embed.add_field(name="Guilds", value=str(guild_count), inline=True)
     embed.add_field(name="Python", value=sys.version.split()[0], inline=True)
     embed.add_field(name="DB Path", value=str(DB_PATH), inline=True)
-    embed.add_field(name="Error Count", value=str(ERROR_COUNT), inline=True)
+    embed.add_field(name="Error Count", value=str(get_error_count()), inline=True)
     await _send_with_visibility(interaction, visibility_key, embed=embed)
 
 async def send_db_backup(interaction: discord.Interaction, visibility_key: str | None = None):
@@ -10472,9 +10460,5 @@ async def bot_status(interaction: discord.Interaction):
     visibility_key = command_visibility_key_for_interaction(interaction)
     await send_bot_status(interaction, visibility_key=visibility_key)
 if __name__ == "__main__":
-    token = get_bot_token()
-    try:
-        bot.run(token)
-    finally:
-        asyncio.run(close_db())
+    run_bot(bot, close_db=close_db)
 
