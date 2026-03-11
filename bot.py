@@ -4,7 +4,6 @@ import logging
 import sys
 import random
 import re
-import sqlite3
 import time
 import os
 from collections import deque
@@ -32,6 +31,51 @@ from services.battle import (
     create_battle_log_embed,
     resolve_multi_hit_damage,
     update_battle_log,
+)
+from services.guild_settings import (
+    add_give_op_role,
+    add_give_op_user,
+    get_give_op_allowed_roles,
+    get_give_op_allowed_users,
+    get_latest_anfang_message as load_latest_anfang_message,
+    get_message_visibility as resolve_message_visibility,
+    get_visibility_map as load_visibility_map,
+    get_visibility_override as load_visibility_override,
+    is_maintenance_enabled,
+    remove_give_op_role,
+    remove_give_op_user,
+    set_latest_anfang_message as store_latest_anfang_message,
+    set_maintenance_mode,
+    set_message_visibility,
+)
+from services.request_store import (
+    claim_fight_request,
+    claim_mission_request,
+    create_fight_request,
+    create_mission_request,
+    get_pending_fight_requests,
+    get_pending_mission_requests,
+    update_fight_request_message,
+    update_mission_request_message,
+)
+from services.user_data import (
+    add_card_buff,
+    add_infinitydust,
+    add_karte,
+    add_karte_amount,
+    add_mission_reward,
+    check_and_add_karte,
+    delete_user_data,
+    get_card_buffs,
+    get_infinitydust,
+    get_last_karte,
+    get_mission_count,
+    get_team,
+    get_user_karten,
+    increment_mission_count,
+    remove_karte_amount,
+    set_team,
+    spend_infinitydust,
 )
 import secrets
 
@@ -623,168 +667,6 @@ class RestrictedModal(ui.Modal):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return await is_channel_allowed(interaction)
 
-# Infinitydust-System
-async def add_infinitydust(user_id, amount=1):
-    """Fügt Infinitydust zu einem User hinzu"""
-    async with db_context() as db:
-        # Prüfe ob User bereits Infinitydust hat
-        cursor = await db.execute("SELECT amount FROM user_infinitydust WHERE user_id = ?", (user_id,))
-        row = await cursor.fetchone()
-        
-        if row:
-            # User existiert bereits - aktualisiere Infinitydust
-            current_dust = row[0] or 0
-            new_dust = current_dust + amount
-            await db.execute("UPDATE user_infinitydust SET amount = ? WHERE user_id = ?", (new_dust, user_id))
-        else:
-            # User existiert nicht - erstelle neuen Eintrag
-            await db.execute("INSERT INTO user_infinitydust (user_id, amount) VALUES (?, ?)", (user_id, amount))
-        await db.commit()
-
-async def get_infinitydust(user_id):
-    """Holt die Infinitydust-Menge eines Users"""
-    async with db_context() as db:
-        cursor = await db.execute("SELECT amount FROM user_infinitydust WHERE user_id = ?", (user_id,))
-        row = await cursor.fetchone()
-        return row[0] if row and row[0] else 0
-
-async def spend_infinitydust(user_id, amount):
-    """Verbraucht Infinitydust eines Users"""
-    async with db_context() as db:
-        cursor = await db.execute("SELECT amount FROM user_infinitydust WHERE user_id = ?", (user_id,))
-        row = await cursor.fetchone()
-        current_dust = row[0] if row and row[0] else 0
-        if current_dust < amount:
-            return False  # Nicht genug Dust
-
-        new_amount = current_dust - amount
-        await db.execute("UPDATE user_infinitydust SET amount = ? WHERE user_id = ?", (new_amount, user_id))
-        await db.commit()
-        return True  # Erfolgreich verbraucht
-
-async def add_card_buff(user_id, card_name, buff_type, attack_number, buff_amount):
-    """Fügt einen Buff zu einer Karte hinzu (aufsummierend)"""
-    async with db_context() as db:
-        await db.execute(
-            """
-            INSERT INTO user_card_buffs
-            (user_id, card_name, buff_type, attack_number, buff_amount)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(user_id, card_name, buff_type, attack_number)
-            DO UPDATE SET
-                buff_amount = user_card_buffs.buff_amount + excluded.buff_amount,
-                created_at = CURRENT_TIMESTAMP
-            """,
-            (user_id, card_name, buff_type, attack_number, buff_amount),
-        )
-        await db.commit()
-
-async def get_card_buffs(user_id, card_name):
-    """Holt alle Buffs für eine spezifische Karte eines Users"""
-    async with db_context() as db:
-        cursor = await db.execute("""
-            SELECT buff_type, attack_number, buff_amount 
-            FROM user_card_buffs 
-            WHERE user_id = ? AND card_name = ?
-        """, (user_id, card_name))
-        return await cursor.fetchall()
-
-async def check_and_add_karte(user_id, karte):
-    """Prüft ob User die Karte schon hat und fügt sie hinzu oder wandelt zu Infinitydust um"""
-    async with db_context() as db:
-        # Prüfe ob User die Karte schon hat
-        cursor = await db.execute("SELECT COUNT(*) FROM user_karten WHERE user_id = ? AND karten_name = ?", (user_id, karte['name']))
-        row = await cursor.fetchone()
-        
-        if row[0] > 0:
-            # Karte existiert bereits - wandle zu Infinitydust um
-            await add_infinitydust(user_id, 1)
-            return False  # Keine neue Karte hinzugefügt
-        else:
-            # Neue Karte hinzufügen
-            await add_karte(user_id, karte['name'])
-            return True  # Neue Karte hinzugefügt
-
-# Hilfsfunktion: Karte zum Nutzer hinzufügen
-async def add_karte(user_id, karten_name):
-    async with db_context() as db:
-        await db.execute(
-            "INSERT INTO user_karten (user_id, karten_name, anzahl) VALUES (?, ?, 1) ON CONFLICT(user_id, karten_name) DO UPDATE SET anzahl = anzahl + 1",
-            (user_id, karten_name)
-        )
-        await db.commit()
-
-async def add_karte_amount(user_id, karten_name, amount: int):
-    if amount <= 0:
-        return
-    async with db_context() as db:
-        await db.execute(
-            "INSERT INTO user_karten (user_id, karten_name, anzahl) VALUES (?, ?, ?) "
-            "ON CONFLICT(user_id, karten_name) DO UPDATE SET anzahl = anzahl + excluded.anzahl",
-            (user_id, karten_name, amount),
-        )
-        await db.commit()
-
-async def remove_karte_amount(user_id, karten_name, amount: int) -> int:
-    if amount <= 0:
-        return 0
-    async with db_context() as db:
-        cursor = await db.execute(
-            "SELECT anzahl FROM user_karten WHERE user_id = ? AND karten_name = ?",
-            (user_id, karten_name),
-        )
-        row = await cursor.fetchone()
-        if not row:
-            return 0
-        current = row[0] or 0
-        new_amount = current - amount
-        if new_amount <= 0:
-            await db.execute(
-                "DELETE FROM user_karten WHERE user_id = ? AND karten_name = ?",
-                (user_id, karten_name),
-            )
-            await db.commit()
-            return 0
-        await db.execute(
-            "UPDATE user_karten SET anzahl = ? WHERE user_id = ? AND karten_name = ?",
-            (new_amount, user_id, karten_name),
-        )
-        await db.commit()
-        return new_amount
-
-# Hilfsfunktion: Missionsfortschritt speichern
-async def add_mission_reward(user_id):
-    karte = random.choice(karten)
-    is_new_card = await check_and_add_karte(user_id, karte)
-    return karte, is_new_card
-
-# Hilfsfunktion: Missionen pro Tag prüfen
-async def get_mission_count(user_id):
-    # Tagesbeginn in Europe/Berlin
-    today_start = berlin_midnight_epoch()
-    
-    async with db_context() as db:
-        cursor = await db.execute("SELECT mission_count, last_mission_reset FROM user_daily WHERE user_id = ?", (user_id,))
-        row = await cursor.fetchone()
-        
-        # Falls es keinen Eintrag gibt ODER last_mission_reset NULL ist ODER vor heutigem Tagesbeginn liegt → zurücksetzen
-        if not row or row[1] is None or row[1] < today_start:
-            # Neuer Tag oder kein Eintrag
-            await db.execute("INSERT OR REPLACE INTO user_daily (user_id, mission_count, last_mission_reset) VALUES (?, 0, ?)", (user_id, today_start))
-            await db.commit()
-            return 0
-        else:
-            return (row[0] or 0)
-
-# Hilfsfunktion: Missionen pro Tag erhöhen
-async def increment_mission_count(user_id):
-    today_start = berlin_midnight_epoch()
-    
-    async with db_context() as db:
-        await db.execute("INSERT OR REPLACE INTO user_daily (user_id, mission_count, last_mission_reset) VALUES (?, COALESCE((SELECT mission_count FROM user_daily WHERE user_id = ?), 0) + 1, ?)", 
-                        (user_id, user_id, today_start))
-        await db.commit()
-
 def _build_mission_embed(mission_data: dict) -> discord.Embed:
     title = mission_data.get("title") or "Mission"
     description = mission_data.get("description") or "Hier kommt später die Story. Hier kommt später die Story."
@@ -798,33 +680,12 @@ def _build_mission_embed(mission_data: dict) -> discord.Embed:
             embed.set_thumbnail(url=reward_card["bild"])
     return embed
 
-# Hilfsfunktionen für Team-Management
-async def get_team(user_id):
-    async with db_context() as db:
-        cursor = await db.execute("SELECT team FROM user_teams WHERE user_id = ?", (user_id,))
-        row = await cursor.fetchone()
-        if row and row[0]:
-            return json.loads(row[0])
-        return []
-
-async def set_team(user_id, team):
-    async with db_context() as db:
-        await db.execute("INSERT OR REPLACE INTO user_teams (user_id, team) VALUES (?, ?)", (user_id, json.dumps(team)))
-        await db.commit()
-
 # Hilfsfunktion: Karte nach Namen finden
 async def get_karte_by_name(name):
     for karte in karten:
         if karte["name"].lower() == name.lower():
             return karte
     return None
-
-# Hilfsfunktion: Karten des Nutzers abrufen
-async def get_user_karten(user_id):
-    async with db_context() as db:
-        cursor = await db.execute("SELECT karten_name, anzahl FROM user_karten WHERE user_id = ?", (user_id,))
-        return await cursor.fetchall()
-
 
 def _sort_user_cards_like_karten(user_cards) -> list[tuple[str, int]]:
     """Sort user-owned cards by the order in karten.py, unknown cards last."""
@@ -847,144 +708,6 @@ def _sort_user_cards_like_karten(user_cards) -> list[tuple[str, int]]:
         return idx, name.lower()
 
     return sorted(normalized, key=_key)
-
-# Hilfsfunktion: Letzte Karte des Nutzers
-async def get_last_karte(user_id):
-    async with db_context() as db:
-        cursor = await db.execute("SELECT karten_name FROM user_karten WHERE user_id = ? ORDER BY rowid DESC LIMIT 1", (user_id,))
-        row = await cursor.fetchone()
-        return row[0] if row else None
-
-# Offene Kampf-/Missions-Requests (persistiert)
-async def create_fight_request(
-    *,
-    guild_id: int,
-    origin_channel_id: int,
-    message_channel_id: int,
-    thread_id: int | None,
-    thread_created: bool,
-    challenger_id: int,
-    challenged_id: int,
-    challenger_card: str,
-    message_id: int | None = None,
-) -> int:
-    async with db_context() as db:
-        cursor = await db.execute(
-            """
-            INSERT INTO fight_requests (
-                guild_id, origin_channel_id, message_channel_id, thread_id, thread_created,
-                challenger_id, challenged_id, challenger_card, created_at, status, message_id
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                guild_id,
-                origin_channel_id,
-                message_channel_id,
-                thread_id,
-                1 if thread_created else 0,
-                challenger_id,
-                challenged_id,
-                challenger_card,
-                int(time.time()),
-                "pending",
-                message_id,
-            ),
-        )
-        await db.commit()
-        return int(cursor.lastrowid)
-
-async def update_fight_request_message(request_id: int, message_id: int | None, message_channel_id: int | None = None) -> None:
-    async with db_context() as db:
-        await db.execute(
-            "UPDATE fight_requests SET message_id = ?, message_channel_id = COALESCE(?, message_channel_id) WHERE id = ?",
-            (message_id, message_channel_id, request_id),
-        )
-        await db.commit()
-
-async def claim_fight_request(request_id: int, status: str) -> bool:
-    async with db_context() as db:
-        cursor = await db.execute(
-            "UPDATE fight_requests SET status = ? WHERE id = ? AND status = 'pending'",
-            (status, request_id),
-        )
-        await db.commit()
-        return cursor.rowcount > 0
-
-async def get_pending_fight_requests():
-    async with db_context() as db:
-        cursor = await db.execute(
-            "SELECT * FROM fight_requests WHERE status = 'pending'"
-        )
-        return await cursor.fetchall()
-
-async def create_mission_request(
-    *,
-    guild_id: int,
-    channel_id: int,
-    user_id: int,
-    mission_data: dict,
-    visibility: str,
-    is_admin: bool,
-    message_id: int | None = None,
-) -> int:
-    async with db_context() as db:
-        cursor = await db.execute(
-            """
-            INSERT INTO mission_requests (
-                guild_id, channel_id, user_id, mission_data, visibility, is_admin, created_at, status, message_id
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                guild_id,
-                channel_id,
-                user_id,
-                json.dumps(mission_data),
-                visibility,
-                1 if is_admin else 0,
-                int(time.time()),
-                "pending",
-                message_id,
-            ),
-        )
-        await db.commit()
-        return int(cursor.lastrowid)
-
-async def update_mission_request_message(request_id: int, message_id: int | None, channel_id: int | None = None) -> None:
-    async with db_context() as db:
-        await db.execute(
-            "UPDATE mission_requests SET message_id = ?, channel_id = COALESCE(?, channel_id) WHERE id = ?",
-            (message_id, channel_id, request_id),
-        )
-        await db.commit()
-
-async def claim_mission_request(request_id: int, status: str) -> bool:
-    async with db_context() as db:
-        cursor = await db.execute(
-            "UPDATE mission_requests SET status = ? WHERE id = ? AND status = 'pending'",
-            (status, request_id),
-        )
-        await db.commit()
-        return cursor.rowcount > 0
-
-async def get_pending_mission_requests():
-    async with db_context() as db:
-        cursor = await db.execute(
-            "SELECT * FROM mission_requests WHERE status = 'pending'"
-        )
-        return await cursor.fetchall()
-
-async def delete_user_data(user_id: int) -> None:
-    async with db_context() as db:
-        await db.execute("DELETE FROM user_karten WHERE user_id = ?", (user_id,))
-        await db.execute("DELETE FROM user_teams WHERE user_id = ?", (user_id,))
-        await db.execute("DELETE FROM user_daily WHERE user_id = ?", (user_id,))
-        await db.execute("DELETE FROM user_infinitydust WHERE user_id = ?", (user_id,))
-        await db.execute("DELETE FROM user_card_buffs WHERE user_id = ?", (user_id,))
-        await db.execute("DELETE FROM user_seen_channels WHERE user_id = ?", (user_id,))
-        await db.execute("DELETE FROM tradingpost WHERE seller_id = ?", (user_id,))
-        await db.commit()
 
 # View für Buttons beim Kartenziehen
 class ZieheKarteView(RestrictedView):
@@ -4805,56 +4528,6 @@ def _card_name_ansi_block(card_name: str, card: dict | None) -> str:
         return f"**{safe_name}**"
     return f"```ansi\n\u001b[1;{color_code}m{safe_name}\u001b[0m\n```"
 
-async def add_give_op_user(guild_id: int, user_id: int) -> None:
-    async with db_context() as db:
-        await db.execute(
-            "INSERT OR IGNORE INTO guild_give_op_users (guild_id, user_id) VALUES (?, ?)",
-            (guild_id, user_id),
-        )
-        await db.commit()
-
-async def remove_give_op_user(guild_id: int, user_id: int) -> None:
-    async with db_context() as db:
-        await db.execute(
-            "DELETE FROM guild_give_op_users WHERE guild_id = ? AND user_id = ?",
-            (guild_id, user_id),
-        )
-        await db.commit()
-
-async def add_give_op_role(guild_id: int, role_id: int) -> None:
-    async with db_context() as db:
-        await db.execute(
-            "INSERT OR IGNORE INTO guild_give_op_roles (guild_id, role_id) VALUES (?, ?)",
-            (guild_id, role_id),
-        )
-        await db.commit()
-
-async def remove_give_op_role(guild_id: int, role_id: int) -> None:
-    async with db_context() as db:
-        await db.execute(
-            "DELETE FROM guild_give_op_roles WHERE guild_id = ? AND role_id = ?",
-            (guild_id, role_id),
-        )
-        await db.commit()
-
-async def get_give_op_allowed_users(guild_id: int) -> set[int]:
-    async with db_context() as db:
-        cursor = await db.execute(
-            "SELECT user_id FROM guild_give_op_users WHERE guild_id = ?",
-            (guild_id,),
-        )
-        rows = await cursor.fetchall()
-    return {int(row[0]) for row in rows}
-
-async def get_give_op_allowed_roles(guild_id: int) -> set[int]:
-    async with db_context() as db:
-        cursor = await db.execute(
-            "SELECT role_id FROM guild_give_op_roles WHERE guild_id = ?",
-            (guild_id,),
-        )
-        rows = await cursor.fetchall()
-    return {int(row[0]) for row in rows}
-
 async def is_give_op_authorized(interaction: discord.Interaction) -> bool:
     if await is_owner_or_dev(interaction):
         return True
@@ -4875,23 +4548,6 @@ async def is_give_op_authorized(interaction: discord.Interaction) -> bool:
         logging.exception("Failed reading member roles for give_op authorization")
         return False
     return bool(member_role_ids.intersection(allowed_roles))
-
-async def is_maintenance_enabled(guild_id: int) -> bool:
-    if not guild_id:
-        return False
-    async with db_context() as db:
-        cursor = await db.execute("SELECT maintenance_mode FROM guild_config WHERE guild_id = ?", (guild_id,))
-        row = await cursor.fetchone()
-        return bool(row[0]) if row and row[0] else False
-
-async def set_maintenance_mode(guild_id: int, enabled: bool) -> None:
-    async with db_context() as db:
-        await db.execute(
-            "INSERT INTO guild_config (guild_id, maintenance_mode) VALUES (?, ?) "
-            "ON CONFLICT(guild_id) DO UPDATE SET maintenance_mode = excluded.maintenance_mode",
-            (guild_id, 1 if enabled else 0),
-        )
-        await db.commit()
 
 # Slash-Command: Tägliche Belohnung
 @bot.tree.command(name="täglich", description="Hole deine tägliche Belohnung ab")
@@ -9011,58 +8667,10 @@ def _visibility_label(value: str) -> str:
     return "öffentlich" if value == VISIBILITY_PUBLIC else "nur sichtbar"
 
 async def get_latest_anfang_message(guild_id: int | None):
-    if not guild_id:
-        return None
-    async with db_context() as db:
-        try:
-            cursor = await db.execute(
-                "SELECT channel_id, message_id FROM guild_anfang_message WHERE guild_id = ?",
-                (guild_id,),
-            )
-            row = await cursor.fetchone()
-        except sqlite3.OperationalError as exc:
-            if "no such table" in str(exc) and "guild_anfang_message" in str(exc):
-                await _ensure_anfang_table(db)
-                return None
-            raise
-    if row:
-        return int(row[0]), int(row[1])
-    return None
+    return await load_latest_anfang_message(guild_id)
 
 async def set_latest_anfang_message(guild_id: int, channel_id: int, message_id: int, author_id: int) -> None:
-    async with db_context() as db:
-        try:
-            await db.execute(
-                """
-                INSERT INTO guild_anfang_message (guild_id, channel_id, message_id, author_id, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(guild_id) DO UPDATE SET
-                    channel_id = excluded.channel_id,
-                    message_id = excluded.message_id,
-                    author_id = excluded.author_id,
-                    updated_at = excluded.updated_at
-                """,
-                (guild_id, channel_id, message_id, author_id, int(time.time())),
-            )
-            await db.commit()
-        except sqlite3.OperationalError as exc:
-            if "no such table" in str(exc) and "guild_anfang_message" in str(exc):
-                await _ensure_anfang_table(db)
-                await db.execute(
-                    """
-                    INSERT INTO guild_anfang_message (guild_id, channel_id, message_id, author_id, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(guild_id) DO UPDATE SET
-                        channel_id = excluded.channel_id,
-                        message_id = excluded.message_id,
-                        author_id = excluded.author_id,
-                        updated_at = excluded.updated_at
-                    """,
-                    (guild_id, channel_id, message_id, author_id, int(time.time())),
-                )
-                await db.commit()
-                return
-            raise
+    await store_latest_anfang_message(guild_id, channel_id, message_id, author_id)
 
 def _flatten_app_commands(commands_list, prefix: str = "") -> list[tuple[str, app_commands.Command]]:
     flat: list[tuple[str, app_commands.Command]] = []
@@ -9096,67 +8704,16 @@ def _visibility_value_for_key(message_key: str, visibility_map: dict[str, str]) 
         return visibility_map[legacy_key]
     return VISIBILITY_PRIVATE
 
-async def _ensure_visibility_table(db) -> None:
-    await db.execute(
-        """
-        CREATE TABLE IF NOT EXISTS guild_message_visibility (
-            guild_id INTEGER,
-            message_key TEXT,
-            visibility TEXT,
-            PRIMARY KEY (guild_id, message_key)
-        )
-        """
-    )
-    await db.commit()
-
-async def _ensure_anfang_table(db) -> None:
-    await db.execute(
-        """
-        CREATE TABLE IF NOT EXISTS guild_anfang_message (
-            guild_id INTEGER PRIMARY KEY,
-            channel_id INTEGER,
-            message_id INTEGER,
-            author_id INTEGER,
-            updated_at INTEGER
-        )
-        """
-    )
-    await db.commit()
-
 async def get_visibility_override(guild_id: int | None, message_key: str) -> str | None:
-    if not guild_id:
-        return None
-    async with db_context() as db:
-        try:
-            cursor = await db.execute(
-                "SELECT visibility FROM guild_message_visibility WHERE guild_id = ? AND message_key = ?",
-                (guild_id, message_key),
-            )
-            row = await cursor.fetchone()
-        except sqlite3.OperationalError as exc:
-            if "no such table" in str(exc) and "guild_message_visibility" in str(exc):
-                await _ensure_visibility_table(db)
-                cursor = await db.execute(
-                    "SELECT visibility FROM guild_message_visibility WHERE guild_id = ? AND message_key = ?",
-                    (guild_id, message_key),
-                )
-                row = await cursor.fetchone()
-            else:
-                raise
-    return row[0] if row and row[0] else None
+    return await load_visibility_override(guild_id, message_key)
 
 async def get_message_visibility(guild_id: int | None, message_key: str) -> str:
-    if not guild_id:
-        return VISIBILITY_PRIVATE
-    override = await get_visibility_override(guild_id, message_key)
-    if override:
-        return override
-    legacy_key = LEGACY_COMMAND_VISIBILITY_KEYS.get(message_key)
-    if legacy_key:
-        legacy_override = await get_visibility_override(guild_id, legacy_key)
-        if legacy_override:
-            return legacy_override
-    return VISIBILITY_PRIVATE
+    return await resolve_message_visibility(
+        guild_id,
+        message_key,
+        default_visibility=VISIBILITY_PRIVATE,
+        legacy_visibility_keys=LEGACY_COMMAND_VISIBILITY_KEYS,
+    )
 
 async def get_command_visibility(interaction: discord.Interaction) -> str:
     key = command_visibility_key_for_interaction(interaction)
@@ -9177,48 +8734,7 @@ async def get_command_visibility_override(interaction: discord.Interaction) -> s
     return None
 
 async def get_visibility_map(guild_id: int | None) -> dict[str, str]:
-    if not guild_id:
-        return {}
-    async with db_context() as db:
-        try:
-            cursor = await db.execute(
-                "SELECT message_key, visibility FROM guild_message_visibility WHERE guild_id = ?",
-                (guild_id,),
-            )
-            rows = await cursor.fetchall()
-        except sqlite3.OperationalError as exc:
-            if "no such table" in str(exc) and "guild_message_visibility" in str(exc):
-                await _ensure_visibility_table(db)
-                cursor = await db.execute(
-                    "SELECT message_key, visibility FROM guild_message_visibility WHERE guild_id = ?",
-                    (guild_id,),
-                )
-                rows = await cursor.fetchall()
-            else:
-                raise
-    return {row[0]: row[1] for row in rows}
-
-async def set_message_visibility(guild_id: int | None, message_key: str, visibility: str) -> None:
-    if not guild_id:
-        return
-    async with db_context() as db:
-        try:
-            await db.execute(
-                "INSERT INTO guild_message_visibility (guild_id, message_key, visibility) VALUES (?, ?, ?) "
-                "ON CONFLICT(guild_id, message_key) DO UPDATE SET visibility = excluded.visibility",
-                (guild_id, message_key, visibility),
-            )
-        except sqlite3.OperationalError as exc:
-            if "no such table" in str(exc) and "guild_message_visibility" in str(exc):
-                await _ensure_visibility_table(db)
-                await db.execute(
-                    "INSERT INTO guild_message_visibility (guild_id, message_key, visibility) VALUES (?, ?, ?) "
-                    "ON CONFLICT(guild_id, message_key) DO UPDATE SET visibility = excluded.visibility",
-                    (guild_id, message_key, visibility),
-                )
-            else:
-                raise
-        await db.commit()
+    return await load_visibility_map(guild_id)
 
 async def _send_panel_message(
     interaction: discord.Interaction,

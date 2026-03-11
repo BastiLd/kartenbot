@@ -1,10 +1,13 @@
 import asyncio
 import random
+import time
 import unittest
 
 from botcore.bootstrap import BOT_START_TIME, build_bot_intents
-from services.battle import calculate_damage
 from db import close_db, init_db
+from services.battle import calculate_damage
+from services.guild_settings import get_message_visibility, set_message_visibility
+from services.user_data import add_infinitydust, delete_user_data, get_infinitydust
 
 
 class SmokeTests(unittest.TestCase):
@@ -27,6 +30,48 @@ class SmokeTests(unittest.TestCase):
 
     def test_db_init(self) -> None:
         asyncio.run(init_db())
+        asyncio.run(close_db())
+
+    def test_user_data_services_roundtrip(self) -> None:
+        asyncio.run(init_db())
+        user_id = 9876543210123
+        try:
+            asyncio.run(add_infinitydust(user_id, 3))
+            self.assertGreaterEqual(asyncio.run(get_infinitydust(user_id)), 3)
+        finally:
+            asyncio.run(delete_user_data(user_id))
+            asyncio.run(close_db())
+
+    def test_visibility_services_roundtrip(self) -> None:
+        asyncio.run(init_db())
+        guild_id = time.time_ns()
+        message_key = f"cmd:test.visibility.{guild_id}"
+
+        self.assertEqual(
+            asyncio.run(
+                get_message_visibility(
+                    guild_id,
+                    message_key,
+                    default_visibility="private",
+                    legacy_visibility_keys={},
+                )
+            ),
+            "private",
+        )
+
+        asyncio.run(set_message_visibility(guild_id, message_key, "public"))
+
+        self.assertEqual(
+            asyncio.run(
+                get_message_visibility(
+                    guild_id,
+                    message_key,
+                    default_visibility="private",
+                    legacy_visibility_keys={},
+                )
+            ),
+            "public",
+        )
         asyncio.run(close_db())
 
 

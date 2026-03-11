@@ -13,7 +13,7 @@ if (-not (Test-Path $venvPython)) {
     throw ".venv fehlt. Führe zuerst scripts/setup_windows.ps1 aus."
 }
 
-if ($TestArgs.Count -eq 0) {
+if (-not $TestArgs -or $TestArgs.Count -eq 0) {
     & $venvPython -m unittest discover -s (Join-Path $root "tests")
     exit $LASTEXITCODE
 }
