@@ -18,6 +18,11 @@ from discord.ext import commands
 
 from botcore.bootstrap import BOT_START_TIME, build_bot, run_bot
 from botcore.logging_utils import LOG_PATH, configure_logging, get_error_count
+from botcore.ui_common import (
+    RestrictedModal as BaseRestrictedModal,
+    RestrictedView as BaseRestrictedView,
+    ShowAllMembersPager,
+)
 from db import DB_PATH, close_db, db_context, init_db
 from karten import karten
 from services.battle import (
@@ -659,13 +664,14 @@ async def is_channel_allowed_ids(
         return True
     return False
 
-class RestrictedView(ui.View):
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return await is_channel_allowed(interaction)
+class RestrictedView(BaseRestrictedView):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, interaction_checker=is_channel_allowed, **kwargs)
 
-class RestrictedModal(ui.Modal):
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return await is_channel_allowed(interaction)
+
+class RestrictedModal(BaseRestrictedModal):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, interaction_checker=is_channel_allowed, **kwargs)
 
 def _build_mission_embed(mission_data: dict) -> discord.Embed:
     title = mission_data.get("title") or "Mission"
@@ -3460,266 +3466,6 @@ class UserSearchResultView(RestrictedView):
                 self.parent_view.stop()
             except Exception:
                 logging.exception("Unexpected error")
-class ShowAllMembersPager(ui.View):
-    def __init__(self, requester, members: list[discord.Member], parent_view: ui.View | None = None, include_bot_option: bool = False):
-        super().__init__(timeout=120)
-        self.requester = requester
-        self.parent_view = parent_view
-        self.include_bot_option = include_bot_option
-        # Nur Nicht-Bots
-        self.members = [m for m in members if not m.bot]
-
-        # Präsenz-Sortierung: grün > orange > rot > schwarz
-        def presence_priority(m: discord.Member) -> int:
-            s = m.status
-            if s == discord.Status.online:
-                return 0
-            if s == discord.Status.idle:
-                return 1
-            if s == discord.Status.dnd:
-                return 2
-            return 3
-
-        self.sorted_members = sorted(self.members, key=presence_priority)
-
-        # Seiten vorbereiten (erste Seite ggf. 1 Slot für Bot reservieren)
-        self.pages: list[list[discord.Member]] = []
-        remaining = list(self.sorted_members)
-        first_cap = 24 if self.include_bot_option else 25
-        if remaining or self.include_bot_option:
-            self.pages.append(remaining[:first_cap])
-            remaining = remaining[first_cap:]
-        while remaining:
-            self.pages.append(remaining[:25])
-            remaining = remaining[25:]
-        if not self.pages:
-            self.pages = [[]]
-        self.page_index = 0
-
-        # Select
-        self.select = ui.Select(
-            placeholder=self._placeholder(),
-            min_values=1,
-            max_values=1,
-            options=self._build_options_for_current_page()
-        )
-        self.select.callback = self._on_select
-        self.add_item(self.select)
-
-        # Navigation
-        self.prev_btn = ui.Button(label="Zurück", style=discord.ButtonStyle.secondary, disabled=True)
-        self.next_btn = ui.Button(label="Weiter", style=discord.ButtonStyle.secondary, disabled=(len(self.pages) <= 1))
-        self.prev_btn.callback = self._on_prev
-        self.next_btn.callback = self._on_next
-        self.add_item(self.prev_btn)
-        self.add_item(self.next_btn)
-
-    def _status_circle(self, member: discord.Member) -> str:
-        s = member.status
-        if s == discord.Status.online:
-            return "🟢"
-        if s == discord.Status.idle:
-            return "🟡"
-        if s == discord.Status.dnd:
-            return "🔴"
-        return "⚫"
-
-    def _placeholder(self) -> str:
-        return f"Seite {self.page_index+1}/{len(self.pages)} – Nutzer wählen..."
-
-    def _build_options_for_current_page(self) -> list[SelectOption]:
-        options: list[SelectOption] = []
-        if self.include_bot_option and self.page_index == 0:
-            options.append(SelectOption(label="🤖 Bot", value="bot"))
-        for m in self.pages[self.page_index]:
-            options.append(SelectOption(label=f"{self._status_circle(m)} {m.display_name[:100]}", value=str(m.id)))
-        if not options:
-            options.append(SelectOption(label="Keine Nutzer verfügbar", value="none"))
-        return options
-
-    async def _on_select(self, interaction: discord.Interaction):
-        # Nur ursprünglicher Nutzer darf auswählen
-        try:
-            req_id = self.requester.id
-        except AttributeError:
-            req_id = int(self.requester)
-        if interaction.user.id != req_id:
-            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
-            return
-
-        choice = self.select.values[0]
-        if choice == "none":
-            await interaction.response.send_message("❌ Keine Nutzer verfügbar!", ephemeral=True)
-            return
-
-        if self.parent_view is not None:
-            try:
-                self.parent_view.value = choice
-                self.parent_view.stop()
-            except Exception:
-                logging.exception("Unexpected error")
-        self.stop()
-        await interaction.response.defer()
-
-    async def _on_prev(self, interaction: discord.Interaction):
-        try:
-            req_id = self.requester.id
-        except AttributeError:
-            req_id = int(self.requester)
-        if interaction.user.id != req_id:
-            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
-            return
-        if self.page_index > 0:
-            self.page_index -= 1
-            self.select.options = self._build_options_for_current_page()
-            self.select.placeholder = self._placeholder()
-            self.prev_btn.disabled = (self.page_index == 0)
-            self.next_btn.disabled = (self.page_index == len(self.pages) - 1)
-            await interaction.response.edit_message(view=self)
-
-    async def _on_next(self, interaction: discord.Interaction):
-        try:
-            req_id = self.requester.id
-        except AttributeError:
-            req_id = int(self.requester)
-        if interaction.user.id != req_id:
-            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
-            return
-        if self.page_index < len(self.pages) - 1:
-            self.page_index += 1
-            self.select.options = self._build_options_for_current_page()
-            self.select.placeholder = self._placeholder()
-            self.prev_btn.disabled = (self.page_index == 0)
-            self.next_btn.disabled = (self.page_index == len(self.pages) - 1)
-            await interaction.response.edit_message(view=self)
-        self.stop()
-        await interaction.response.defer()
-
-class ShowAllMembersPager(ui.View):
-    def __init__(self, requester, members: list[discord.Member], parent_view: ui.View | None = None, include_bot_option: bool = False):
-        super().__init__(timeout=120)
-        self.requester = requester
-        self.parent_view = parent_view
-        self.include_bot_option = include_bot_option
-        # Nur Nicht-Bots
-        self.members = [m for m in members if not m.bot]
-        # Präsenz-Sortierung: grün > orange > rot > schwarz
-        def presence_priority(m: discord.Member) -> int:
-            s = m.status
-            if s == discord.Status.online:
-                return 0
-            if s == discord.Status.idle:
-                return 1
-            if s == discord.Status.dnd:
-                return 2
-            return 3
-        self.sorted_members = sorted(self.members, key=presence_priority)
-        # Seiten vorbereiten (erste Seite ggf. 1 Slot für Bot reservieren)
-        self.pages: list[list[discord.Member]] = []
-        remaining = list(self.sorted_members)
-        first_cap = 24 if self.include_bot_option else 25
-        if remaining or self.include_bot_option:
-            self.pages.append(remaining[:first_cap])
-            remaining = remaining[first_cap:]
-        while remaining:
-            self.pages.append(remaining[:25])
-            remaining = remaining[25:]
-        if not self.pages:
-            self.pages = [[]]
-        self.page_index = 0
-
-        # Select
-        self.select = ui.Select(placeholder=self._placeholder(), min_values=1, max_values=1, options=self._build_options_for_current_page())
-        self.select.callback = self._on_select
-        self.add_item(self.select)
-
-        # Navigation
-        self.prev_btn = ui.Button(label="Zurück", style=discord.ButtonStyle.secondary, disabled=True)
-        self.next_btn = ui.Button(label="Weiter", style=discord.ButtonStyle.secondary, disabled=(len(self.pages) <= 1))
-        self.prev_btn.callback = self._on_prev
-        self.next_btn.callback = self._on_next
-        self.add_item(self.prev_btn)
-        self.add_item(self.next_btn)
-
-    def _status_circle(self, member: discord.Member) -> str:
-        s = member.status
-        if s == discord.Status.online:
-            return "🟢"
-        if s == discord.Status.idle:
-            return "🟡"
-        if s == discord.Status.dnd:
-            return "🔴"
-        return "⚫"
-
-    def _placeholder(self) -> str:
-        return f"Seite {self.page_index+1}/{len(self.pages)} – Nutzer wählen..."
-
-    def _build_options_for_current_page(self) -> list[SelectOption]:
-        options: list[SelectOption] = []
-        if self.include_bot_option and self.page_index == 0:
-            options.append(SelectOption(label="🤖 Bot", value="bot"))
-        for m in self.pages[self.page_index]:
-            options.append(SelectOption(label=f"{self._status_circle(m)} {m.display_name[:100]}", value=str(m.id)))
-        if not options:
-            options.append(SelectOption(label="Keine Nutzer verfügbar", value="none"))
-        return options
-
-    async def _on_select(self, interaction: discord.Interaction):
-        # Nur ursprünglicher Nutzer darf auswählen
-        try:
-            req_id = self.requester.id
-        except AttributeError:
-            req_id = int(self.requester)
-        if interaction.user.id != req_id:
-            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
-            return
-
-        choice = self.select.values[0]
-        if choice == "none":
-            await interaction.response.send_message("❌ Keine Nutzer verfügbar!", ephemeral=True)
-            return
-
-        if self.parent_view is not None:
-            try:
-                self.parent_view.value = choice
-                self.parent_view.stop()
-            except Exception:
-                logging.exception("Unexpected error")
-        self.stop()
-        await interaction.response.defer()
-
-    async def _on_prev(self, interaction: discord.Interaction):
-        try:
-            req_id = self.requester.id
-        except AttributeError:
-            req_id = int(self.requester)
-        if interaction.user.id != req_id:
-            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
-            return
-        if self.page_index > 0:
-            self.page_index -= 1
-            self.select.options = self._build_options_for_current_page()
-            self.select.placeholder = self._placeholder()
-            self.prev_btn.disabled = (self.page_index == 0)
-            self.next_btn.disabled = (self.page_index == len(self.pages) - 1)
-            await interaction.response.edit_message(view=self)
-
-    async def _on_next(self, interaction: discord.Interaction):
-        try:
-            req_id = self.requester.id
-        except AttributeError:
-            req_id = int(self.requester)
-        if interaction.user.id != req_id:
-            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
-            return
-        if self.page_index < len(self.pages) - 1:
-            self.page_index += 1
-            self.select.options = self._build_options_for_current_page()
-            self.select.placeholder = self._placeholder()
-            self.prev_btn.disabled = (self.page_index == 0)
-            self.next_btn.disabled = (self.page_index == len(self.pages) - 1)
-            await interaction.response.edit_message(view=self)
-
 class OpponentSelectView(RestrictedView):
     def __init__(self, challenger: discord.Member, guild: discord.Guild):
         super().__init__(timeout=60)

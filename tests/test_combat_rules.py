@@ -531,10 +531,12 @@ class CapDamageRuleTests(unittest.IsolatedAsyncioTestCase):
 
 
 class _DummyMember:
-    def __init__(self, member_id: int, name: str):
+    def __init__(self, member_id: int, name: str, *, status=None, bot: bool = False):
         self.id = member_id
         self.display_name = name
         self.mention = f"<@{member_id}>"
+        self.status = status if status is not None else bot_module.discord.Status.offline
+        self.bot = bot
 
 
 class _DummyGuild:
@@ -593,6 +595,39 @@ class _DummyInteraction:
         self.message = message
         self.channel = _DummyChannel()
         self.response = _DummyResponse()
+
+
+class ShowAllMembersPagerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pager_keeps_running_when_switching_pages(self) -> None:
+        members = [
+            _DummyMember(100 + idx, f"Member{idx:02d}", status=bot_module.discord.Status.online)
+            for idx in range(30)
+        ]
+        pager = bot_module.ShowAllMembersPager(1, members, include_bot_option=True)
+        try:
+            interaction = _DummyInteraction(1, _DummyMessage())
+            await pager._on_next(interaction)
+            self.assertEqual(pager.page_index, 1)
+            self.assertFalse(pager.is_finished())
+            self.assertEqual(len(interaction.response.edits), 1)
+        finally:
+            pager.stop()
+
+    async def test_pager_sorts_presence_and_keeps_bot_option_first(self) -> None:
+        members = [
+            _DummyMember(2, "Offline", status=bot_module.discord.Status.offline),
+            _DummyMember(3, "Idle", status=bot_module.discord.Status.idle),
+            _DummyMember(4, "Online", status=bot_module.discord.Status.online),
+        ]
+        pager = bot_module.ShowAllMembersPager(1, members, include_bot_option=True)
+        try:
+            labels = [str(option.label) for option in pager.select.options]
+            self.assertEqual(labels[0], "🤖 Bot")
+            self.assertEqual(labels[1], "🟢 Online")
+            self.assertEqual(labels[2], "🟡 Idle")
+            self.assertEqual(labels[3], "⚫ Offline")
+        finally:
+            pager.stop()
 
 
 class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
