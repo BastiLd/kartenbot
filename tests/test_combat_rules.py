@@ -136,10 +136,10 @@ class CardSpecTests(unittest.TestCase):
 
     def test_card_rarity_color_common_uses_requested_hex(self) -> None:
         common_card = _find_card("Iron-Man")
-        self.assertEqual(bot_module._card_rarity_color(common_card), 0x3DE835)
+        self.assertEqual(bot_module._card_rarity_color(common_card), 0x13EB2B)
 
     def test_card_rarity_color_non_common_returns_none(self) -> None:
-        self.assertIsNone(bot_module._card_rarity_color({"name": "X", "seltenheit": "Legendary"}))
+        self.assertEqual(bot_module._card_rarity_color({"name": "X", "seltenheit": "Legendary"}), 0xFFB020)
 
     def test_effect_type_logging_coverage_matches_karten_effect_types(self) -> None:
         configured_types = {

@@ -4803,9 +4803,28 @@ def _card_rarity_color(card: dict | None) -> int | None:
     if not isinstance(card, dict):
         return None
     rarity_key = _normalize_rarity_key(card.get("seltenheit"))
-    if rarity_key == "common":
-        return 0x3DE835
-    return None
+    color_map = {
+        "common": 0x13EB2B,      # Gewöhnlich
+        "rare": 0x2E86FF,        # Selten
+        "epic": 0xC84DFF,        # Episch
+        "legendary": 0xFFB020,   # Legendär
+    }
+    return color_map.get(rarity_key)
+
+
+def _card_name_ansi_block(card_name: str, card: dict | None) -> str:
+    rarity_key = _normalize_rarity_key((card or {}).get("seltenheit"))
+    ansi_color_map = {
+        "common": "32",      # green
+        "rare": "34",        # blue
+        "epic": "35",        # magenta
+        "legendary": "33",   # yellow/orange-like
+    }
+    color_code = ansi_color_map.get(rarity_key)
+    safe_name = str(card_name or "Unbekannte Karte")
+    if not color_code:
+        return f"**{safe_name}**"
+    return f"```ansi\n\u001b[1;{color_code}m{safe_name}\u001b[0m\n```"
 
 async def add_give_op_user(guild_id: int, user_id: int) -> None:
     async with db_context() as db:
@@ -4918,21 +4937,25 @@ async def täglich(interaction: discord.Interaction):
     is_new_card = await check_and_add_karte(user_id, karte)
     card_name_text = str(karte.get("name") or "Unbekannte Karte")
     embed_color = _card_rarity_color(karte)
+    image_url = str(karte.get("bild") or "").strip()
+    if not image_url:
+        fallback_card = _card_by_name_local(card_name_text)
+        image_url = str((fallback_card or {}).get("bild") or "").strip()
     
     if is_new_card:
         embed = discord.Embed(title="🎁 Tägliche Belohnung", description="Du hast eine tägliche Belohnung erhalten:", color=embed_color)
-        embed.add_field(name="Karte", value=f"**{card_name_text}**", inline=False)
-        if karte.get("bild"):
-            embed.set_image(url=karte["bild"])
+        embed.add_field(name="Karte", value=_card_name_ansi_block(card_name_text, karte), inline=False)
+        if image_url:
+            embed.set_image(url=image_url)
         await _send_with_visibility(interaction, visibility_key, embed=embed)
     else:
         # Karte wurde zu Infinitydust umgewandelt
         embed = discord.Embed(title="💎 Tägliche Belohnung - Infinitydust!", description="Du hattest diese Karte bereits:", color=embed_color)
-        embed.add_field(name="Karte", value=f"**{card_name_text}**", inline=False)
+        embed.add_field(name="Karte", value=_card_name_ansi_block(card_name_text, karte), inline=False)
         embed.add_field(name="Umwandlung", value="Die Karte wurde zu **Infinitydust** umgewandelt!", inline=False)
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
-        if karte.get("bild"):
-            embed.set_image(url=karte["bild"])
+        if image_url:
+            embed.set_image(url=image_url)
         await _send_with_visibility(interaction, visibility_key, embed=embed)
 
 # Slash-Command: Mission starten
