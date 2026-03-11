@@ -1,6 +1,8 @@
 import discord
 from discord import SelectOption, ui
 
+from botcore.interaction_utils import defer_interaction, send_interaction_response
+
 
 def _resolve_requester_id(requester) -> int:
     try:
@@ -100,35 +102,32 @@ class ShowAllMembersPager(ui.View):
             options.append(SelectOption(label="🤖 Bot", value="bot"))
         for member in self.pages[self.page_index]:
             label = f"{_status_circle(member)} {str(getattr(member, 'display_name', 'Unbekannt'))[:100]}"
-            options.append(SelectOption(label=label, value=str(getattr(member, "id"))))
+            options.append(SelectOption(label=label, value=str(getattr(member, 'id'))))
         if not options:
             options.append(SelectOption(label="Keine Nutzer verfügbar", value="none"))
         return options
 
     async def _on_select(self, interaction: discord.Interaction):
         if interaction.user.id != _resolve_requester_id(self.requester):
-            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
+            await send_interaction_response(interaction, content="Nicht dein Menü!", ephemeral=True)
             return
 
         choice = self.select.values[0]
         if choice == "none":
-            await interaction.response.send_message("❌ Keine Nutzer verfügbar!", ephemeral=True)
+            await send_interaction_response(interaction, content="❌ Keine Nutzer verfügbar!", ephemeral=True)
             return
 
         if self.parent_view is not None:
-            try:
+            if hasattr(self.parent_view, "value"):
                 self.parent_view.value = choice
+            if hasattr(self.parent_view, "stop"):
                 self.parent_view.stop()
-            except Exception:
-                import logging
-
-                logging.exception("Unexpected error")
         self.stop()
-        await interaction.response.defer()
+        await defer_interaction(interaction)
 
     async def _on_prev(self, interaction: discord.Interaction):
         if interaction.user.id != _resolve_requester_id(self.requester):
-            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
+            await send_interaction_response(interaction, content="Nicht dein Menü!", ephemeral=True)
             return
         if self.page_index > 0:
             self.page_index -= 1
@@ -140,7 +139,7 @@ class ShowAllMembersPager(ui.View):
 
     async def _on_next(self, interaction: discord.Interaction):
         if interaction.user.id != _resolve_requester_id(self.requester):
-            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
+            await send_interaction_response(interaction, content="Nicht dein Menü!", ephemeral=True)
             return
         if self.page_index < len(self.pages) - 1:
             self.page_index += 1

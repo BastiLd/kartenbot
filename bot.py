@@ -1,6 +1,7 @@
 ﻿import asyncio
 import json
 import logging
+import aiosqlite
 import sys
 import random
 import re
@@ -22,6 +23,7 @@ from botcommands import (
     register_player_commands,
 )
 from botcore.bootstrap import BOT_START_TIME, build_bot, run_bot
+from botcore.interaction_utils import defer_interaction, edit_interaction_message, send_interaction_response
 from botcore.logging_utils import LOG_PATH, configure_logging, get_error_count
 from botcore.ui_common import (
     RestrictedModal as BaseRestrictedModal,
@@ -141,10 +143,7 @@ class KatabumpCommandTree(app_commands.CommandTree):
             if not await is_owner_or_dev(interaction):
                 if channel_allowed:
                     message = "⛔ Der Bot ist gerade im Wartungsmodus. Bitte später erneut versuchen."
-                    if not interaction.response.is_done():
-                        await interaction.response.send_message(message, ephemeral=True)
-                    else:
-                        await interaction.followup.send(message, ephemeral=True)
+                    await send_interaction_response(interaction, content=message, ephemeral=True)
                 return False
         now = time.monotonic()
         while _interaction_timestamps and now - _interaction_timestamps[0] > KATABUMP_INTERACTION_WINDOW_SEC:
@@ -152,10 +151,7 @@ class KatabumpCommandTree(app_commands.CommandTree):
         if len(_interaction_timestamps) >= KATABUMP_MAX_INTERACTIONS_PER_MIN:
             if channel_allowed:
                 message = "⏳ Zu viele Anfragen. Bitte in einer Minute erneut versuchen (Katabump-Limit)."
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(message, ephemeral=True)
-                else:
-                    await interaction.followup.send(message, ephemeral=True)
+                await send_interaction_response(interaction, content=message, ephemeral=True)
             return False
         _interaction_timestamps.append(now)
         return True
@@ -528,17 +524,7 @@ def _resolve_dynamic_cooldown_from_burning(attack: dict, applied_burning_duratio
 
 
 async def _safe_defer_interaction(interaction: discord.Interaction) -> bool:
-    if interaction.response.is_done():
-        return True
-    try:
-        await interaction.response.defer()
-        return True
-    except discord.NotFound:
-        logging.warning("Interaction expired before defer; continuing with message-edit fallback.")
-        return False
-    except discord.HTTPException:
-        logging.exception("Failed to defer interaction")
-        return False
+    return await defer_interaction(interaction)
 
 
 def _boosted_damage_effect_text(boosted_damage: int, attack_multiplier: float, flat_bonus: int) -> str | None:
@@ -7024,9 +7010,7 @@ async def _send_ephemeral(interaction: discord.Interaction, *, content: str | No
         kwargs["view"] = view
     if file is not None:
         kwargs["file"] = file
-    if interaction.response.is_done():
-        return await interaction.followup.send(**kwargs)
-    return await interaction.response.send_message(**kwargs)
+    return await send_interaction_response(interaction, **kwargs)
 
 def _get_bot_member(interaction: discord.Interaction) -> discord.Member | None:
     if interaction.guild is None or interaction.client.user is None:
@@ -7064,13 +7048,26 @@ async def _safe_send_channel(
             content="❌ Mir fehlen Rechte in diesem Kanal/Thread (View/Send/Thread-Rechte). Bitte gib mir Zugriff.",
         )
         return None
+    except discord.HTTPException:
+        logging.exception("Failed to send message to channel %s", channel_id)
+        await _send_ephemeral(
+            interaction,
+            content="❌ Nachricht konnte in diesem Kanal/Thread gerade nicht gesendet werden.",
+        )
+        return None
 
 async def _fetch_channel_safe(channel_id: int | None):
     if not channel_id:
         return None
     try:
         return await bot.fetch_channel(channel_id)
-    except Exception:
+    except discord.NotFound:
+        return None
+    except discord.Forbidden:
+        logging.warning("Missing access while fetching channel %s", channel_id)
+        return None
+    except discord.HTTPException:
+        logging.exception("Failed to fetch channel %s", channel_id)
         return None
 
 async def resend_pending_requests() -> None:
@@ -7139,7 +7136,7 @@ async def resend_pending_requests() -> None:
                 continue
             try:
                 mission_data = json.loads(row["mission_data"]) if row["mission_data"] else {}
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 mission_data = {}
             embed = _build_mission_embed(mission_data)
             view = MissionAcceptView(
@@ -7214,10 +7211,7 @@ def _flatten_app_commands(commands_list, prefix: str = "") -> list[tuple[str, ap
     return flat
 
 def get_panel_visibility_items() -> list[tuple[str, str, str]]:
-    try:
-        all_cmds = bot.tree.get_commands()
-    except Exception:
-        all_cmds = []
+    all_cmds = bot.tree.get_commands()
     command_items: list[tuple[str, str, str]] = []
     for name, cmd in _flatten_app_commands(all_cmds):
         key = command_visibility_key(name)
@@ -7298,9 +7292,7 @@ async def _send_panel_message(
                 kwargs["ephemeral"] = True
         else:
             kwargs["ephemeral"] = True
-    if interaction.response.is_done():
-        return await interaction.followup.send(**kwargs)
-    return await interaction.response.send_message(**kwargs)
+    return await send_interaction_response(interaction, **kwargs)
 
 async def _send_with_visibility(
     interaction: discord.Interaction,
@@ -7316,10 +7308,7 @@ async def _send_with_visibility(
     return await _send_ephemeral(interaction, content=content, embed=embed, view=view, file=file)
 
 async def _edit_panel_message(interaction: discord.Interaction, *, content: str | None = None, embed=None, view=None):
-    try:
-        await interaction.response.edit_message(content=content, embed=embed, view=view)
-    except discord.InteractionResponded:
-        await interaction.followup.edit_message(interaction.message.id, content=content, embed=embed, view=view)
+    await edit_interaction_message(interaction, content=content, embed=embed, view=view)
 
 async def _select_user(interaction: discord.Interaction, prompt: str):
     if interaction.guild is None:
@@ -7337,7 +7326,10 @@ async def _select_user(interaction: discord.Interaction, prompt: str):
     try:
         user = await interaction.client.fetch_user(user_id)
         return user_id, user.display_name
-    except Exception:
+    except discord.NotFound:
+        return user_id, str(user_id)
+    except discord.HTTPException:
+        logging.exception("Failed to fetch user %s for admin selector", user_id)
         return user_id, str(user_id)
 
 async def _select_number(interaction: discord.Interaction, prompt: str, options: list[int]):
@@ -7657,10 +7649,7 @@ async def send_test_report(interaction: discord.Interaction, visibility_key: str
                 flat.append((f"{prefix}{c.name}", c))
         return flat
 
-    try:
-        all_cmds = bot.tree.get_commands()
-    except Exception:
-        all_cmds = []
+    all_cmds = bot.tree.get_commands()
     flat_cmds = flatten_commands(all_cmds)
     lines = [f"• /{name} — registriert" for name, _ in flat_cmds]
     description = "Alle registrierten Slash-Commands (inkl. Unterbefehle):\n" + "\n".join(lines) if lines else "Keine Commands registriert."
@@ -8393,27 +8382,34 @@ class BotStatusSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
+            await send_interaction_response(interaction, content="Nicht dein Menü!", ephemeral=True)
             return
         choice = self.values[0]
         new_status = BOT_STATUS_MAP.get(choice, discord.Status.online)
         try:
             await interaction.client.change_presence(status=new_status)
+        except discord.HTTPException as exc:
+            logging.exception("Failed to change bot presence to %s", choice)
+            await send_interaction_response(interaction, content=f"❌ Fehler beim Setzen des Status: {exc}", ephemeral=True)
+            return
+
+        try:
             await save_bot_presence_status(choice)
-            embed = discord.Embed(
-                title="✅ Bot-Status geändert",
-                description=f"Neuer Status: {BOT_STATUS_LABELS.get(choice, 'Online')}",
-                color=0x2b90ff
+        except aiosqlite.Error:
+            logging.exception("Failed to persist bot status %s", choice)
+            await send_interaction_response(
+                interaction,
+                content="❌ Status wurde gesetzt, aber konnte nicht in der Datenbank gespeichert werden.",
+                ephemeral=True,
             )
-            try:
-                await interaction.response.edit_message(embed=embed, view=None)
-            except discord.InteractionResponded:
-                await interaction.followup.edit_message(interaction.message.id, embed=embed, view=None)
-        except Exception as e:
-            try:
-                await interaction.response.send_message(f"❌ Fehler beim Setzen des Status: {e}", ephemeral=True)
-            except discord.InteractionResponded:
-                await interaction.followup.send(f"❌ Fehler beim Setzen des Status: {e}", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="✅ Bot-Status geändert",
+            description=f"Neuer Status: {BOT_STATUS_LABELS.get(choice, 'Online')}",
+            color=0x2b90ff
+        )
+        await edit_interaction_message(interaction, embed=embed, view=None)
 
 class BotStatusView(RestrictedView):
     def __init__(self, requester_id: int):
