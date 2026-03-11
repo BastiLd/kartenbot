@@ -7,7 +7,8 @@ bot_token.txt
 token.txt
 .venv/
 venv/
-.vscode/
+.vscode/*
+!.vscode/settings.json
 *.db
 bot.log
 *.rar
