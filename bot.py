@@ -42,6 +42,7 @@ from services.battle import (
     update_battle_log,
 )
 from services import battle_state
+from services.card_validation import summarize_validation_issues, validate_cards
 from services.guild_settings import (
     add_give_op_role,
     add_give_op_user,
@@ -7552,68 +7553,11 @@ async def send_logs_last(interaction: discord.Interaction, count: int, visibilit
     await _send_with_visibility(interaction, visibility_key, content=f"```text\n{tail}\n```")
 
 async def send_karten_validate(interaction: discord.Interaction, visibility_key: str | None = None):
-    issues = []
-    for idx, card in enumerate(karten, start=1):
-        name = card.get("name")
-        beschreibung = card.get("beschreibung")
-        bild = card.get("bild")
-        seltenheit = card.get("seltenheit")
-        if not name:
-            issues.append(f"{idx}: fehlt name")
-        if not beschreibung:
-            issues.append(f"{idx}: fehlt beschreibung")
-        if not bild or not isinstance(bild, str) or not bild.startswith("http"):
-            issues.append(f"{idx}: bild ist ungueltig")
-        if not seltenheit:
-            issues.append(f"{idx}: fehlt seltenheit")
-        hp = card.get("hp")
-        if hp is not None and not isinstance(hp, int):
-            issues.append(f"{idx}: hp ist kein int")
-        attacks = card.get("attacks")
-        if attacks is not None:
-            if not isinstance(attacks, list):
-                issues.append(f"{idx}: attacks ist keine Liste")
-            else:
-                for a_i, atk in enumerate(attacks, start=1):
-                    if not isinstance(atk, dict):
-                        issues.append(f"{idx}.{a_i}: attack ist kein dict")
-                        continue
-                    if "name" not in atk or "damage" not in atk:
-                        issues.append(f"{idx}.{a_i}: attack fehlt name/damage")
-                        continue
-                    dmg = atk.get("damage")
-                    if isinstance(dmg, list):
-                        if len(dmg) != 2 or not all(isinstance(x, int) for x in dmg):
-                            issues.append(f"{idx}.{a_i}: damage list ungueltig")
-                    elif not isinstance(dmg, int):
-                        issues.append(f"{idx}.{a_i}: damage ist kein int")
-                    info_text = atk.get("info")
-                    if info_text is not None and not isinstance(info_text, str):
-                        issues.append(f"{idx}.{a_i}: info ist kein string")
-                    guaranteed_cond = atk.get("guaranteed_hit_if_condition")
-                    if guaranteed_cond is not None and not isinstance(guaranteed_cond, bool):
-                        issues.append(f"{idx}.{a_i}: guaranteed_hit_if_condition ist kein bool")
-                    multi_hit = atk.get("multi_hit")
-                    if multi_hit is not None:
-                        if not isinstance(multi_hit, dict):
-                            issues.append(f"{idx}.{a_i}: multi_hit ist kein dict")
-                        else:
-                            hits = multi_hit.get("hits")
-                            hit_chance = multi_hit.get("hit_chance")
-                            per_hit_damage = multi_hit.get("per_hit_damage")
-                            if not isinstance(hits, int) or hits <= 0:
-                                issues.append(f"{idx}.{a_i}: multi_hit.hits ungueltig")
-                            if not isinstance(hit_chance, (int, float)):
-                                issues.append(f"{idx}.{a_i}: multi_hit.hit_chance ungueltig")
-                            if not (isinstance(per_hit_damage, list) and len(per_hit_damage) == 2 and all(isinstance(x, int) for x in per_hit_damage)):
-                                issues.append(f"{idx}.{a_i}: multi_hit.per_hit_damage ungueltig")
+    issues = validate_cards(karten)
     if not issues:
-        await _send_with_visibility(interaction, visibility_key, content="karten.py ist valide.")
+        await _send_with_visibility(interaction, visibility_key, content=f"karten.py ist valide ({len(karten)} Karten).")
         return
-    preview = "\n".join(issues[:20])
-    more = len(issues) - 20
-    if more > 0:
-        preview += f"\n... +{more} weitere"
+    preview = summarize_validation_issues(issues, max_items=20)
     await _send_with_visibility(interaction, visibility_key, content=f"Probleme gefunden:\n{preview}")
 
 async def send_configure_add(interaction: discord.Interaction, visibility_key: str | None = None):
