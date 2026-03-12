@@ -65,7 +65,7 @@ async def add_card_buff(user_id, card_name, buff_type, attack_number, buff_amoun
         await db.commit()
 
 
-async def get_card_buffs(user_id, card_name):
+async def get_card_buffs(user_id: int, card_name: str) -> list[tuple[str, int, int]]:
     async with db_context() as db:
         cursor = await db.execute(
             """
@@ -182,7 +182,7 @@ async def increment_mission_count(user_id):
         await db.commit()
 
 
-async def get_team(user_id):
+async def get_team(user_id: int) -> list[int]:
     async with db_context() as db:
         cursor = await db.execute("SELECT team FROM user_teams WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
@@ -191,13 +191,13 @@ async def get_team(user_id):
         return []
 
 
-async def set_team(user_id, team):
+async def set_team(user_id: int, team: list[int]) -> None:
     async with db_context() as db:
         await db.execute("INSERT OR REPLACE INTO user_teams (user_id, team) VALUES (?, ?)", (user_id, json.dumps(team)))
         await db.commit()
 
 
-async def get_user_karten(user_id):
+async def get_user_karten(user_id: int) -> list[tuple[str, int]]:
     async with db_context() as db:
         cursor = await db.execute("SELECT karten_name, anzahl FROM user_karten WHERE user_id = ?", (user_id,))
         return await cursor.fetchall()

@@ -1,9 +1,42 @@
 import logging
+from typing import TypeAlias, TypedDict
 
 from services.battle import apply_outgoing_attack_modifier
 
 
-def build_battle_runtime_maps(player_ids: tuple[int, int]) -> dict[str, object]:
+BattleEntry: TypeAlias = dict[str, object]
+BattleEffectsMap: TypeAlias = dict[int, list[BattleEntry]]
+BattleCooldownsMap: TypeAlias = dict[int, dict[int, int]]
+BattleReloadMap: TypeAlias = dict[int, dict[int, bool]]
+BattleBoolMap: TypeAlias = dict[int, bool]
+BattleIntMap: TypeAlias = dict[int, int]
+BattleFloatMap: TypeAlias = dict[int, float]
+BattlePendingLandingMap: TypeAlias = dict[int, BattleEntry | None]
+DamageInput: TypeAlias = int | list[int]
+
+
+class BattleRuntimeMaps(TypedDict):
+    cooldowns_by_player: BattleCooldownsMap
+    active_effects: BattleEffectsMap
+    confused_next_turn: BattleBoolMap
+    manual_reload_needed: BattleReloadMap
+    stunned_next_turn: BattleBoolMap
+    special_lock_next_turn: BattleBoolMap
+    blind_next_attack: BattleFloatMap
+    pending_flat_bonus: BattleIntMap
+    pending_flat_bonus_uses: BattleIntMap
+    pending_multiplier: BattleFloatMap
+    pending_multiplier_uses: BattleIntMap
+    force_max_next: BattleIntMap
+    guaranteed_hit_next: BattleIntMap
+    incoming_modifiers: BattleEffectsMap
+    outgoing_attack_modifiers: BattleEffectsMap
+    absorbed_damage: BattleIntMap
+    delayed_defense_queue: BattleEffectsMap
+    airborne_pending_landing: BattlePendingLandingMap
+
+
+def build_battle_runtime_maps(player_ids: tuple[int, int]) -> BattleRuntimeMaps:
     player_a, player_b = player_ids
     return {
         "cooldowns_by_player": {player_a: {}, player_b: {}},
@@ -39,7 +72,7 @@ def summarize_card_buffs(buffs) -> tuple[int, dict[int, int]]:
     return total_health, damage_map
 
 
-def status_icons(active_effects: dict[int, list[dict]], player_id: int) -> str:
+def status_icons(active_effects: BattleEffectsMap, player_id: int) -> str:
     effects = active_effects.get(player_id, [])
     icons = []
     if any(effect.get("type") == "burning" for effect in effects):
@@ -76,18 +109,18 @@ def set_reload_needed(
         bucket.pop(attack_index, None)
 
 
-def find_effect(active_effects: dict[int, list[dict]], player_id: int, effect_type: str):
+def find_effect(active_effects: BattleEffectsMap, player_id: int, effect_type: str) -> BattleEntry | None:
     for effect in active_effects.get(player_id, []):
         if effect.get("type") == effect_type:
             return effect
     return None
 
 
-def has_effect(active_effects: dict[int, list[dict]], player_id: int, effect_type: str) -> bool:
+def has_effect(active_effects: BattleEffectsMap, player_id: int, effect_type: str) -> bool:
     return find_effect(active_effects, player_id, effect_type) is not None
 
 
-def consume_effect(active_effects: dict[int, list[dict]], player_id: int, effect_type: str) -> bool:
+def consume_effect(active_effects: BattleEffectsMap, player_id: int, effect_type: str) -> bool:
     effect = find_effect(active_effects, player_id, effect_type)
     if not effect:
         return False
@@ -99,13 +132,13 @@ def consume_effect(active_effects: dict[int, list[dict]], player_id: int, effect
 
 
 def grant_unique_effect(
-    active_effects: dict[int, list[dict]],
+    active_effects: BattleEffectsMap,
     player_id: int,
     effect_type: str,
     applier_id: int,
     *,
     duration: int = 1,
-    extra_fields: dict | None = None,
+    extra_fields: BattleEntry | None = None,
 ) -> None:
     try:
         active_effects[player_id] = [
@@ -120,8 +153,8 @@ def grant_unique_effect(
 
 
 def set_confusion(
-    active_effects: dict[int, list[dict]],
-    confused_next_turn: dict[int, bool],
+    active_effects: BattleEffectsMap,
+    confused_next_turn: BattleBoolMap,
     player_id: int,
     applier_id: int,
 ) -> None:
@@ -130,8 +163,8 @@ def set_confusion(
 
 
 def consume_confusion_if_any(
-    active_effects: dict[int, list[dict]],
-    confused_next_turn: dict[int, bool],
+    active_effects: BattleEffectsMap,
+    confused_next_turn: BattleBoolMap,
     player_id: int,
 ) -> None:
     if confused_next_turn.get(player_id, False):
@@ -178,7 +211,7 @@ def reduce_cooldowns(cooldown_map: dict[int, int]) -> None:
 
 
 def queue_delayed_defense(
-    delayed_defense_queue: dict[int, list[dict]],
+    delayed_defense_queue: BattleEffectsMap,
     player_id: int,
     defense: str,
     counter: int = 0,
@@ -195,7 +228,7 @@ def queue_delayed_defense(
 
 
 def queue_incoming_modifier(
-    incoming_modifiers: dict[int, list[dict]],
+    incoming_modifiers: BattleEffectsMap,
     player_id: int,
     *,
     percent: float = 0.0,
@@ -226,9 +259,9 @@ def queue_incoming_modifier(
 
 
 def activate_delayed_defense_after_attack(
-    delayed_defense_queue: dict[int, list[dict]],
-    active_effects: dict[int, list[dict]],
-    incoming_modifiers: dict[int, list[dict]],
+    delayed_defense_queue: BattleEffectsMap,
+    active_effects: BattleEffectsMap,
+    incoming_modifiers: BattleEffectsMap,
     player_id: int,
     effect_events: list[str],
     *,
@@ -253,11 +286,11 @@ def activate_delayed_defense_after_attack(
 
 
 def start_airborne_two_phase(
-    active_effects: dict[int, list[dict]],
-    airborne_pending_landing: dict[int, dict | None],
-    incoming_modifiers: dict[int, list[dict]],
+    active_effects: BattleEffectsMap,
+    airborne_pending_landing: BattlePendingLandingMap,
+    incoming_modifiers: BattleEffectsMap,
     player_id: int,
-    landing_damage,
+    landing_damage: DamageInput | object,
     effect_events: list[str],
     *,
     source_attack_index: int | None = None,
@@ -283,11 +316,11 @@ def start_airborne_two_phase(
 
 
 def resolve_forced_landing_if_due(
-    active_effects: dict[int, list[dict]],
-    airborne_pending_landing: dict[int, dict | None],
+    active_effects: BattleEffectsMap,
+    airborne_pending_landing: BattlePendingLandingMap,
     player_id: int,
     effect_events: list[str],
-) -> dict | None:
+) -> BattleEntry | None:
     pending = airborne_pending_landing.get(player_id)
     if not pending:
         return None
@@ -388,7 +421,7 @@ def guard_non_heal_damage_result(
 
 
 def queue_outgoing_attack_modifier(
-    outgoing_attack_modifiers: dict[int, list[dict]],
+    outgoing_attack_modifiers: BattleEffectsMap,
     player_id: int,
     *,
     percent: float = 0.0,
@@ -407,7 +440,7 @@ def queue_outgoing_attack_modifier(
 
 
 def apply_outgoing_attack_modifiers(
-    outgoing_attack_modifiers: dict[int, list[dict]],
+    outgoing_attack_modifiers: BattleEffectsMap,
     attacker_id: int,
     raw_damage: int,
 ) -> tuple[int, int]:

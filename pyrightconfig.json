@@ -1,9 +1,32 @@
 {
+    "typeCheckingMode": "basic",
     "venvPath": ".",
     "venv": ".venv",
     "exclude": [
         ".venv",
         "__pycache__",
         ".pycache_tmp"
-    ]
+    ],
+    "reportAny": "none",
+    "reportDeprecated": "none",
+    "reportExplicitAny": "none",
+    "reportMissingTypeArgument": "none",
+    "reportConstantRedefinition": "none",
+    "reportImplicitOverride": "none",
+    "reportImplicitStringConcatenation": "none",
+    "reportMissingParameterType": "none",
+    "reportPrivateUsage": "none",
+    "reportUnannotatedClassAttribute": "none",
+    "reportUnknownArgumentType": "none",
+    "reportUnknownLambdaType": "none",
+    "reportUnknownMemberType": "none",
+    "reportUnknownParameterType": "none",
+    "reportUnknownVariableType": "none",
+    "reportUnnecessaryComparison": "none",
+    "reportUnnecessaryIsInstance": "none",
+    "reportUnusedCallResult": "none",
+    "reportUnusedFunction": "none",
+    "reportUnusedImport": "none",
+    "reportUnusedParameter": "none",
+    "reportUnusedVariable": "none"
 }

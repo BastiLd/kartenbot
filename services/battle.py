@@ -1,11 +1,40 @@
 import random
 import re
+from typing import Literal, TypeAlias, overload
 
 import discord
 
 
+DamageInput: TypeAlias = int | list[int]
+MultiHitDetails: TypeAlias = dict[str, object]
+
+
+@overload
 def resolve_multi_hit_damage(
-    multi_hit: dict,
+    multi_hit: dict[str, object],
+    *,
+    buff_amount: int = 0,
+    attack_multiplier: float = 1.0,
+    force_max: bool = False,
+    guaranteed_hit: bool = False,
+    return_details: Literal[True],
+) -> tuple[int, int, int, MultiHitDetails]: ...
+
+
+@overload
+def resolve_multi_hit_damage(
+    multi_hit: dict[str, object],
+    *,
+    buff_amount: int = 0,
+    attack_multiplier: float = 1.0,
+    force_max: bool = False,
+    guaranteed_hit: bool = False,
+    return_details: Literal[False] = False,
+) -> tuple[int, int, int]: ...
+
+
+def resolve_multi_hit_damage(
+    multi_hit: dict[str, object],
     *,
     buff_amount: int = 0,
     attack_multiplier: float = 1.0,
@@ -15,7 +44,7 @@ def resolve_multi_hit_damage(
 ):
     """Resolve multi-hit damage and return (damage, min_possible, max_possible[, details])."""
     hits = max(0, int(multi_hit.get("hits", 0) or 0))
-    details = {
+    details: MultiHitDetails = {
         "hits": hits,
         "landed_hits": 0,
         "per_hit_damages": [],
@@ -119,7 +148,7 @@ def apply_outgoing_attack_modifier(raw_damage: int, *, percent: float = 0.0, fla
     return max(0, damage), max(0, overflow)
 
 
-def calculate_damage(attack_damage, buff_amount=0):
+def calculate_damage(attack_damage: DamageInput, buff_amount: int = 0) -> tuple[int, bool, int, int]:
     """
     Calculate damage with right-skew distribution.
     attack_damage: [min, max] list or single value (backwards compatible)
