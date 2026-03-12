@@ -48,6 +48,12 @@ Direkte Kartenvalidierung:
 .\.venv\Scripts\python.exe .\scripts\validate_cards.py
 ```
 
+Alpha-Smoke-Check:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\alpha_smoke.py
+```
+
 ## Projektaufbau
 
 - `bot.py`
@@ -68,6 +74,8 @@ Direkte Kartenvalidierung:
   Sichere Discord-Antwortpfade fuer `send`, `defer` und `edit`.
 - `services/battle.py`
   Battle-Berechnungen und Embed-Helfer.
+- `services/battle_types.py`
+  TypedDicts fuer Karten-, Attacken- und Multi-Hit-Daten.
 - `services/battle_state.py`
   Reine Zustandslogik fuer Effekte, Cooldowns und Modifier.
 - `services/card_validation.py`
@@ -135,7 +143,17 @@ Der Workflow `.github/workflows/main-checks.yml` laeuft auf jedem Push nach `mai
 
 - Setup der Windows-Python-Umgebung
 - `py_compile` fuer Kernmodule
+- Alpha-Smoke-Check
 - Kartenvalidierung
 - komplette Test-Suite
 
 Wenn CI rot ist, sollte die lokale Reproduktion zuerst ueber dieselben Repo-Skripte laufen.
+
+## Alpha-Release
+
+Das operative Kurz-Runbook liegt in `ALPHA_RUNBOOK.md`. Vor einer geschlossenen Alpha sollte mindestens gelten:
+
+1. Tests gruen
+2. `scripts/alpha_smoke.py` gruen
+3. `scripts/validate_cards.py` gruen
+4. ein echter PvP- und ein echter Missionskampf live getestet

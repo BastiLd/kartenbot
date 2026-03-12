@@ -2,6 +2,7 @@ import logging
 from typing import TypeAlias, TypedDict
 
 from services.battle import apply_outgoing_attack_modifier
+from services.battle_types import DamageValue
 
 
 BattleEntry: TypeAlias = dict[str, object]
@@ -12,7 +13,7 @@ BattleBoolMap: TypeAlias = dict[int, bool]
 BattleIntMap: TypeAlias = dict[int, int]
 BattleFloatMap: TypeAlias = dict[int, float]
 BattlePendingLandingMap: TypeAlias = dict[int, BattleEntry | None]
-DamageInput: TypeAlias = int | list[int]
+DamageInput = DamageValue
 
 
 class BattleRuntimeMaps(TypedDict):

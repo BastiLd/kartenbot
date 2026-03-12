@@ -1,17 +1,18 @@
 import random
 import re
-from typing import Literal, TypeAlias, overload
+from typing import Literal, overload
 
 import discord
 
+from services.battle_types import CardData, DamageValue, MultiHitConfig, MultiHitRollDetails
 
-DamageInput: TypeAlias = int | list[int]
-MultiHitDetails: TypeAlias = dict[str, object]
+DamageInput = DamageValue
+MultiHitDetails = MultiHitRollDetails
 
 
 @overload
 def resolve_multi_hit_damage(
-    multi_hit: dict[str, object],
+    multi_hit: MultiHitConfig,
     *,
     buff_amount: int = 0,
     attack_multiplier: float = 1.0,
@@ -23,7 +24,7 @@ def resolve_multi_hit_damage(
 
 @overload
 def resolve_multi_hit_damage(
-    multi_hit: dict[str, object],
+    multi_hit: MultiHitConfig,
     *,
     buff_amount: int = 0,
     attack_multiplier: float = 1.0,
@@ -34,7 +35,7 @@ def resolve_multi_hit_damage(
 
 
 def resolve_multi_hit_damage(
-    multi_hit: dict[str, object],
+    multi_hit: MultiHitConfig,
     *,
     buff_amount: int = 0,
     attack_multiplier: float = 1.0,
@@ -387,8 +388,8 @@ def update_battle_log(
 
 
 def create_battle_embed(
-    player1_card,
-    player2_card,
+    player1_card: CardData,
+    player2_card: CardData,
     player1_hp,
     player2_hp,
     current_turn,

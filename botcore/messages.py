@@ -1,0 +1,8 @@
+MAINTENANCE_ACTIVE = "⛔ Der Bot ist gerade im Wartungsmodus. Bitte später erneut versuchen."
+SERVER_ONLY = "❌ Nur in Servern verfügbar."
+PARTICIPANTS_OR_ADMINS_ONLY = "Nur Teilnehmer oder Admins können antworten."
+CLOSE_PERMISSION_DENIED = "❌ Keine Berechtigung zum Schließen."
+BUG_FORM_NOT_CONFIGURED = "❌ Bug-Formular ist noch nicht konfiguriert."
+DM_DISABLED = "❌ Ich kann dir keine DM senden. Bitte aktiviere DMs für diesen Server."
+DM_LOG_SEND_FAILED = "❌ Beim Senden des Kampf-Logs per DM ist ein Fehler aufgetreten."
+THREAD_CLOSING = "🔒 Thread wird geschlossen..."

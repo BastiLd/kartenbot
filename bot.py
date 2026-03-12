@@ -25,6 +25,16 @@ from botcommands import (
 from botcore.bootstrap import BOT_START_TIME, build_bot, run_bot
 from botcore.interaction_utils import defer_interaction, edit_interaction_message, send_interaction_response
 from botcore.logging_utils import LOG_PATH, configure_logging, get_error_count
+from botcore.messages import (
+    BUG_FORM_NOT_CONFIGURED,
+    CLOSE_PERMISSION_DENIED,
+    DM_DISABLED,
+    DM_LOG_SEND_FAILED,
+    MAINTENANCE_ACTIVE,
+    PARTICIPANTS_OR_ADMINS_ONLY,
+    SERVER_ONLY,
+    THREAD_CLOSING,
+)
 from botcore.ui_common import (
     RestrictedModal as BaseRestrictedModal,
     RestrictedView as BaseRestrictedView,
@@ -45,6 +55,7 @@ from services.battle import (
 )
 from services import battle_state
 from services.card_validation import summarize_validation_issues, validate_cards
+from services.battle_types import CardData
 from services.guild_settings import (
     add_give_op_role,
     add_give_op_user,
@@ -98,7 +109,7 @@ KATABUMP_MAX_INTERACTIONS_PER_MIN = 200
 KATABUMP_INTERACTION_WINDOW_SEC = 60
 _interaction_timestamps = deque()
 _persistent_views_registered = False
-karten: list[dict[str, Any]] = cast(list[dict[str, Any]], RAW_KARTEN)
+karten: list[CardData] = cast(list[CardData], RAW_KARTEN)
 
 
 class SendableChannel(Protocol):
@@ -263,7 +274,7 @@ class KatabumpCommandTree(app_commands.CommandTree):
         if await is_maintenance_enabled(guild_id):
             if not await is_owner_or_dev(interaction):
                 if channel_allowed:
-                    message = "⛔ Der Bot ist gerade im Wartungsmodus. Bitte später erneut versuchen."
+                    message = MAINTENANCE_ACTIVE
                     await send_interaction_response(interaction, content=message, ephemeral=True)
                 return False
         now = time.monotonic()
@@ -771,7 +782,7 @@ async def is_channel_allowed(interaction: discord.Interaction, *, bypass_mainten
         return False
     if not bypass_maintenance and await is_maintenance_enabled(guild_id):
         if not await is_owner_or_dev(interaction):
-            message = "⛔ Der Bot ist gerade im Wartungsmodus. Bitte später erneut versuchen."
+            message = MAINTENANCE_ACTIVE
             if not interaction.response.is_done():
                 await interaction.response.send_message(message, ephemeral=True)
             else:
@@ -3758,7 +3769,7 @@ async def _start_fight_from_challenge(
     thread_created: bool,
 ) -> None:
     if interaction.guild is None:
-        await interaction.followup.send("❌ Nur in Servern verfügbar.", ephemeral=True)
+        await interaction.followup.send(SERVER_ONLY, ephemeral=True)
         return
     challenger = await _get_member_safe(interaction.guild, challenger_id)
     challenged = await _get_member_safe(interaction.guild, challenged_id)
@@ -3919,9 +3930,9 @@ class AdminCloseView(RestrictedView):
     @ui.button(label="Thread schließen (Admin/Owner)", style=discord.ButtonStyle.danger)
     async def close_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not await is_admin(interaction):
-            await interaction.response.send_message("❌ Keine Berechtigung zum Schließen.", ephemeral=True)
+            await interaction.response.send_message(CLOSE_PERMISSION_DENIED, ephemeral=True)
             return
-        await interaction.response.send_message("🔒 Thread wird geschlossen...", ephemeral=True)
+        await interaction.response.send_message(THREAD_CLOSING, ephemeral=True)
         self.stop()
         try:
             await self.thread.delete()
@@ -4005,14 +4016,14 @@ class FightFeedbackView(RestrictedView):
     @ui.button(label="Es gab einen Bug", style=discord.ButtonStyle.success)
     async def yes_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._is_allowed(interaction):
-            await interaction.response.send_message("Nur Teilnehmer oder Admins können antworten.", ephemeral=True)
+            await interaction.response.send_message(PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=True)
             return
         if interaction.user.id in self._bug_reported_by:
             await interaction.response.send_message("Du hast bereits gemeldet, dass es einen Bug gab.", ephemeral=True)
             return
         self._bug_reported_by.add(interaction.user.id)
         if not BUG_REPORT_TALLY_URL or "REPLACE_ME" in BUG_REPORT_TALLY_URL:
-            await interaction.response.send_message("❌ Bug-Formular ist noch nicht konfiguriert.", ephemeral=True)
+            await interaction.response.send_message(BUG_FORM_NOT_CONFIGURED, ephemeral=True)
             return
 
         await interaction.response.send_message(
@@ -4025,7 +4036,7 @@ class FightFeedbackView(RestrictedView):
     @ui.button(label="Kampf-Log per DM", style=discord.ButtonStyle.primary)
     async def log_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._is_allowed(interaction):
-            await interaction.response.send_message("Nur Teilnehmer oder Admins können antworten.", ephemeral=True)
+            await interaction.response.send_message(PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=True)
             return
         if interaction.user.id in self._log_sent_to:
             await interaction.response.send_message("Ich habe dir den Kampf-Log bereits per DM geschickt.", ephemeral=True)
@@ -4043,11 +4054,11 @@ class FightFeedbackView(RestrictedView):
                 dm_embed = discord.Embed(title=title, description=chunk, color=0x2F3136)
                 await interaction.user.send(embed=dm_embed)
         except discord.Forbidden:
-            await interaction.response.send_message("❌ Ich kann dir keine DM senden. Bitte aktiviere DMs für diesen Server.", ephemeral=True)
+            await interaction.response.send_message(DM_DISABLED, ephemeral=True)
             return
         except Exception:
             logging.exception("Unexpected error")
-            await interaction.response.send_message("❌ Beim Senden des Kampf-Logs per DM ist ein Fehler aufgetreten.", ephemeral=True)
+            await interaction.response.send_message(DM_LOG_SEND_FAILED, ephemeral=True)
             return
         self._log_sent_to.add(interaction.user.id)
         await interaction.response.send_message("📩 Vollständiger Kampf-Log wurde dir per DM gesendet.", ephemeral=True)
@@ -4055,7 +4066,7 @@ class FightFeedbackView(RestrictedView):
     @ui.button(label="Es gab keinen Bug", style=discord.ButtonStyle.danger, row=2)
     async def no_bug_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._is_allowed(interaction):
-            await interaction.response.send_message("Nur Teilnehmer oder Admins können antworten.", ephemeral=True)
+            await interaction.response.send_message(PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=True)
             return
         if interaction.user.id in self._opted_out_by:
             await interaction.response.send_message("Du hast bereits geantwortet.", ephemeral=True)
@@ -4078,9 +4089,9 @@ class FightFeedbackView(RestrictedView):
             await interaction.response.send_message("Dieser Button ist nur in Threads verfügbar.", ephemeral=True)
             return
         if not await is_admin(interaction):
-            await interaction.response.send_message("❌ Keine Berechtigung zum Schließen.", ephemeral=True)
+            await interaction.response.send_message(CLOSE_PERMISSION_DENIED, ephemeral=True)
             return
-        await interaction.response.send_message("🔒 Thread wird geschlossen...", ephemeral=True)
+        await interaction.response.send_message(THREAD_CLOSING, ephemeral=True)
         self.stop()
         try:
             await self.channel.delete()
@@ -7458,7 +7469,7 @@ async def _edit_panel_message(interaction: discord.Interaction, *, content: str 
 
 async def _select_user(interaction: discord.Interaction, prompt: str) -> tuple[int | None, str | None]:
     if interaction.guild is None:
-        await _send_ephemeral(interaction, content="Nur in Servern verfügbar.")
+        await _send_ephemeral(interaction, content=SERVER_ONLY)
         return None, None
     view = AdminUserSelectView(interaction.user.id, interaction.guild)
     await _send_ephemeral(interaction, content=prompt, view=view)
@@ -7700,7 +7711,7 @@ async def send_karten_validate(interaction: discord.Interaction, visibility_key:
 
 async def send_configure_add(interaction: discord.Interaction, visibility_key: str | None = None):
     if interaction.guild is None:
-        await _send_with_visibility(interaction, visibility_key, content="Nur in Servern verfügbar.")
+        await _send_with_visibility(interaction, visibility_key, content=SERVER_ONLY)
         return
     async with db_context() as db:
         await db.execute(
@@ -7717,7 +7728,7 @@ async def send_configure_add(interaction: discord.Interaction, visibility_key: s
 
 async def send_configure_remove(interaction: discord.Interaction, visibility_key: str | None = None):
     if interaction.guild is None:
-        await _send_with_visibility(interaction, visibility_key, content="Nur in Servern verfügbar.")
+        await _send_with_visibility(interaction, visibility_key, content=SERVER_ONLY)
         return
     async with db_context() as db:
         await db.execute(
@@ -7734,7 +7745,7 @@ async def send_configure_remove(interaction: discord.Interaction, visibility_key
 
 async def send_configure_list(interaction: discord.Interaction, visibility_key: str | None = None):
     if interaction.guild is None:
-        await _send_with_visibility(interaction, visibility_key, content="Nur in Servern verfügbar.")
+        await _send_with_visibility(interaction, visibility_key, content=SERVER_ONLY)
         return
     async with db_context() as db:
         cursor = await db.execute(
@@ -7750,7 +7761,7 @@ async def send_configure_list(interaction: discord.Interaction, visibility_key: 
 
 async def send_reset_intro(interaction: discord.Interaction, visibility_key: str | None = None):
     if interaction.guild is None:
-        await _send_with_visibility(interaction, visibility_key, content="Nur in Servern verfügbar.")
+        await _send_with_visibility(interaction, visibility_key, content=SERVER_ONLY)
         return
     channel_id = interaction.channel_id
     if channel_id is None:
@@ -7771,7 +7782,7 @@ async def send_reset_intro(interaction: discord.Interaction, visibility_key: str
 
 async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_name: str, visibility_key: str | None = None):
     if interaction.guild is None:
-        await _send_with_visibility(interaction, visibility_key, content="Nur in Servern verfügbar.")
+        await _send_with_visibility(interaction, visibility_key, content=SERVER_ONLY)
         return
     target_user = _get_member_if_available(interaction.guild, user_id)
     mention = target_user.mention if target_user else f"<@{user_id}>"
@@ -8089,7 +8100,7 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
 
     if action == "maintenance_on":
         if interaction.guild is None:
-            await _send_with_visibility(interaction, "maintenance", content="Nur in Servern verfügbar.")
+            await _send_with_visibility(interaction, "maintenance", content=SERVER_ONLY)
             return
         await set_maintenance_mode(interaction.guild.id, True)
         logging.info("Maintenance ON by %s in guild %s", interaction.user.id, interaction.guild_id)
@@ -8097,7 +8108,7 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
         return
     if action == "maintenance_off":
         if interaction.guild is None:
-            await _send_with_visibility(interaction, "maintenance", content="Nur in Servern verfügbar.")
+            await _send_with_visibility(interaction, "maintenance", content=SERVER_ONLY)
             return
         await set_maintenance_mode(interaction.guild.id, False)
         logging.info("Maintenance OFF by %s in guild %s", interaction.user.id, interaction.guild_id)

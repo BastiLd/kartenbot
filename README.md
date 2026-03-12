@@ -77,7 +77,7 @@ Die interne Command-Registrierung liegt inzwischen in den Modulen unter `botcomm
 - `services/`
   Battle-Logik, Battle-State, Persistenz, Kartenvalidierung und Settings.
 - `scripts/`
-  Setup, Test-Runner und Kartenvalidierung.
+  Setup, Test-Runner, Alpha-Smoke-Check und Kartenvalidierung.
 - `tests/`
   Unit- und Regressionstests.
 - `karten.py`
@@ -134,12 +134,27 @@ Einzelne Tests:
 powershell -ExecutionPolicy Bypass -File .\scripts\run_tests.ps1 tests.test_smoke
 ```
 
+Alpha-Smoke-Check:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\alpha_smoke.py
+```
+
 Bei jedem Push auf `main` laeuft zusaetzlich GitHub Actions:
 
 - Setup der Python-Umgebung
 - `py_compile`
+- Alpha-Smoke-Check
 - Kartenvalidierung
 - komplette Test-Suite
+
+## Alpha-Freigabe
+
+Fuer die geschlossene Alpha liegt ein kompaktes Runbook in [ALPHA_RUNBOOK.md](ALPHA_RUNBOOK.md). Dort stehen:
+
+- lokale Pflichtchecks
+- Live-Test auf Discord
+- Rollback-Hinweise
 
 ## Hinweise
 

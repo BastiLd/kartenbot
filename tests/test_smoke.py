@@ -4,6 +4,7 @@ import time
 import unittest
 
 import bot
+from botcore.alpha_smoke import EXPECTED_ALPHA_COMMANDS, run_alpha_smoke_checks
 from botcore.bootstrap import BOT_START_TIME, build_bot_intents
 from db import close_db, init_db
 from services.battle import calculate_damage
@@ -32,29 +33,11 @@ class SmokeTests(unittest.TestCase):
             return names
 
         command_names = flatten(bot.bot.tree.get_commands())
-        expected = {
-            "anfang",
-            "bot-status",
-            "eingeladen",
-            "entwicklerpanel",
-            "geschichte",
-            "intro-zuruecksetzen",
-            "kampf",
-            "kanal-freigeben",
-            "karte-geben",
-            "konfigurieren entfernen",
-            "konfigurieren hinzufuegen",
-            "konfigurieren liste",
-            "mission",
-            "op-verwaltung",
-            "sammlung",
-            "sammlung-ansehen",
-            "statistik balance",
-            "täglich",
-            "test-bericht",
-            "verbessern",
-        }
-        self.assertTrue(expected.issubset(command_names))
+        self.assertTrue(EXPECTED_ALPHA_COMMANDS.issubset(command_names))
+
+    def test_alpha_smoke_checks(self) -> None:
+        results = run_alpha_smoke_checks()
+        self.assertTrue(all(result.ok for result in results), msg=[result.details for result in results if not result.ok])
 
     def test_calculate_damage_bounds(self) -> None:
         random.seed(42)
