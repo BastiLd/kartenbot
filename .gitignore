@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+.pycache_tmp/
 .env
 .env.*
 env.env
@@ -7,9 +8,15 @@ bot_token.txt
 token.txt
 .venv/
 venv/
+.npm-cache/
+.patches/
+.git-repair-temp/
+.tmp/
 .vscode/*
 !.vscode/settings.json
 *.db
 bot.log
+gcm-diagnose.log
+kampf log *.txt
 *.rar
 Neuer Ordner/
