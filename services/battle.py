@@ -239,14 +239,28 @@ def _keep_last_rounds(text: str, max_rounds: int | None) -> str:
 def _display_name(user_obj) -> str:
     if isinstance(user_obj, str):
         text = user_obj.strip()
-        return text or "Bot"
+        if not text:
+            return "Bot"
+        return discord.utils.escape_markdown(text, as_needed=False)
     display_name = getattr(user_obj, "display_name", None)
     if display_name:
-        return str(display_name)
+        return discord.utils.escape_markdown(str(display_name), as_needed=False)
     mention = getattr(user_obj, "mention", None)
     if mention:
-        return str(mention)
+        return discord.utils.escape_markdown(str(mention), as_needed=False)
     return "Bot"
+
+
+def _card_display_name(card_name: object) -> str:
+    text = str(card_name or "").strip()
+    if not text:
+        return "Unbekannte Karte"
+    return discord.utils.escape_markdown(text, as_needed=False)
+
+
+def _owned_card_label(owner_display: str, card_name: object) -> str:
+    owner = str(owner_display or "").strip() or "Bot"
+    return f"{owner}'s {_card_display_name(card_name)}"
 
 
 def _extract_heal_amount_from_effect_events(effect_events: list[str] | None) -> int:
@@ -298,6 +312,9 @@ def build_battle_log_entry(
     self_hit_suffix = f" (Selbsttreffer: {self_hit_damage})" if (self_hit_damage and self_hit_damage > 0) else ""
     effect_text = ""
     heal_amount = _extract_heal_amount_from_effect_events(effect_events)
+    attacker_card_label = _owned_card_label(attacker_display, attacker_name)
+    defender_card_label = _owned_card_label(defender_display, defender_name)
+    attack_display_name = _card_display_name(attack_name)
     if effect_events:
         lines = [str(event).strip() for event in effect_events if str(event).strip()]
         if lines:
@@ -305,14 +322,14 @@ def build_battle_log_entry(
 
     if int(actual_damage or 0) == 0 and heal_amount > 0:
         attack_line = (
-            f"**{attacker_display}s {attacker_name}** \u27a4 **{attack_name}** \u27a4 "
+            f"**{attacker_card_label}** \u27a4 **{attack_display_name}** \u27a4 "
             f"**+{heal_amount} HP Heilung**"
         )
     else:
         attack_line = (
-            f"**{attacker_display}s {attacker_name}** \u27a4 **{attack_name}** \u27a4 "
+            f"**{attacker_card_label}** \u27a4 **{attack_display_name}** \u27a4 "
             f"**{actual_damage} Schaden{burn_suffix}{confusion_suffix}{self_hit_suffix}** an "
-            f"**{defender_display}s {defender_name}**"
+            f"**{defender_card_label}**"
         )
     hp_display = defender_display
     hp_value = int(defender_remaining_hp or 0)
@@ -328,13 +345,13 @@ def build_battle_log_entry(
     )
     if int(actual_damage or 0) == 0 and heal_amount > 0:
         summary_line = (
-            f"{attacker_display}s {attacker_name} \u27a4 {attack_name} \u27a4 "
+            f"{attacker_card_label} \u27a4 {attack_display_name} \u27a4 "
             f"+{heal_amount} HP Heilung"
         )
     else:
         summary_line = (
-            f"{attacker_display}s {attacker_name} \u27a4 {attack_name} \u27a4 "
-            f"{actual_damage} Schaden an {defender_display}s {defender_name}"
+            f"{attacker_card_label} \u27a4 {attack_display_name} \u27a4 "
+            f"{actual_damage} Schaden an {defender_card_label}"
         )
     return new_entry, summary_line
 
@@ -400,8 +417,8 @@ def create_battle_embed(
     recent_log_lines: list[str] | None = None,
     highlight_tone: str | None = None,
 ):
-    user1_name = user1.display_name if user1 else "Bot"
-    user2_name = user2.display_name if user2 else "Bot"
+    user1_name = _display_name(user1)
+    user2_name = _display_name(user2)
     user1_mention = user1.mention if user1 else "Bot"
     user2_mention = user2.mention if user2 else "Bot"
 
@@ -436,14 +453,14 @@ def create_battle_embed(
 
     if current_turn == (user1.id if user1 else 0):
         player1_label = (
-            f"**\U0001f7e5 {user1_name}s Karte"
+            f"**\U0001f7e5 {user1_name}'s Karte"
             f"{'\U0001f525' if player1_burning else ''}"
             f"{' \U0001f300' if player1_confused else ''}"
             f"{' \U0001f977' if player1_stealth else ''}"
             f"{' \u2708\ufe0f' if player1_airborne else ''}**"
         )
         player2_label = (
-            f"\U0001f7e6 {user2_name}s Karte"
+            f"\U0001f7e6 {user2_name}'s Karte"
             f"{'\U0001f525' if player2_burning else ''}"
             f"{' \U0001f300' if player2_confused else ''}"
             f"{' \U0001f977' if player2_stealth else ''}"
@@ -451,14 +468,14 @@ def create_battle_embed(
         )
     else:
         player1_label = (
-            f"\U0001f7e5 {user1_name}s Karte"
+            f"\U0001f7e5 {user1_name}'s Karte"
             f"{'\U0001f525' if player1_burning else ''}"
             f"{' \U0001f300' if player1_confused else ''}"
             f"{' \U0001f977' if player1_stealth else ''}"
             f"{' \u2708\ufe0f' if player1_airborne else ''}"
         )
         player2_label = (
-            f"**\U0001f7e6 {user2_name}s Karte"
+            f"**\U0001f7e6 {user2_name}'s Karte"
             f"{'\U0001f525' if player2_burning else ''}"
             f"{' \U0001f300' if player2_confused else ''}"
             f"{' \U0001f977' if player2_stealth else ''}"

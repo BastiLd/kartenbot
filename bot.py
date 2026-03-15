@@ -107,6 +107,7 @@ configure_logging()
 
 KATABUMP_MAX_INTERACTIONS_PER_MIN = 200
 KATABUMP_INTERACTION_WINDOW_SEC = 60
+THREAD_AUTO_CLOSE_DELAY_SECONDS = 18
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 karten: list[CardData] = cast(list[CardData], RAW_KARTEN)
@@ -130,6 +131,15 @@ def _channel_mention_or_fallback(channel: object) -> str:
     if isinstance(channel_id, int):
         return f"<#{channel_id}>"
     return "dieser Kanal"
+
+
+def _effect_source_name(source: object) -> str:
+    text = str(source or "").strip()
+    return text or "Effekt"
+
+
+def _effect_source_text(source: object, message: str) -> str:
+    return f"{_effect_source_name(source)}: {message}"
 
 
 class SimpleBotUser:
@@ -1386,8 +1396,20 @@ class BattleView(RestrictedView):
     def _clear_airborne(self, player_id: int) -> None:
         battle_state.consume_effect(self.active_effects, player_id, "airborne")
 
-    def queue_delayed_defense(self, player_id: int, defense: str, counter: int = 0) -> None:
-        battle_state.queue_delayed_defense(self.delayed_defense_queue, player_id, defense, counter=counter)
+    def queue_delayed_defense(
+        self,
+        player_id: int,
+        defense: str,
+        counter: int = 0,
+        source: str | None = None,
+    ) -> None:
+        battle_state.queue_delayed_defense(
+            self.delayed_defense_queue,
+            player_id,
+            defense,
+            counter=counter,
+            source=source,
+        )
 
     def activate_delayed_defense_after_attack(
         self,
@@ -1526,6 +1548,7 @@ class BattleView(RestrictedView):
         percent: float = 0.0,
         flat: int = 0,
         turns: int = 1,
+        source: str | None = None,
     ) -> None:
         battle_state.queue_outgoing_attack_modifier(
             self.outgoing_attack_modifiers,
@@ -1533,10 +1556,16 @@ class BattleView(RestrictedView):
             percent=percent,
             flat=flat,
             turns=turns,
+            source=source,
         )
 
-    def apply_outgoing_attack_modifiers(self, attacker_id: int, raw_damage: int) -> tuple[int, int]:
-        return battle_state.apply_outgoing_attack_modifiers(self.outgoing_attack_modifiers, attacker_id, raw_damage)
+    def apply_outgoing_attack_modifiers(self, attacker_id: int, raw_damage: int) -> tuple[int, int, dict[str, object] | None]:
+        reduced_damage, overflow_self_damage, modifier_details = battle_state.apply_outgoing_attack_modifiers(
+            self.outgoing_attack_modifiers,
+            attacker_id,
+            raw_damage,
+        )
+        return reduced_damage, overflow_self_damage, modifier_details
 
     def consume_guaranteed_hit(self, player_id: int) -> bool:
         return battle_state.consume_guaranteed_hit(self.guaranteed_hit_next, player_id)
@@ -1589,7 +1618,7 @@ class BattleView(RestrictedView):
         raw_damage: int,
         ignore_evade: bool = False,
         incoming_min_damage: int | None = None,
-    ) -> tuple[int, int, bool, int]:
+    ) -> tuple[int, int, bool, int, dict[str, object] | None]:
         return battle_state.resolve_incoming_modifiers(
             self.incoming_modifiers,
             self.absorbed_damage,
@@ -1609,25 +1638,28 @@ class BattleView(RestrictedView):
         reflected_damage: int,
         dodged: bool,
         counter_damage: int,
+        modifier_details: dict[str, object] | None = None,
         absorbed_before: int | None = None,
         absorbed_after: int | None = None,
     ) -> None:
         defender = str(defender_name or "Verteidiger").strip() or "Verteidiger"
+        modifier_source = str((modifier_details or {}).get("source") or "").strip()
+        source_suffix = f" durch {_effect_source_name(modifier_source)}" if modifier_source else ""
         if dodged:
-            self._append_effect_event(effect_events, "Ausweichen: Angriff vollständig verfehlt.")
+            self._append_effect_event(effect_events, f"Ausweichen{source_suffix}: Angriff vollständig verfehlt.")
         elif final_damage < raw_damage:
             self._append_effect_event(
                 effect_events,
-                f"Schutzwirkung: Schaden von {int(raw_damage)} auf {int(final_damage)} reduziert.",
+                f"Schutzwirkung{source_suffix}: Schaden von {int(raw_damage)} auf {int(final_damage)} reduziert.",
             )
 
         if reflected_damage > 0:
             self._append_effect_event(
                 effect_events,
-                f"Spiegeldimension/Reflexion durch {defender}: {int(reflected_damage)} Schaden zurückgeworfen.",
+                f"Reflexion{source_suffix} durch {defender}: {int(reflected_damage)} Schaden zurückgeworfen.",
             )
         if counter_damage > 0:
-            self._append_effect_event(effect_events, f"Konter durch {defender}: {int(counter_damage)} Schaden.")
+            self._append_effect_event(effect_events, f"Konter{source_suffix} durch {defender}: {int(counter_damage)} Schaden.")
 
         if (
             absorbed_before is not None
@@ -1635,7 +1667,7 @@ class BattleView(RestrictedView):
             and int(absorbed_after) > int(absorbed_before)
         ):
             gained = int(absorbed_after) - int(absorbed_before)
-            self._append_effect_event(effect_events, f"Absorption durch {defender}: {gained} Schaden gespeichert.")
+            self._append_effect_event(effect_events, f"Absorption{source_suffix} durch {defender}: {gained} Schaden gespeichert.")
 
     def apply_regen_tick(self, player_id: int) -> int:
         return battle_state.apply_regen_tick(
@@ -2340,11 +2372,24 @@ class BattleView(RestrictedView):
                 if boost_text:
                     self._append_effect_event(effect_events, boost_text)
                 defender_hp_before = self._hp_for(defender_id)
-                reduced_damage, overflow_self_damage = self.apply_outgoing_attack_modifiers(self.current_turn, actual_damage)
+                reduced_damage, overflow_self_damage, outgoing_modifier = self.apply_outgoing_attack_modifiers(
+                    self.current_turn,
+                    actual_damage,
+                )
                 if reduced_damage != actual_damage:
                     delta_out = actual_damage - reduced_damage
                     actual_damage = reduced_damage
-                    self._append_effect_event(effect_events, f"Ausgehender Schaden wurde um {delta_out} reduziert.")
+                    modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
+                    if actual_damage <= 0:
+                        self._append_effect_event(
+                            effect_events,
+                            f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)} um {delta_out} reduziert und auf 0 gesetzt.",
+                        )
+                    else:
+                        self._append_effect_event(
+                            effect_events,
+                            f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)} um {delta_out} reduziert.",
+                        )
                 if overflow_self_damage > 0:
                     self._apply_non_heal_damage_with_event(
                         effect_events,
@@ -2358,7 +2403,7 @@ class BattleView(RestrictedView):
 
                 incoming_raw_damage = int(actual_damage)
                 absorbed_before = int(self.absorbed_damage.get(defender_id, 0) or 0)
-                final_damage, reflected_damage, dodged, counter_damage = self.resolve_incoming_modifiers(
+                final_damage, reflected_damage, dodged, counter_damage, incoming_modifier = self.resolve_incoming_modifiers(
                     defender_id,
                     actual_damage,
                     ignore_evade=(guaranteed_hit and not self.has_airborne(defender_id)),
@@ -2373,6 +2418,7 @@ class BattleView(RestrictedView):
                     reflected_damage=int(reflected_damage),
                     dodged=bool(dodged),
                     counter_damage=int(counter_damage),
+                    modifier_details=incoming_modifier,
                     absorbed_before=absorbed_before,
                     absorbed_after=absorbed_after,
                 )
@@ -2412,7 +2458,7 @@ class BattleView(RestrictedView):
                 effect_events,
                 self.current_turn,
                 self_damage_value,
-                source="Rückstoß",
+                source=f"{attack_name} / Rückstoß",
                 self_damage=True,
             )
 
@@ -2487,7 +2533,7 @@ class BattleView(RestrictedView):
                 uses = int(effect.get("uses", 1) or 1)
                 self.pending_flat_bonus[target_id] = max(self.pending_flat_bonus.get(target_id, 0), amount)
                 self.pending_flat_bonus_uses[target_id] = max(self.pending_flat_bonus_uses.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, f"Schadensbonus aktiv: +{amount} für {uses} Angriff(e).")
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Schadensbonus aktiv: +{amount} für {uses} Angriff(e)."))
             elif eff_type == "damage_multiplier":
                 mult = float(effect.get("multiplier", 1.0) or 1.0)
                 uses = int(effect.get("uses", 1) or 1)
@@ -2495,70 +2541,91 @@ class BattleView(RestrictedView):
                 self.pending_multiplier_uses[target_id] = max(self.pending_multiplier_uses.get(target_id, 0), uses)
                 pct = int(round((mult - 1.0) * 100))
                 if pct > 0:
-                    self._append_effect_event(effect_events, f"Nächster Angriff macht +{pct}% Schaden.")
+                    self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Nächster Angriff macht +{pct}% Schaden."))
             elif eff_type == "force_max":
                 uses = int(effect.get("uses", 1) or 1)
                 self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, "Nächster Angriff verursacht Maximalschaden.")
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Nächster Angriff verursacht Maximalschaden."))
             elif eff_type == "guaranteed_hit":
                 uses = int(effect.get("uses", 1) or 1)
                 self.guaranteed_hit_next[target_id] = max(self.guaranteed_hit_next.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, "Nächster Angriff trifft garantiert.")
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Nächster Angriff trifft garantiert."))
             elif eff_type == "damage_reduction":
                 percent = float(effect.get("percent", 0.0) or 0.0)
                 turns = int(effect.get("turns", 1) or 1)
-                self.queue_incoming_modifier(target_id, percent=percent, turns=turns)
-                self._append_effect_event(effect_events, f"Eingehender Schaden reduziert um {int(round(percent * 100))}% ({turns} Runde(n)).")
+                self.queue_incoming_modifier(target_id, percent=percent, turns=turns, source=attack_name)
+                self._append_effect_event(
+                    effect_events,
+                    _effect_source_text(attack_name, f"Eingehender Schaden reduziert um {int(round(percent * 100))}% ({turns} Runde(n))."),
+                )
             elif eff_type == "damage_reduction_sequence":
                 sequence = effect.get("sequence", [])
                 if isinstance(sequence, list):
                     for pct in sequence:
-                        self.queue_incoming_modifier(target_id, percent=float(pct or 0.0), turns=1)
+                        self.queue_incoming_modifier(target_id, percent=float(pct or 0.0), turns=1, source=attack_name)
                     if sequence:
                         seq_text = " -> ".join(f"{int(round(float(p) * 100))}%" for p in sequence)
-                        self._append_effect_event(effect_events, f"Block-Sequenz vorbereitet: {seq_text}.")
+                        self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Block-Sequenz vorbereitet: {seq_text}."))
             elif eff_type == "damage_reduction_flat":
                 amount = int(effect.get("amount", 0) or 0)
                 turns = int(effect.get("turns", 1) or 1)
-                self.queue_incoming_modifier(target_id, flat=amount, turns=turns)
-                self._append_effect_event(effect_events, f"Eingehender Schaden reduziert um {amount} ({turns} Runde(n)).")
+                self.queue_incoming_modifier(target_id, flat=amount, turns=turns, source=attack_name)
+                self._append_effect_event(
+                    effect_events,
+                    _effect_source_text(attack_name, f"Eingehender Schaden reduziert um {amount} ({turns} Runde(n))."),
+                )
             elif eff_type == "enemy_next_attack_reduction_percent":
                 percent = float(effect.get("percent", 0.0) or 0.0)
                 turns = int(effect.get("turns", 1) or 1)
-                self.queue_outgoing_attack_modifier(target_id, percent=percent, turns=turns)
-                self._append_effect_event(effect_events, f"Nächster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden.")
+                self.queue_outgoing_attack_modifier(target_id, percent=percent, turns=turns, source=attack_name)
+                self._append_effect_event(
+                    effect_events,
+                    _effect_source_text(attack_name, f"Nächster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden."),
+                )
             elif eff_type == "enemy_next_attack_reduction_flat":
                 amount = int(effect.get("amount", 0) or 0)
                 turns = int(effect.get("turns", 1) or 1)
-                self.queue_outgoing_attack_modifier(target_id, flat=amount, turns=turns)
-                self._append_effect_event(effect_events, f"Nächster gegnerischer Angriff: -{amount} Schaden (mit Überlauf-Rückstoß).")
+                self.queue_outgoing_attack_modifier(target_id, flat=amount, turns=turns, source=attack_name)
+                self._append_effect_event(
+                    effect_events,
+                    _effect_source_text(attack_name, f"Nächster gegnerischer Angriff: -{amount} Schaden (mit Überlauf-Rückstoß)."),
+                )
             elif eff_type == "reflect":
                 reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
                 reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
-                self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1)
+                self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1, source=attack_name)
                 reduce_pct = int(round(max(0.0, reduce_percent) * 100))
                 reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
                 self._append_effect_event(
                     effect_events,
-                    f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert und {reflect_pct}% des verhinderten Schadens werden zurückgeworfen.",
+                    _effect_source_text(
+                        attack_name,
+                        f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert und {reflect_pct}% des verhinderten Schadens werden zurückgeworfen.",
+                    ),
                 )
             elif eff_type == "absorb_store":
                 percent = float(effect.get("percent", 0.0) or 0.0)
-                self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1)
-                self._append_effect_event(effect_events, "Absorption aktiv: Verhinderter Schaden wird gespeichert.")
+                self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1, source=attack_name)
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Absorption aktiv: Verhinderter Schaden wird gespeichert."))
             elif eff_type == "cap_damage":
                 cap_setting = effect.get("max_damage", 0)
                 if str(cap_setting).strip().lower() == "attack_min":
-                    self.queue_incoming_modifier(target_id, cap="attack_min", turns=1)
-                    self._append_effect_event(effect_events, "Schadenslimit aktiv: Nächster Treffer wird auf dessen Mindestschaden begrenzt.")
+                    self.queue_incoming_modifier(target_id, cap="attack_min", turns=1, source=attack_name)
+                    self._append_effect_event(
+                        effect_events,
+                        _effect_source_text(attack_name, "Schadenslimit aktiv: Nächster Treffer wird auf dessen Mindestschaden begrenzt."),
+                    )
                 else:
                     max_damage = int(cap_setting or 0)
-                    self.queue_incoming_modifier(target_id, cap=max_damage, turns=1)
-                    self._append_effect_event(effect_events, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nächsten Treffer.")
+                    self.queue_incoming_modifier(target_id, cap=max_damage, turns=1, source=attack_name)
+                    self._append_effect_event(
+                        effect_events,
+                        _effect_source_text(attack_name, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nächsten Treffer."),
+                    )
             elif eff_type == "evade":
                 counter = int(effect.get("counter", 0) or 0)
-                self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1)
-                self._append_effect_event(effect_events, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt.")
+                self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1, source=attack_name)
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
             elif eff_type == "special_lock":
                 self.special_lock_next_turn[target_id] = True
                 self._append_effect_event(effect_events, "Spezialfähigkeiten des Gegners sind nächste Runde gesperrt.")
@@ -2589,8 +2656,8 @@ class BattleView(RestrictedView):
             elif eff_type == "delayed_defense_after_next_attack":
                 defense_mode = str(effect.get("defense", "")).strip().lower()
                 counter = int(effect.get("counter", 0) or 0)
-                self.queue_delayed_defense(target_id, defense_mode, counter=counter)
-                self._append_effect_event(effect_events, "Schutz vorbereitet: Wird nach dem nächsten eigenen Angriff aktiv.")
+                self.queue_delayed_defense(target_id, defense_mode, counter=counter, source=attack_name)
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Schutz vorbereitet: Wird nach dem nächsten eigenen Angriff aktiv."))
             elif eff_type == "airborne_two_phase":
                 self.start_airborne_two_phase(
                     target_id,
@@ -2943,11 +3010,24 @@ class BattleView(RestrictedView):
                 if boost_text:
                     self._append_effect_event(effect_events, boost_text)
                 defender_hp_before = self._hp_for(self.player1_id)
-                reduced_damage, overflow_self_damage = self.apply_outgoing_attack_modifiers(0, actual_damage)
+                reduced_damage, overflow_self_damage, outgoing_modifier = self.apply_outgoing_attack_modifiers(
+                    0,
+                    actual_damage,
+                )
                 if reduced_damage != actual_damage:
                     delta_out = actual_damage - reduced_damage
                     actual_damage = reduced_damage
-                    self._append_effect_event(effect_events, f"Ausgehender Schaden wurde um {delta_out} reduziert.")
+                    modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
+                    if actual_damage <= 0:
+                        self._append_effect_event(
+                            effect_events,
+                            f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)} um {delta_out} reduziert und auf 0 gesetzt.",
+                        )
+                    else:
+                        self._append_effect_event(
+                            effect_events,
+                            f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)} um {delta_out} reduziert.",
+                        )
                 if overflow_self_damage > 0:
                     self._apply_non_heal_damage_with_event(
                         effect_events,
@@ -2961,7 +3041,7 @@ class BattleView(RestrictedView):
 
                 incoming_raw_damage = int(actual_damage)
                 absorbed_before = int(self.absorbed_damage.get(self.player1_id, 0) or 0)
-                final_damage, reflected_damage, dodged, counter_damage = self.resolve_incoming_modifiers(
+                final_damage, reflected_damage, dodged, counter_damage, incoming_modifier = self.resolve_incoming_modifiers(
                     self.player1_id,
                     actual_damage,
                     ignore_evade=(guaranteed_hit and not self.has_airborne(self.player1_id)),
@@ -2976,6 +3056,7 @@ class BattleView(RestrictedView):
                     reflected_damage=int(reflected_damage),
                     dodged=bool(dodged),
                     counter_damage=int(counter_damage),
+                    modifier_details=incoming_modifier,
                     absorbed_before=absorbed_before,
                     absorbed_after=absorbed_after,
                 )
@@ -3015,7 +3096,7 @@ class BattleView(RestrictedView):
                 effect_events,
                 0,
                 self_damage_value,
-                source="Rückstoß",
+                source=f"{attack_name} / Rückstoß",
                 self_damage=True,
             )
 
@@ -3089,7 +3170,7 @@ class BattleView(RestrictedView):
                 uses = int(effect.get("uses", 1) or 1)
                 self.pending_flat_bonus[target_id] = max(self.pending_flat_bonus.get(target_id, 0), amount)
                 self.pending_flat_bonus_uses[target_id] = max(self.pending_flat_bonus_uses.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, f"Schadensbonus aktiv: +{amount} für {uses} Angriff(e).")
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Schadensbonus aktiv: +{amount} für {uses} Angriff(e)."))
             elif eff_type == "damage_multiplier":
                 mult = float(effect.get("multiplier", 1.0) or 1.0)
                 uses = int(effect.get("uses", 1) or 1)
@@ -3097,70 +3178,91 @@ class BattleView(RestrictedView):
                 self.pending_multiplier_uses[target_id] = max(self.pending_multiplier_uses.get(target_id, 0), uses)
                 pct = int(round((mult - 1.0) * 100))
                 if pct > 0:
-                    self._append_effect_event(effect_events, f"Nächster Angriff macht +{pct}% Schaden.")
+                    self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Nächster Angriff macht +{pct}% Schaden."))
             elif eff_type == "force_max":
                 uses = int(effect.get("uses", 1) or 1)
                 self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, "Nächster Angriff verursacht Maximalschaden.")
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Nächster Angriff verursacht Maximalschaden."))
             elif eff_type == "guaranteed_hit":
                 uses = int(effect.get("uses", 1) or 1)
                 self.guaranteed_hit_next[target_id] = max(self.guaranteed_hit_next.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, "Nächster Angriff trifft garantiert.")
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Nächster Angriff trifft garantiert."))
             elif eff_type == "damage_reduction":
                 percent = float(effect.get("percent", 0.0) or 0.0)
                 turns = int(effect.get("turns", 1) or 1)
-                self.queue_incoming_modifier(target_id, percent=percent, turns=turns)
-                self._append_effect_event(effect_events, f"Eingehender Schaden reduziert um {int(round(percent * 100))}% ({turns} Runde(n)).")
+                self.queue_incoming_modifier(target_id, percent=percent, turns=turns, source=attack_name)
+                self._append_effect_event(
+                    effect_events,
+                    _effect_source_text(attack_name, f"Eingehender Schaden reduziert um {int(round(percent * 100))}% ({turns} Runde(n))."),
+                )
             elif eff_type == "damage_reduction_sequence":
                 sequence = effect.get("sequence", [])
                 if isinstance(sequence, list):
                     for pct in sequence:
-                        self.queue_incoming_modifier(target_id, percent=float(pct or 0.0), turns=1)
+                        self.queue_incoming_modifier(target_id, percent=float(pct or 0.0), turns=1, source=attack_name)
                     if sequence:
                         seq_text = " -> ".join(f"{int(round(float(p) * 100))}%" for p in sequence)
-                        self._append_effect_event(effect_events, f"Block-Sequenz vorbereitet: {seq_text}.")
+                        self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Block-Sequenz vorbereitet: {seq_text}."))
             elif eff_type == "damage_reduction_flat":
                 amount = int(effect.get("amount", 0) or 0)
                 turns = int(effect.get("turns", 1) or 1)
-                self.queue_incoming_modifier(target_id, flat=amount, turns=turns)
-                self._append_effect_event(effect_events, f"Eingehender Schaden reduziert um {amount} ({turns} Runde(n)).")
+                self.queue_incoming_modifier(target_id, flat=amount, turns=turns, source=attack_name)
+                self._append_effect_event(
+                    effect_events,
+                    _effect_source_text(attack_name, f"Eingehender Schaden reduziert um {amount} ({turns} Runde(n))."),
+                )
             elif eff_type == "enemy_next_attack_reduction_percent":
                 percent = float(effect.get("percent", 0.0) or 0.0)
                 turns = int(effect.get("turns", 1) or 1)
-                self.queue_outgoing_attack_modifier(target_id, percent=percent, turns=turns)
-                self._append_effect_event(effect_events, f"Nächster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden.")
+                self.queue_outgoing_attack_modifier(target_id, percent=percent, turns=turns, source=attack_name)
+                self._append_effect_event(
+                    effect_events,
+                    _effect_source_text(attack_name, f"Nächster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden."),
+                )
             elif eff_type == "enemy_next_attack_reduction_flat":
                 amount = int(effect.get("amount", 0) or 0)
                 turns = int(effect.get("turns", 1) or 1)
-                self.queue_outgoing_attack_modifier(target_id, flat=amount, turns=turns)
-                self._append_effect_event(effect_events, f"Nächster gegnerischer Angriff: -{amount} Schaden (mit Überlauf-Rückstoß).")
+                self.queue_outgoing_attack_modifier(target_id, flat=amount, turns=turns, source=attack_name)
+                self._append_effect_event(
+                    effect_events,
+                    _effect_source_text(attack_name, f"Nächster gegnerischer Angriff: -{amount} Schaden (mit Überlauf-Rückstoß)."),
+                )
             elif eff_type == "reflect":
                 reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
                 reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
-                self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1)
+                self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1, source=attack_name)
                 reduce_pct = int(round(max(0.0, reduce_percent) * 100))
                 reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
                 self._append_effect_event(
                     effect_events,
-                    f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert und {reflect_pct}% des verhinderten Schadens werden zurückgeworfen.",
+                    _effect_source_text(
+                        attack_name,
+                        f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert und {reflect_pct}% des verhinderten Schadens werden zurückgeworfen.",
+                    ),
                 )
             elif eff_type == "absorb_store":
                 percent = float(effect.get("percent", 0.0) or 0.0)
-                self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1)
-                self._append_effect_event(effect_events, "Absorption aktiv: Verhinderter Schaden wird gespeichert.")
+                self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1, source=attack_name)
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Absorption aktiv: Verhinderter Schaden wird gespeichert."))
             elif eff_type == "cap_damage":
                 cap_setting = effect.get("max_damage", 0)
                 if str(cap_setting).strip().lower() == "attack_min":
-                    self.queue_incoming_modifier(target_id, cap="attack_min", turns=1)
-                    self._append_effect_event(effect_events, "Schadenslimit aktiv: Nächster Treffer wird auf dessen Mindestschaden begrenzt.")
+                    self.queue_incoming_modifier(target_id, cap="attack_min", turns=1, source=attack_name)
+                    self._append_effect_event(
+                        effect_events,
+                        _effect_source_text(attack_name, "Schadenslimit aktiv: Nächster Treffer wird auf dessen Mindestschaden begrenzt."),
+                    )
                 else:
                     max_damage = int(cap_setting or 0)
-                    self.queue_incoming_modifier(target_id, cap=max_damage, turns=1)
-                    self._append_effect_event(effect_events, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nächsten Treffer.")
+                    self.queue_incoming_modifier(target_id, cap=max_damage, turns=1, source=attack_name)
+                    self._append_effect_event(
+                        effect_events,
+                        _effect_source_text(attack_name, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nächsten Treffer."),
+                    )
             elif eff_type == "evade":
                 counter = int(effect.get("counter", 0) or 0)
-                self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1)
-                self._append_effect_event(effect_events, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt.")
+                self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1, source=attack_name)
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
             elif eff_type == "special_lock":
                 self.special_lock_next_turn[target_id] = True
                 self._append_effect_event(effect_events, "Spezialfähigkeiten des Gegners sind nächste Runde gesperrt.")
@@ -3191,8 +3293,8 @@ class BattleView(RestrictedView):
             elif eff_type == "delayed_defense_after_next_attack":
                 defense_mode = str(effect.get("defense", "")).strip().lower()
                 counter = int(effect.get("counter", 0) or 0)
-                self.queue_delayed_defense(target_id, defense_mode, counter=counter)
-                self._append_effect_event(effect_events, "Schutz vorbereitet: Wird nach dem nächsten eigenen Angriff aktiv.")
+                self.queue_delayed_defense(target_id, defense_mode, counter=counter, source=attack_name)
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Schutz vorbereitet: Wird nach dem nächsten eigenen Angriff aktiv."))
             elif eff_type == "airborne_two_phase":
                 self.start_airborne_two_phase(
                     target_id,
@@ -3744,11 +3846,27 @@ async def _create_required_private_fight_thread(
         fight_thread = await parent_text.create_thread(
             name=thread_name,
             type=discord.ChannelType.private_thread,
-            invitable=False,
+            invitable=True,
         )
         await fight_thread.add_user(interaction.user)
         if challenged is not None:
-            await fight_thread.add_user(challenged)
+            try:
+                await fight_thread.add_user(challenged)
+            except discord.Forbidden:
+                logging.warning(
+                    "Failed to add challenged user %s to private fight thread %s; falling back to public channel.",
+                    challenged.id,
+                    fight_thread.id,
+                )
+                await fight_thread.delete()
+                await interaction.followup.send(
+                    (
+                        "❌ Ich konnte den privaten Thread nicht für beide Nutzer öffnen. "
+                        "Bitte prüfe Kanalrechte für den Gegner oder starte den Kampf im normalen Kanal."
+                    ),
+                    ephemeral=True,
+                )
+                return None
         return fight_thread
     except Exception:
         logging.exception("Failed to create private fight thread")
@@ -4004,7 +4122,7 @@ class FightFeedbackView(RestrictedView):
         except Exception:
             logging.exception("Unexpected error")
 
-    async def _close_thread_after_delay(self, delay_seconds: int = 3) -> None:
+    async def _close_thread_after_delay(self, delay_seconds: int = THREAD_AUTO_CLOSE_DELAY_SECONDS) -> None:
         if not isinstance(self.channel, discord.Thread):
             return
         await asyncio.sleep(delay_seconds)
@@ -4077,9 +4195,12 @@ class FightFeedbackView(RestrictedView):
                 await interaction.response.send_message("✅ Danke für dein Feedback! Thread wird bereits geschlossen.", ephemeral=True)
                 return
             self._thread_close_scheduled = True
-            await interaction.response.send_message("✅ Danke für dein Feedback! Der Thread wird in 3 Sekunden geschlossen.", ephemeral=True)
+            await interaction.response.send_message(
+                f"✅ Danke für dein Feedback! Der Thread wird in {THREAD_AUTO_CLOSE_DELAY_SECONDS} Sekunden geschlossen.",
+                ephemeral=True,
+            )
             self.stop()
-            asyncio.create_task(self._close_thread_after_delay(3))
+            asyncio.create_task(self._close_thread_after_delay())
             return
         await interaction.response.send_message("✅ Danke für dein Feedback!", ephemeral=True)
 
@@ -5606,8 +5727,20 @@ class MissionBattleView(RestrictedView):
     def _clear_airborne(self, player_id: int) -> None:
         battle_state.consume_effect(self.active_effects, player_id, "airborne")
 
-    def queue_delayed_defense(self, player_id: int, defense: str, counter: int = 0) -> None:
-        battle_state.queue_delayed_defense(self.delayed_defense_queue, player_id, defense, counter=counter)
+    def queue_delayed_defense(
+        self,
+        player_id: int,
+        defense: str,
+        counter: int = 0,
+        source: str | None = None,
+    ) -> None:
+        battle_state.queue_delayed_defense(
+            self.delayed_defense_queue,
+            player_id,
+            defense,
+            counter=counter,
+            source=source,
+        )
 
     def activate_delayed_defense_after_attack(
         self,
@@ -5746,6 +5879,7 @@ class MissionBattleView(RestrictedView):
         percent: float = 0.0,
         flat: int = 0,
         turns: int = 1,
+        source: str | None = None,
     ) -> None:
         battle_state.queue_outgoing_attack_modifier(
             self.outgoing_attack_modifiers,
@@ -5753,10 +5887,16 @@ class MissionBattleView(RestrictedView):
             percent=percent,
             flat=flat,
             turns=turns,
+            source=source,
         )
 
-    def apply_outgoing_attack_modifiers(self, attacker_id: int, raw_damage: int) -> tuple[int, int]:
-        return battle_state.apply_outgoing_attack_modifiers(self.outgoing_attack_modifiers, attacker_id, raw_damage)
+    def apply_outgoing_attack_modifiers(self, attacker_id: int, raw_damage: int) -> tuple[int, int, dict[str, object] | None]:
+        reduced_damage, overflow_self_damage, modifier_details = battle_state.apply_outgoing_attack_modifiers(
+            self.outgoing_attack_modifiers,
+            attacker_id,
+            raw_damage,
+        )
+        return reduced_damage, overflow_self_damage, modifier_details
 
     def consume_guaranteed_hit(self, player_id: int) -> bool:
         return battle_state.consume_guaranteed_hit(self.guaranteed_hit_next, player_id)
@@ -5809,7 +5949,7 @@ class MissionBattleView(RestrictedView):
         raw_damage: int,
         ignore_evade: bool = False,
         incoming_min_damage: int | None = None,
-    ) -> tuple[int, int, bool, int]:
+    ) -> tuple[int, int, bool, int, dict[str, object] | None]:
         return battle_state.resolve_incoming_modifiers(
             self.incoming_modifiers,
             self.absorbed_damage,
@@ -5829,25 +5969,28 @@ class MissionBattleView(RestrictedView):
         reflected_damage: int,
         dodged: bool,
         counter_damage: int,
+        modifier_details: dict[str, object] | None = None,
         absorbed_before: int | None = None,
         absorbed_after: int | None = None,
     ) -> None:
         defender = str(defender_name or "Verteidiger").strip() or "Verteidiger"
+        modifier_source = str((modifier_details or {}).get("source") or "").strip()
+        source_suffix = f" durch {_effect_source_name(modifier_source)}" if modifier_source else ""
         if dodged:
-            self._append_effect_event(effect_events, "Ausweichen: Angriff vollständig verfehlt.")
+            self._append_effect_event(effect_events, f"Ausweichen{source_suffix}: Angriff vollständig verfehlt.")
         elif final_damage < raw_damage:
             self._append_effect_event(
                 effect_events,
-                f"Schutzwirkung: Schaden von {int(raw_damage)} auf {int(final_damage)} reduziert.",
+                f"Schutzwirkung{source_suffix}: Schaden von {int(raw_damage)} auf {int(final_damage)} reduziert.",
             )
 
         if reflected_damage > 0:
             self._append_effect_event(
                 effect_events,
-                f"Spiegeldimension/Reflexion durch {defender}: {int(reflected_damage)} Schaden zurückgeworfen.",
+                f"Reflexion{source_suffix} durch {defender}: {int(reflected_damage)} Schaden zurückgeworfen.",
             )
         if counter_damage > 0:
-            self._append_effect_event(effect_events, f"Konter durch {defender}: {int(counter_damage)} Schaden.")
+            self._append_effect_event(effect_events, f"Konter{source_suffix} durch {defender}: {int(counter_damage)} Schaden.")
 
         if (
             absorbed_before is not None
@@ -5855,7 +5998,7 @@ class MissionBattleView(RestrictedView):
             and int(absorbed_after) > int(absorbed_before)
         ):
             gained = int(absorbed_after) - int(absorbed_before)
-            self._append_effect_event(effect_events, f"Absorption durch {defender}: {gained} Schaden gespeichert.")
+            self._append_effect_event(effect_events, f"Absorption{source_suffix} durch {defender}: {gained} Schaden gespeichert.")
 
     def apply_regen_tick(self, player_id: int) -> int:
         return battle_state.apply_regen_tick(
@@ -6227,11 +6370,24 @@ class MissionBattleView(RestrictedView):
                 if boost_text:
                     self._append_effect_event(effect_events, boost_text)
                 defender_hp_before = self._hp_for(0)
-                reduced_damage, overflow_self_damage = self.apply_outgoing_attack_modifiers(self.user_id, actual_damage)
+                reduced_damage, overflow_self_damage, outgoing_modifier = self.apply_outgoing_attack_modifiers(
+                    self.user_id,
+                    actual_damage,
+                )
                 if reduced_damage != actual_damage:
                     delta_out = actual_damage - reduced_damage
                     actual_damage = reduced_damage
-                    self._append_effect_event(effect_events, f"Ausgehender Schaden wurde um {delta_out} reduziert.")
+                    modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
+                    if actual_damage <= 0:
+                        self._append_effect_event(
+                            effect_events,
+                            f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)} um {delta_out} reduziert und auf 0 gesetzt.",
+                        )
+                    else:
+                        self._append_effect_event(
+                            effect_events,
+                            f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)} um {delta_out} reduziert.",
+                        )
                 if overflow_self_damage > 0:
                     self._apply_non_heal_damage_with_event(
                         effect_events,
@@ -6245,7 +6401,7 @@ class MissionBattleView(RestrictedView):
 
                 incoming_raw_damage = int(actual_damage)
                 absorbed_before = int(self.absorbed_damage.get(0, 0) or 0)
-                final_damage, reflected_damage, dodged, counter_damage = self.resolve_incoming_modifiers(
+                final_damage, reflected_damage, dodged, counter_damage, incoming_modifier = self.resolve_incoming_modifiers(
                     0,
                     actual_damage,
                     ignore_evade=(guaranteed_hit and not self.has_airborne(0)),
@@ -6260,6 +6416,7 @@ class MissionBattleView(RestrictedView):
                     reflected_damage=int(reflected_damage),
                     dodged=bool(dodged),
                     counter_damage=int(counter_damage),
+                    modifier_details=incoming_modifier,
                     absorbed_before=absorbed_before,
                     absorbed_after=absorbed_after,
                 )
@@ -6299,7 +6456,7 @@ class MissionBattleView(RestrictedView):
                 effect_events,
                 self.user_id,
                 self_damage_value,
-                source="Rückstoß",
+                source=f"{attack_name} / Rückstoß",
                 self_damage=True,
             )
 
@@ -6369,7 +6526,7 @@ class MissionBattleView(RestrictedView):
                 uses = int(effect.get("uses", 1) or 1)
                 self.pending_flat_bonus[target_id] = max(self.pending_flat_bonus.get(target_id, 0), amount)
                 self.pending_flat_bonus_uses[target_id] = max(self.pending_flat_bonus_uses.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, f"Schadensbonus aktiv: +{amount} für {uses} Angriff(e).")
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Schadensbonus aktiv: +{amount} für {uses} Angriff(e)."))
             elif eff_type == "damage_multiplier":
                 mult = float(effect.get("multiplier", 1.0) or 1.0)
                 uses = int(effect.get("uses", 1) or 1)
@@ -6377,70 +6534,91 @@ class MissionBattleView(RestrictedView):
                 self.pending_multiplier_uses[target_id] = max(self.pending_multiplier_uses.get(target_id, 0), uses)
                 pct = int(round((mult - 1.0) * 100))
                 if pct > 0:
-                    self._append_effect_event(effect_events, f"Nächster Angriff macht +{pct}% Schaden.")
+                    self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Nächster Angriff macht +{pct}% Schaden."))
             elif eff_type == "force_max":
                 uses = int(effect.get("uses", 1) or 1)
                 self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, "Nächster Angriff verursacht Maximalschaden.")
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Nächster Angriff verursacht Maximalschaden."))
             elif eff_type == "guaranteed_hit":
                 uses = int(effect.get("uses", 1) or 1)
                 self.guaranteed_hit_next[target_id] = max(self.guaranteed_hit_next.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, "Nächster Angriff trifft garantiert.")
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Nächster Angriff trifft garantiert."))
             elif eff_type == "damage_reduction":
                 percent = float(effect.get("percent", 0.0) or 0.0)
                 turns = int(effect.get("turns", 1) or 1)
-                self.queue_incoming_modifier(target_id, percent=percent, turns=turns)
-                self._append_effect_event(effect_events, f"Eingehender Schaden reduziert um {int(round(percent * 100))}% ({turns} Runde(n)).")
+                self.queue_incoming_modifier(target_id, percent=percent, turns=turns, source=attack_name)
+                self._append_effect_event(
+                    effect_events,
+                    _effect_source_text(attack_name, f"Eingehender Schaden reduziert um {int(round(percent * 100))}% ({turns} Runde(n))."),
+                )
             elif eff_type == "damage_reduction_sequence":
                 sequence = effect.get("sequence", [])
                 if isinstance(sequence, list):
                     for pct in sequence:
-                        self.queue_incoming_modifier(target_id, percent=float(pct or 0.0), turns=1)
+                        self.queue_incoming_modifier(target_id, percent=float(pct or 0.0), turns=1, source=attack_name)
                     if sequence:
                         seq_text = " -> ".join(f"{int(round(float(p) * 100))}%" for p in sequence)
-                        self._append_effect_event(effect_events, f"Block-Sequenz vorbereitet: {seq_text}.")
+                        self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Block-Sequenz vorbereitet: {seq_text}."))
             elif eff_type == "damage_reduction_flat":
                 amount = int(effect.get("amount", 0) or 0)
                 turns = int(effect.get("turns", 1) or 1)
-                self.queue_incoming_modifier(target_id, flat=amount, turns=turns)
-                self._append_effect_event(effect_events, f"Eingehender Schaden reduziert um {amount} ({turns} Runde(n)).")
+                self.queue_incoming_modifier(target_id, flat=amount, turns=turns, source=attack_name)
+                self._append_effect_event(
+                    effect_events,
+                    _effect_source_text(attack_name, f"Eingehender Schaden reduziert um {amount} ({turns} Runde(n))."),
+                )
             elif eff_type == "enemy_next_attack_reduction_percent":
                 percent = float(effect.get("percent", 0.0) or 0.0)
                 turns = int(effect.get("turns", 1) or 1)
-                self.queue_outgoing_attack_modifier(target_id, percent=percent, turns=turns)
-                self._append_effect_event(effect_events, f"Nächster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden.")
+                self.queue_outgoing_attack_modifier(target_id, percent=percent, turns=turns, source=attack_name)
+                self._append_effect_event(
+                    effect_events,
+                    _effect_source_text(attack_name, f"Nächster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden."),
+                )
             elif eff_type == "enemy_next_attack_reduction_flat":
                 amount = int(effect.get("amount", 0) or 0)
                 turns = int(effect.get("turns", 1) or 1)
-                self.queue_outgoing_attack_modifier(target_id, flat=amount, turns=turns)
-                self._append_effect_event(effect_events, f"Nächster gegnerischer Angriff: -{amount} Schaden (mit Überlauf-Rückstoß).")
+                self.queue_outgoing_attack_modifier(target_id, flat=amount, turns=turns, source=attack_name)
+                self._append_effect_event(
+                    effect_events,
+                    _effect_source_text(attack_name, f"Nächster gegnerischer Angriff: -{amount} Schaden (mit Überlauf-Rückstoß)."),
+                )
             elif eff_type == "reflect":
                 reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
                 reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
-                self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1)
+                self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1, source=attack_name)
                 reduce_pct = int(round(max(0.0, reduce_percent) * 100))
                 reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
                 self._append_effect_event(
                     effect_events,
-                    f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert und {reflect_pct}% des verhinderten Schadens werden zurückgeworfen.",
+                    _effect_source_text(
+                        attack_name,
+                        f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert und {reflect_pct}% des verhinderten Schadens werden zurückgeworfen.",
+                    ),
                 )
             elif eff_type == "absorb_store":
                 percent = float(effect.get("percent", 0.0) or 0.0)
-                self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1)
-                self._append_effect_event(effect_events, "Absorption aktiv: Verhinderter Schaden wird gespeichert.")
+                self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1, source=attack_name)
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Absorption aktiv: Verhinderter Schaden wird gespeichert."))
             elif eff_type == "cap_damage":
                 cap_setting = effect.get("max_damage", 0)
                 if str(cap_setting).strip().lower() == "attack_min":
-                    self.queue_incoming_modifier(target_id, cap="attack_min", turns=1)
-                    self._append_effect_event(effect_events, "Schadenslimit aktiv: Nächster Treffer wird auf dessen Mindestschaden begrenzt.")
+                    self.queue_incoming_modifier(target_id, cap="attack_min", turns=1, source=attack_name)
+                    self._append_effect_event(
+                        effect_events,
+                        _effect_source_text(attack_name, "Schadenslimit aktiv: Nächster Treffer wird auf dessen Mindestschaden begrenzt."),
+                    )
                 else:
                     max_damage = int(cap_setting or 0)
-                    self.queue_incoming_modifier(target_id, cap=max_damage, turns=1)
-                    self._append_effect_event(effect_events, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nächsten Treffer.")
+                    self.queue_incoming_modifier(target_id, cap=max_damage, turns=1, source=attack_name)
+                    self._append_effect_event(
+                        effect_events,
+                        _effect_source_text(attack_name, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nächsten Treffer."),
+                    )
             elif eff_type == "evade":
                 counter = int(effect.get("counter", 0) or 0)
-                self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1)
-                self._append_effect_event(effect_events, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt.")
+                self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1, source=attack_name)
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
             elif eff_type == "special_lock":
                 self.special_lock_next_turn[target_id] = True
                 self._append_effect_event(effect_events, "Spezialfähigkeiten des Gegners sind nächste Runde gesperrt.")
@@ -6471,8 +6649,8 @@ class MissionBattleView(RestrictedView):
             elif eff_type == "delayed_defense_after_next_attack":
                 defense_mode = str(effect.get("defense", "")).strip().lower()
                 counter = int(effect.get("counter", 0) or 0)
-                self.queue_delayed_defense(target_id, defense_mode, counter=counter)
-                self._append_effect_event(effect_events, "Schutz vorbereitet: Wird nach dem nächsten eigenen Angriff aktiv.")
+                self.queue_delayed_defense(target_id, defense_mode, counter=counter, source=attack_name)
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Schutz vorbereitet: Wird nach dem nächsten eigenen Angriff aktiv."))
             elif eff_type == "airborne_two_phase":
                 self.start_airborne_two_phase(
                     target_id,
@@ -6767,11 +6945,24 @@ class MissionBattleView(RestrictedView):
                         if boost_text:
                             self._append_effect_event(bot_effect_events, boost_text)
                         defender_hp_before = self._hp_for(self.user_id)
-                        reduced_damage, overflow_self_damage = self.apply_outgoing_attack_modifiers(0, actual_damage)
+                        reduced_damage, overflow_self_damage, outgoing_modifier = self.apply_outgoing_attack_modifiers(
+                            0,
+                            actual_damage,
+                        )
                         if reduced_damage != actual_damage:
                             delta_out = actual_damage - reduced_damage
                             actual_damage = reduced_damage
-                            self._append_effect_event(bot_effect_events, f"Ausgehender Schaden wurde um {delta_out} reduziert.")
+                            modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
+                            if actual_damage <= 0:
+                                self._append_effect_event(
+                                    bot_effect_events,
+                                    f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)} um {delta_out} reduziert und auf 0 gesetzt.",
+                                )
+                            else:
+                                self._append_effect_event(
+                                    bot_effect_events,
+                                    f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)} um {delta_out} reduziert.",
+                                )
                         if overflow_self_damage > 0:
                             self._apply_non_heal_damage_with_event(
                                 bot_effect_events,
@@ -6785,7 +6976,7 @@ class MissionBattleView(RestrictedView):
     
                         incoming_raw_damage = int(actual_damage)
                         absorbed_before = int(self.absorbed_damage.get(self.user_id, 0) or 0)
-                        final_damage, reflected_damage, dodged, counter_damage = self.resolve_incoming_modifiers(
+                        final_damage, reflected_damage, dodged, counter_damage, incoming_modifier = self.resolve_incoming_modifiers(
                             self.user_id,
                             actual_damage,
                             ignore_evade=(guaranteed_hit and not self.has_airborne(self.user_id)),
@@ -6800,6 +6991,7 @@ class MissionBattleView(RestrictedView):
                             reflected_damage=int(reflected_damage),
                             dodged=bool(dodged),
                             counter_damage=int(counter_damage),
+                            modifier_details=incoming_modifier,
                             absorbed_before=absorbed_before,
                             absorbed_after=absorbed_after,
                         )
@@ -6839,7 +7031,7 @@ class MissionBattleView(RestrictedView):
                         bot_effect_events,
                         0,
                         self_damage_value,
-                        source="Rückstoß",
+                        source=f"{bot_attack_name} / Rückstoß",
                         self_damage=True,
                     )
     
@@ -6909,7 +7101,7 @@ class MissionBattleView(RestrictedView):
                         uses = int(effect.get("uses", 1) or 1)
                         self.pending_flat_bonus[target_id] = max(self.pending_flat_bonus.get(target_id, 0), amount)
                         self.pending_flat_bonus_uses[target_id] = max(self.pending_flat_bonus_uses.get(target_id, 0), uses)
-                        self._append_effect_event(bot_effect_events, f"Schadensbonus aktiv: +{amount} für {uses} Angriff(e).")
+                        self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, f"Schadensbonus aktiv: +{amount} für {uses} Angriff(e)."))
                     elif eff_type == "damage_multiplier":
                         mult = float(effect.get("multiplier", 1.0) or 1.0)
                         uses = int(effect.get("uses", 1) or 1)
@@ -6917,70 +7109,91 @@ class MissionBattleView(RestrictedView):
                         self.pending_multiplier_uses[target_id] = max(self.pending_multiplier_uses.get(target_id, 0), uses)
                         pct = int(round((mult - 1.0) * 100))
                         if pct > 0:
-                            self._append_effect_event(bot_effect_events, f"Nächster Angriff macht +{pct}% Schaden.")
+                            self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, f"Nächster Angriff macht +{pct}% Schaden."))
                     elif eff_type == "force_max":
                         uses = int(effect.get("uses", 1) or 1)
                         self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
-                        self._append_effect_event(bot_effect_events, "Nächster Angriff verursacht Maximalschaden.")
+                        self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Nächster Angriff verursacht Maximalschaden."))
                     elif eff_type == "guaranteed_hit":
                         uses = int(effect.get("uses", 1) or 1)
                         self.guaranteed_hit_next[target_id] = max(self.guaranteed_hit_next.get(target_id, 0), uses)
-                        self._append_effect_event(bot_effect_events, "Nächster Angriff trifft garantiert.")
+                        self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Nächster Angriff trifft garantiert."))
                     elif eff_type == "damage_reduction":
                         percent = float(effect.get("percent", 0.0) or 0.0)
                         turns = int(effect.get("turns", 1) or 1)
-                        self.queue_incoming_modifier(target_id, percent=percent, turns=turns)
-                        self._append_effect_event(bot_effect_events, f"Eingehender Schaden reduziert um {int(round(percent * 100))}% ({turns} Runde(n)).")
+                        self.queue_incoming_modifier(target_id, percent=percent, turns=turns, source=bot_attack_name)
+                        self._append_effect_event(
+                            bot_effect_events,
+                            _effect_source_text(bot_attack_name, f"Eingehender Schaden reduziert um {int(round(percent * 100))}% ({turns} Runde(n))."),
+                        )
                     elif eff_type == "damage_reduction_sequence":
                         sequence = effect.get("sequence", [])
                         if isinstance(sequence, list):
                             for pct in sequence:
-                                self.queue_incoming_modifier(target_id, percent=float(pct or 0.0), turns=1)
+                                self.queue_incoming_modifier(target_id, percent=float(pct or 0.0), turns=1, source=bot_attack_name)
                             if sequence:
                                 seq_text = " -> ".join(f"{int(round(float(p) * 100))}%" for p in sequence)
-                                self._append_effect_event(bot_effect_events, f"Block-Sequenz vorbereitet: {seq_text}.")
+                                self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, f"Block-Sequenz vorbereitet: {seq_text}."))
                     elif eff_type == "damage_reduction_flat":
                         amount = int(effect.get("amount", 0) or 0)
                         turns = int(effect.get("turns", 1) or 1)
-                        self.queue_incoming_modifier(target_id, flat=amount, turns=turns)
-                        self._append_effect_event(bot_effect_events, f"Eingehender Schaden reduziert um {amount} ({turns} Runde(n)).")
+                        self.queue_incoming_modifier(target_id, flat=amount, turns=turns, source=bot_attack_name)
+                        self._append_effect_event(
+                            bot_effect_events,
+                            _effect_source_text(bot_attack_name, f"Eingehender Schaden reduziert um {amount} ({turns} Runde(n))."),
+                        )
                     elif eff_type == "enemy_next_attack_reduction_percent":
                         percent = float(effect.get("percent", 0.0) or 0.0)
                         turns = int(effect.get("turns", 1) or 1)
-                        self.queue_outgoing_attack_modifier(target_id, percent=percent, turns=turns)
-                        self._append_effect_event(bot_effect_events, f"Nächster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden.")
+                        self.queue_outgoing_attack_modifier(target_id, percent=percent, turns=turns, source=bot_attack_name)
+                        self._append_effect_event(
+                            bot_effect_events,
+                            _effect_source_text(bot_attack_name, f"Nächster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden."),
+                        )
                     elif eff_type == "enemy_next_attack_reduction_flat":
                         amount = int(effect.get("amount", 0) or 0)
                         turns = int(effect.get("turns", 1) or 1)
-                        self.queue_outgoing_attack_modifier(target_id, flat=amount, turns=turns)
-                        self._append_effect_event(bot_effect_events, f"Nächster gegnerischer Angriff: -{amount} Schaden (mit Überlauf-Rückstoß).")
+                        self.queue_outgoing_attack_modifier(target_id, flat=amount, turns=turns, source=bot_attack_name)
+                        self._append_effect_event(
+                            bot_effect_events,
+                            _effect_source_text(bot_attack_name, f"Nächster gegnerischer Angriff: -{amount} Schaden (mit Überlauf-Rückstoß)."),
+                        )
                     elif eff_type == "reflect":
                         reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
                         reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
-                        self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1)
+                        self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1, source=bot_attack_name)
                         reduce_pct = int(round(max(0.0, reduce_percent) * 100))
                         reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
                         self._append_effect_event(
                             bot_effect_events,
-                            f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert und {reflect_pct}% des verhinderten Schadens werden zurückgeworfen.",
+                            _effect_source_text(
+                                bot_attack_name,
+                                f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert und {reflect_pct}% des verhinderten Schadens werden zurückgeworfen.",
+                            ),
                         )
                     elif eff_type == "absorb_store":
                         percent = float(effect.get("percent", 0.0) or 0.0)
-                        self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1)
-                        self._append_effect_event(bot_effect_events, "Absorption aktiv: Verhinderter Schaden wird gespeichert.")
+                        self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1, source=bot_attack_name)
+                        self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Absorption aktiv: Verhinderter Schaden wird gespeichert."))
                     elif eff_type == "cap_damage":
                         cap_setting = effect.get("max_damage", 0)
                         if str(cap_setting).strip().lower() == "attack_min":
-                            self.queue_incoming_modifier(target_id, cap="attack_min", turns=1)
-                            self._append_effect_event(bot_effect_events, "Schadenslimit aktiv: Nächster Treffer wird auf dessen Mindestschaden begrenzt.")
+                            self.queue_incoming_modifier(target_id, cap="attack_min", turns=1, source=bot_attack_name)
+                            self._append_effect_event(
+                                bot_effect_events,
+                                _effect_source_text(bot_attack_name, "Schadenslimit aktiv: Nächster Treffer wird auf dessen Mindestschaden begrenzt."),
+                            )
                         else:
                             max_damage = int(cap_setting or 0)
-                            self.queue_incoming_modifier(target_id, cap=max_damage, turns=1)
-                            self._append_effect_event(bot_effect_events, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nächsten Treffer.")
+                            self.queue_incoming_modifier(target_id, cap=max_damage, turns=1, source=bot_attack_name)
+                            self._append_effect_event(
+                                bot_effect_events,
+                                _effect_source_text(bot_attack_name, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nächsten Treffer."),
+                            )
                     elif eff_type == "evade":
                         counter = int(effect.get("counter", 0) or 0)
-                        self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1)
-                        self._append_effect_event(bot_effect_events, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt.")
+                        self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1, source=bot_attack_name)
+                        self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
                     elif eff_type == "special_lock":
                         self.special_lock_next_turn[target_id] = True
                         self._append_effect_event(bot_effect_events, "Spezialfähigkeiten des Gegners sind nächste Runde gesperrt.")
@@ -7011,8 +7224,8 @@ class MissionBattleView(RestrictedView):
                     elif eff_type == "delayed_defense_after_next_attack":
                         defense_mode = str(effect.get("defense", "")).strip().lower()
                         counter = int(effect.get("counter", 0) or 0)
-                        self.queue_delayed_defense(target_id, defense_mode, counter=counter)
-                        self._append_effect_event(bot_effect_events, "Schutz vorbereitet: Wird nach dem nächsten eigenen Angriff aktiv.")
+                        self.queue_delayed_defense(target_id, defense_mode, counter=counter, source=bot_attack_name)
+                        self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Schutz vorbereitet: Wird nach dem nächsten eigenen Angriff aktiv."))
                     elif eff_type == "airborne_two_phase":
                         self.start_airborne_two_phase(
                             target_id,

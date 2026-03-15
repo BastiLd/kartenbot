@@ -379,6 +379,7 @@ karten = [
             {
                 "name": "Netz-Versiegelung",
                 "damage": [5, 5],
+                "self_damage": 5,
                 "cooldown_turns": 3,
                 "effects": [{"type": "enemy_next_attack_reduction_flat", "target": "enemy", "amount": 15, "turns": 1, "chance": 1.0}],
                 "info": "Nächster gegnerischer Angriff macht 15 weniger Schaden (mit Überlauf-Rückstoß).",

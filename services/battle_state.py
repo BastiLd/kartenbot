@@ -216,6 +216,7 @@ def queue_delayed_defense(
     player_id: int,
     defense: str,
     counter: int = 0,
+    source: str | None = None,
 ) -> None:
     defense_mode = str(defense or "").strip().lower()
     if defense_mode not in {"evade", "stealth"}:
@@ -224,6 +225,7 @@ def queue_delayed_defense(
         {
             "defense": defense_mode,
             "counter": max(0, int(counter)),
+            "source": str(source or "").strip() or None,
         }
     )
 
@@ -254,7 +256,7 @@ def queue_incoming_modifier(
                 "cap": ("attack_min" if str(cap).strip().lower() == "attack_min" else (int(cap) if cap is not None else None)),
                 "evade": bool(evade),
                 "counter": max(0, int(counter)),
-                "source": str(source or "").strip().lower() or None,
+                "source": str(source or "").strip() or None,
             }
         )
 
@@ -277,9 +279,18 @@ def activate_delayed_defense_after_attack(
     delayed_defense_queue[player_id] = []
     for entry in queued:
         defense_mode = entry.get("defense")
+        source = str(entry.get("source") or "").strip()
+        source_prefix = f"{source}: " if source else ""
         if defense_mode == "evade":
             counter = int(entry.get("counter", 0) or 0)
-            queue_incoming_modifier(incoming_modifiers, player_id, evade=True, counter=counter, turns=1)
+            queue_incoming_modifier(
+                incoming_modifiers,
+                player_id,
+                evade=True,
+                counter=counter,
+                turns=1,
+                source=source,
+            )
             append_effect_event(effect_events, "Schutz aktiv: Der nächste gegnerische Angriff wird ausgewichen.")
         elif defense_mode == "stealth":
             grant_unique_effect(active_effects, player_id, "stealth", player_id, duration=1)
@@ -428,6 +439,7 @@ def queue_outgoing_attack_modifier(
     percent: float = 0.0,
     flat: int = 0,
     turns: int = 1,
+    source: str | None = None,
 ) -> None:
     if turns <= 0:
         turns = 1
@@ -436,6 +448,7 @@ def queue_outgoing_attack_modifier(
             {
                 "percent": max(0.0, float(percent)),
                 "flat": max(0, int(flat)),
+                "source": str(source or "").strip() or None,
             }
         )
 
@@ -444,15 +457,16 @@ def apply_outgoing_attack_modifiers(
     outgoing_attack_modifiers: BattleEffectsMap,
     attacker_id: int,
     raw_damage: int,
-) -> tuple[int, int]:
+) -> tuple[int, int, BattleEntry | None]:
     if raw_damage <= 0 or not outgoing_attack_modifiers.get(attacker_id):
-        return max(0, int(raw_damage)), 0
+        return max(0, int(raw_damage)), 0, None
     modifier = outgoing_attack_modifiers[attacker_id].pop(0)
-    return apply_outgoing_attack_modifier(
+    final_damage, overflow = apply_outgoing_attack_modifier(
         raw_damage,
         percent=float(modifier.get("percent", 0.0) or 0.0),
         flat=int(modifier.get("flat", 0) or 0),
     )
+    return final_damage, overflow, modifier
 
 
 def consume_guaranteed_hit(guaranteed_hit_next: dict[int, int], player_id: int) -> bool:
@@ -472,12 +486,12 @@ def resolve_incoming_modifiers(
     *,
     ignore_evade: bool = False,
     incoming_min_damage: int | None = None,
-) -> tuple[int, int, bool, int]:
+) -> tuple[int, int, bool, int, BattleEntry | None]:
     if raw_damage <= 0 or not incoming_modifiers.get(defender_id):
-        return raw_damage, 0, False, 0
+        return raw_damage, 0, False, 0, None
     modifier = incoming_modifiers[defender_id].pop(0)
     if modifier.get("evade") and not ignore_evade:
-        return 0, 0, True, int(modifier.get("counter", 0) or 0)
+        return 0, 0, True, int(modifier.get("counter", 0) or 0), modifier
 
     damage = max(0, int(raw_damage))
     prevented = 0
@@ -513,7 +527,7 @@ def resolve_incoming_modifiers(
     if store_ratio > 0 and prevented > 0:
         absorbed_damage[defender_id] += int(round(prevented * store_ratio))
 
-    return max(0, damage), max(0, reflected), False, 0
+    return max(0, damage), max(0, reflected), False, 0, modifier
 
 
 def apply_regen_tick(
