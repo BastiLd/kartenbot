@@ -1,6 +1,7 @@
 import unittest
 import asyncio
 import copy
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import bot as bot_module
@@ -1964,3 +1965,76 @@ class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):
         ):
             await bot_module.resend_pending_requests()
         mission_mock.assert_not_awaited()
+
+
+class PersistentFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_resend_pending_requests_rebinds_existing_mission_message(self) -> None:
+        fake_channel = SimpleNamespace(
+            id=321,
+            parent_id=None,
+            send=AsyncMock(),
+        )
+        fake_guild = SimpleNamespace(id=123, get_channel=lambda channel_id: fake_channel if channel_id == 321 else None)
+        existing_message = SimpleNamespace(id=987, channel=fake_channel)
+        row = {
+            "id": 55,
+            "guild_id": 123,
+            "channel_id": 321,
+            "user_id": 1,
+            "mission_data": "{}",
+            "visibility": bot_module.VISIBILITY_PRIVATE,
+            "is_admin": 0,
+            "message_id": 987,
+        }
+        with (
+            patch.object(bot_module, "ALPHA_PHASE_ENABLED", False),
+            patch.object(bot_module, "get_pending_fight_requests", new=AsyncMock(return_value=[])),
+            patch.object(bot_module, "get_pending_mission_requests", new=AsyncMock(return_value=[row])),
+            patch.object(bot_module, "is_channel_allowed_ids", new=AsyncMock(return_value=True)),
+            patch.object(bot_module, "_fetch_channel_safe", new=AsyncMock(return_value=None)),
+            patch.object(bot_module, "_fetch_message_safe", new=AsyncMock(return_value=existing_message)),
+            patch.object(bot_module, "_maybe_register_durable_message", new=AsyncMock()) as register_mock,
+            patch.object(bot_module.bot, "get_guild", return_value=fake_guild),
+            patch.object(bot_module.bot, "add_view") as add_view_mock,
+        ):
+            await bot_module.resend_pending_requests()
+        fake_channel.send.assert_not_awaited()
+        register_mock.assert_awaited_once()
+        add_view_mock.assert_called_once()
+
+    async def test_on_message_skips_intro_for_managed_thread(self) -> None:
+        class FakeThread:
+            def __init__(self) -> None:
+                self.id = 444
+                self.parent_id = 111
+
+        channel = FakeThread()
+        author = SimpleNamespace(bot=False, id=7)
+        message = SimpleNamespace(author=author, guild=SimpleNamespace(id=222), channel=channel)
+        with (
+            patch.object(bot_module.discord, "Thread", FakeThread),
+            patch.object(bot_module, "is_maintenance_enabled", new=AsyncMock(return_value=False)),
+            patch.object(bot_module, "is_channel_allowed_ids", new=AsyncMock(return_value=True)),
+            patch.object(bot_module, "is_managed_thread", new=AsyncMock(return_value=True)),
+            patch.object(bot_module.bot, "process_commands", new=AsyncMock()) as process_mock,
+        ):
+            await bot_module.on_message(message)
+        process_mock.assert_awaited_once_with(message)
+
+    async def test_bug_button_sends_log_to_basti_immediately(self) -> None:
+        response = SimpleNamespace(send_message=AsyncMock())
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=1, display_name="Tester"),
+            response=response,
+            guild=None,
+            channel=SimpleNamespace(mention="#thread"),
+        )
+        view = FightFeedbackView(channel=object(), guild=None, allowed_user_ids={1}, battle_log_text="Log")
+        try:
+            bug_button = next(child for child in view.children if getattr(child, "custom_id", "") == "fight_feedback:bug")
+            with patch.object(bot_module, "_send_basti_log_dm", new=AsyncMock()) as dm_mock:
+                await bug_button.callback(interaction)
+            dm_mock.assert_awaited_once()
+            response.send_message.assert_awaited_once()
+        finally:
+            view.stop()

@@ -18,12 +18,7 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
             return
         if not await module.is_channel_allowed(interaction):
             return
-        visibility_key = module.command_visibility_key_for_interaction(interaction)
-        visibility = (
-            await module.get_message_visibility(interaction.guild_id, visibility_key)
-            if visibility_key
-            else module.VISIBILITY_PRIVATE
-        )
+        await interaction.response.defer(ephemeral=True)
         is_admin_user = await module.is_admin(interaction)
 
         mission_count = 0
@@ -50,25 +45,31 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
             "description": mission_description,
         }
         embed = module._build_mission_embed(mission_data)
+        mission_thread = await module._create_required_private_mission_thread(interaction)
+        if mission_thread is None:
+            return
 
         request_id = await module.create_mission_request(
             guild_id=interaction.guild_id or 0,
-            channel_id=interaction.channel_id or 0,
+            channel_id=mission_thread.id,
             user_id=interaction.user.id,
             mission_data=mission_data,
-            visibility=visibility,
+            visibility=module.VISIBILITY_PRIVATE,
             is_admin=is_admin_user,
         )
         mission_view = module.MissionAcceptView(
             interaction.user.id,
             mission_data,
             request_id=request_id,
-            visibility=visibility,
+            visibility=module.VISIBILITY_PRIVATE,
             is_admin=is_admin_user,
         )
-        message = await module._send_with_visibility(interaction, visibility_key, embed=embed, view=mission_view)
+        message = await module._safe_send_channel(interaction, mission_thread, embed=embed, view=mission_view)
         if isinstance(message, discord.Message):
             await module.update_mission_request_message(request_id, message.id, message.channel.id)
+            await interaction.followup.send(f"Mission-Thread erstellt: {mission_thread.mention}", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ Missions-Anfrage konnte nicht gesendet werden.", ephemeral=True)
 
     @bot.tree.command(name="geschichte", description="Starte eine interaktive Story")
     async def story(interaction: discord.Interaction):
@@ -184,8 +185,11 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
                 recent_log_lines=battle_view._recent_log_lines,
                 highlight_tone=battle_view._last_highlight_tone,
             )
-            if await module._safe_send_channel(interaction, target_channel, embed=embed, view=battle_view) is None:
+            battle_message = await module._safe_send_channel(interaction, target_channel, embed=embed, view=battle_view)
+            if battle_message is None:
                 return
+            if isinstance(battle_message, discord.Message):
+                await battle_view.persist_session(target_channel, status="active", battle_message=battle_message)
             return
 
         challenged = interaction.guild.get_member(int(opponent_id))

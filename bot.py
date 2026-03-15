@@ -82,6 +82,18 @@ from services.request_store import (
     update_fight_request_message,
     update_mission_request_message,
 )
+from services.runtime_store import (
+    delete_durable_view,
+    get_active_session,
+    is_managed_thread,
+    list_active_sessions,
+    list_durable_views,
+    save_active_session,
+    save_managed_thread,
+    update_managed_thread_status,
+    update_session_status,
+    upsert_durable_view,
+)
 from services.user_data import (
     add_card_buff,
     add_infinitydust,
@@ -112,6 +124,21 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 karten: list[CardData] = cast(list[CardData], RAW_KARTEN)
+
+VIEW_KIND_INTRO_PROMPT = "intro_prompt"
+VIEW_KIND_FIGHT_CHALLENGE = "fight_challenge"
+VIEW_KIND_FIGHT_CARD_SELECT = "fight_card_select"
+VIEW_KIND_BATTLE = "battle"
+VIEW_KIND_FIGHT_FEEDBACK = "fight_feedback"
+VIEW_KIND_THREAD_CLOSE = "thread_close"
+VIEW_KIND_MISSION_ACCEPT = "mission_accept"
+VIEW_KIND_MISSION_CARD_SELECT = "mission_card_select"
+VIEW_KIND_MISSION_PAUSE = "mission_pause"
+VIEW_KIND_MISSION_NEW_CARD_SELECT = "mission_new_card_select"
+VIEW_KIND_MISSION_BATTLE = "mission_battle"
+
+THREAD_KIND_FIGHT = "fight"
+THREAD_KIND_MISSION = "mission"
 
 
 class SendableChannel(Protocol):
@@ -186,6 +213,95 @@ def _member_role_ids(member: discord.Member | None) -> set[int]:
     if member is None:
         return set()
     return {role.id for role in member.roles}
+
+
+def _json_clone(value: object) -> Any:
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=True))
+    except (TypeError, ValueError):
+        return value
+
+
+def _dict_str_any(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _list_any(value: object) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _int_keyed_dict(value: object) -> dict[int, Any]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[int, Any] = {}
+    for key, item in value.items():
+        parsed_key = _maybe_int(key)
+        if parsed_key is None:
+            continue
+        result[parsed_key] = item
+    return result
+
+
+def _nested_int_keyed_dict(value: object) -> dict[int, dict[int, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[int, dict[int, Any]] = {}
+    for key, item in value.items():
+        outer_key = _maybe_int(key)
+        if outer_key is None:
+            continue
+        if isinstance(item, dict):
+            inner: dict[int, Any] = {}
+            for inner_key, inner_value in item.items():
+                parsed_inner_key = _maybe_int(inner_key)
+                if parsed_inner_key is None:
+                    continue
+                inner[parsed_inner_key] = inner_value
+            result[outer_key] = inner
+        else:
+            result[outer_key] = {}
+    return result
+
+
+def _nested_int_keyed_int_dict(value: object) -> dict[int, dict[int, int]]:
+    source = _nested_int_keyed_dict(value)
+    result: dict[int, dict[int, int]] = {}
+    for outer_key, item in source.items():
+        inner_result: dict[int, int] = {}
+        for inner_key, inner_value in item.items():
+            parsed = _maybe_int(inner_value)
+            inner_result[inner_key] = 0 if parsed is None else parsed
+        result[outer_key] = inner_result
+    return result
+
+
+def _int_keyed_bool_dict(value: object) -> dict[int, bool]:
+    source = _int_keyed_dict(value)
+    return {key: bool(item) for key, item in source.items()}
+
+
+def _int_keyed_int_dict(value: object) -> dict[int, int]:
+    source = _int_keyed_dict(value)
+    result: dict[int, int] = {}
+    for key, item in source.items():
+        parsed = _maybe_int(item)
+        if parsed is None:
+            result[key] = 0
+        else:
+            result[key] = parsed
+    return result
+
+
+def _int_keyed_float_dict(value: object) -> dict[int, float]:
+    source = _int_keyed_dict(value)
+    result: dict[int, float] = {}
+    for key, item in source.items():
+        parsed = _maybe_float(item)
+        if parsed is None:
+            result[key] = 0.0
+        else:
+            result[key] = parsed
+    return result
 
 
 def _range_pair(value: object, *, default_min: int = 0, default_max: int = 0) -> tuple[int, int]:
@@ -511,6 +627,19 @@ def _maybe_int(value: object) -> int | None:
     return None
 
 
+def _maybe_float(value: object) -> float | None:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
 def _format_amount_for_label(value) -> str | None:
     if value is None:
         return None
@@ -744,6 +873,10 @@ async def on_ready():
         except Exception:
             logging.exception("Failed to register persistent views")
     try:
+        await _restore_durable_views()
+    except Exception:
+        logging.exception("Failed to restore durable views on startup")
+    try:
         await resend_pending_requests()
     except Exception:
         logging.exception("Failed to resend pending requests on startup")
@@ -763,6 +896,9 @@ async def on_message(message: discord.Message):
             return
     if not await is_channel_allowed_ids(message.guild.id, message.channel.id, getattr(message.channel, "parent_id", None)):
         return
+    if isinstance(message.channel, discord.Thread) and await is_managed_thread(message.channel.id):
+        await bot.process_commands(message)
+        return
     # Prüfe, ob User in diesem Kanal das Intro schon gesehen hat
     async with db_context() as db:
         cursor = await db.execute(
@@ -781,12 +917,13 @@ async def on_message(message: discord.Message):
             try:
                 prompt = f"{message.author.mention} Willkommen! Klicke unten, um das Intro nur für dich zu sehen."
                 view = IntroEphemeralPromptView(message.author.id)
-                await message.channel.send(
+                prompt_message = await message.channel.send(
                     content=prompt,
                     view=view,
                     silent=True,
                     allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
                 )
+                await _maybe_register_durable_message(prompt_message, view)
             except Exception:
                 logging.exception("Unexpected error")
 
@@ -840,6 +977,41 @@ class RestrictedView(BaseRestrictedView):
 class RestrictedModal(BaseRestrictedModal):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, interaction_checker=is_channel_allowed, **kwargs)
+
+
+class DurableView(RestrictedView):
+    durable_view_kind = ""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._durable_guild_id: int | None = None
+        self._durable_channel_id: int | None = None
+        self._durable_message_id: int | None = None
+
+    def durable_payload(self) -> dict[str, Any]:
+        return {}
+
+    def durable_log_text(self) -> str:
+        return ""
+
+    def durable_context_label(self) -> str:
+        return self.durable_view_kind or self.__class__.__name__
+
+    def bind_durable_message(self, *, guild_id: int | None, channel_id: int | None, message_id: int | None) -> None:
+        self._durable_guild_id = guild_id
+        self._durable_channel_id = channel_id
+        self._durable_message_id = message_id
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: ui.Item[Any]) -> None:
+        logging.exception("Durable view callback failed (%s)", self.durable_context_label(), exc_info=error)
+        await _handle_durable_view_error(
+            interaction,
+            error,
+            view=self,
+            view_label=self.durable_context_label(),
+            battle_log_text=self.durable_log_text(),
+        )
+
 
 def _build_mission_embed(mission_data: dict) -> discord.Embed:
     title = mission_data.get("title") or "Mission"
@@ -960,23 +1132,26 @@ class HPView(RestrictedView):
                 break
 
 # View für Kampf-Buttons (unter der Karte)
-class BattleView(RestrictedView):
+class BattleView(DurableView):
+    durable_view_kind = VIEW_KIND_BATTLE
+
     def __init__(
         self,
-        player1_card,
-        player2_card,
-        player1_id,
-        player2_id,
-        hp_view,
+        player1_card: CardData,
+        player2_card: CardData,
+        player1_id: int,
+        player2_id: int,
+        hp_view: object,
         public_result_channel_id: int | None = None,
     ):
-        super().__init__(timeout=120)
+        super().__init__(timeout=None)
         self.player1_card = player1_card
         self.player2_card = player2_card
         self.player1_id = player1_id
         self.player2_id = player2_id
         self.current_turn = player1_id
         self.public_result_channel_id = int(public_result_channel_id) if public_result_channel_id else None
+        self.session_id: int | None = None
 
         base_hp1 = player1_card.get("hp", 100)
         base_hp2 = player2_card.get("hp", 100)
@@ -1028,6 +1203,12 @@ class BattleView(RestrictedView):
         self.delayed_defense_queue = runtime_maps["delayed_defense_queue"]
         self.airborne_pending_landing = runtime_maps["airborne_pending_landing"]
         self._last_damage_roll_meta: dict | None = None
+
+    def durable_payload(self) -> dict[str, Any]:
+        return {"session_id": self.session_id} if self.session_id else {}
+
+    def durable_log_text(self) -> str:
+        return self._full_battle_log_text()
 
     @property
     def player1_hp(self) -> int:
@@ -1299,6 +1480,139 @@ class BattleView(RestrictedView):
             return "*Der Kampf beginnt...*"
         return "*Der Kampf beginnt...*" + "".join(self._all_battle_log_entries)
 
+    def serialize_session_payload(self) -> dict[str, Any]:
+        return {
+            "player1_card": _json_clone(self.player1_card),
+            "player2_card": _json_clone(self.player2_card),
+            "player1_id": self.player1_id,
+            "player2_id": self.player2_id,
+            "public_result_channel_id": self.public_result_channel_id,
+            "current_turn": self.current_turn,
+            "hp_by_player": _json_clone(self._hp_by_player),
+            "max_hp_by_player": _json_clone(self._max_hp_by_player),
+            "card_names_by_player": _json_clone(self._card_names_by_player),
+            "attack_cooldowns": _json_clone(self.attack_cooldowns),
+            "active_effects": _json_clone(self.active_effects),
+            "confused_next_turn": _json_clone(self.confused_next_turn),
+            "manual_reload_needed": _json_clone(self.manual_reload_needed),
+            "stunned_next_turn": _json_clone(self.stunned_next_turn),
+            "special_lock_next_turn": _json_clone(self.special_lock_next_turn),
+            "blind_next_attack": _json_clone(self.blind_next_attack),
+            "pending_flat_bonus": _json_clone(self.pending_flat_bonus),
+            "pending_flat_bonus_uses": _json_clone(self.pending_flat_bonus_uses),
+            "pending_multiplier": _json_clone(self.pending_multiplier),
+            "pending_multiplier_uses": _json_clone(self.pending_multiplier_uses),
+            "force_max_next": _json_clone(self.force_max_next),
+            "guaranteed_hit_next": _json_clone(self.guaranteed_hit_next),
+            "incoming_modifiers": _json_clone(self.incoming_modifiers),
+            "outgoing_attack_modifiers": _json_clone(self.outgoing_attack_modifiers),
+            "absorbed_damage": _json_clone(self.absorbed_damage),
+            "delayed_defense_queue": _json_clone(self.delayed_defense_queue),
+            "airborne_pending_landing": _json_clone(self.airborne_pending_landing),
+            "all_battle_log_entries": _json_clone(self._all_battle_log_entries),
+            "all_battle_log_summaries": _json_clone(self._all_battle_log_summaries),
+            "recent_log_lines": _json_clone(self._recent_log_lines),
+            "last_highlight_tone": self._last_highlight_tone,
+            "biggest_hit": self._biggest_hit,
+            "critical_hits": self._critical_hits,
+            "effect_tag_counts": _json_clone(self._effect_tag_counts),
+            "effect_best_moments": _json_clone(self._effect_best_moments),
+            "effect_event_history": _json_clone(self._effect_event_history),
+            "round_counter": self.round_counter,
+        }
+
+    def restore_from_session_payload(self, payload: dict[str, Any]) -> None:
+        player1_card = _dict_str_any(payload.get("player1_card"))
+        player2_card = _dict_str_any(payload.get("player2_card"))
+        if player1_card:
+            self.player1_card = cast(CardData, player1_card)
+        if player2_card:
+            self.player2_card = cast(CardData, player2_card)
+        self.current_turn = int(payload.get("current_turn", self.current_turn) or self.current_turn)
+        self.public_result_channel_id = int(payload.get("public_result_channel_id", 0) or 0) or None
+        self._hp_by_player = _int_keyed_int_dict(payload.get("hp_by_player"))
+        self._max_hp_by_player = _int_keyed_int_dict(payload.get("max_hp_by_player"))
+        raw_card_names = _int_keyed_dict(payload.get("card_names_by_player"))
+        self._card_names_by_player = {key: str(value or "") for key, value in raw_card_names.items()}
+        self.attack_cooldowns = _nested_int_keyed_int_dict(payload.get("attack_cooldowns"))
+        self.active_effects = {key: list(value) if isinstance(value, list) else [] for key, value in _int_keyed_dict(payload.get("active_effects")).items()}
+        self.confused_next_turn = _int_keyed_bool_dict(payload.get("confused_next_turn"))
+        self.manual_reload_needed = {
+            key: {inner_key: bool(inner_value) for inner_key, inner_value in value.items()}
+            for key, value in _nested_int_keyed_dict(payload.get("manual_reload_needed")).items()
+        }
+        self.stunned_next_turn = _int_keyed_bool_dict(payload.get("stunned_next_turn"))
+        self.special_lock_next_turn = _int_keyed_bool_dict(payload.get("special_lock_next_turn"))
+        self.blind_next_attack = _int_keyed_float_dict(payload.get("blind_next_attack"))
+        self.pending_flat_bonus = _int_keyed_int_dict(payload.get("pending_flat_bonus"))
+        self.pending_flat_bonus_uses = _int_keyed_int_dict(payload.get("pending_flat_bonus_uses"))
+        self.pending_multiplier = _int_keyed_float_dict(payload.get("pending_multiplier"))
+        self.pending_multiplier_uses = _int_keyed_int_dict(payload.get("pending_multiplier_uses"))
+        self.force_max_next = _int_keyed_int_dict(payload.get("force_max_next"))
+        self.guaranteed_hit_next = _int_keyed_int_dict(payload.get("guaranteed_hit_next"))
+        self.incoming_modifiers = {key: list(value) if isinstance(value, list) else [] for key, value in _int_keyed_dict(payload.get("incoming_modifiers")).items()}
+        self.outgoing_attack_modifiers = {key: list(value) if isinstance(value, list) else [] for key, value in _int_keyed_dict(payload.get("outgoing_attack_modifiers")).items()}
+        self.absorbed_damage = _int_keyed_int_dict(payload.get("absorbed_damage"))
+        self.delayed_defense_queue = {key: list(value) if isinstance(value, list) else [] for key, value in _int_keyed_dict(payload.get("delayed_defense_queue")).items()}
+        raw_airborne = _int_keyed_dict(payload.get("airborne_pending_landing"))
+        self.airborne_pending_landing = {key: (value if isinstance(value, dict) else None) for key, value in raw_airborne.items()}
+        self._all_battle_log_entries = [str(item) for item in _list_any(payload.get("all_battle_log_entries"))]
+        self._all_battle_log_summaries = [str(item) for item in _list_any(payload.get("all_battle_log_summaries"))]
+        self._recent_log_lines = [str(item) for item in _list_any(payload.get("recent_log_lines"))]
+        self._last_highlight_tone = str(payload.get("last_highlight_tone") or "hit")
+        self._biggest_hit = int(payload.get("biggest_hit", 0) or 0)
+        self._critical_hits = int(payload.get("critical_hits", 0) or 0)
+        self._effect_tag_counts = {
+            str(key): int(value or 0)
+            for key, value in _dict_str_any(payload.get("effect_tag_counts")).items()
+        }
+        self._effect_best_moments = {
+            str(key): cast(EffectBestMoment, value)
+            for key, value in _dict_str_any(payload.get("effect_best_moments")).items()
+            if isinstance(value, dict)
+        }
+        self._effect_event_history = [
+            cast(EffectBestMoment, item)
+            for item in _list_any(payload.get("effect_event_history"))
+            if isinstance(item, dict)
+        ]
+        self.round_counter = int(payload.get("round_counter", 0) or 0)
+        self._full_battle_log_embed = create_battle_log_embed()
+        self._full_battle_log_embed.description = self._full_battle_log_text()
+
+    async def persist_session(
+        self,
+        channel: object,
+        *,
+        status: str = "active",
+        battle_message: discord.Message | None = None,
+    ) -> None:
+        guild = getattr(channel, "guild", None)
+        channel_id = getattr(channel, "id", None)
+        if not isinstance(guild, discord.Guild) or not isinstance(channel_id, int):
+            return
+        if battle_message is not None:
+            self.bind_durable_message(guild_id=guild.id, channel_id=channel_id, message_id=battle_message.id)
+        self.session_id = await save_active_session(
+            session_id=self.session_id,
+            kind="fight_pvp" if self.player2_id != 0 else "fight_bot",
+            guild_id=guild.id,
+            channel_id=channel_id,
+            thread_id=channel_id if isinstance(channel, discord.Thread) else None,
+            battle_message_id=self._durable_message_id,
+            log_message_id=self.battle_log_message.id if self.battle_log_message else None,
+            status=status,
+            payload=self.serialize_session_payload(),
+        )
+        if self._durable_message_id is not None:
+            await upsert_durable_view(
+                guild_id=guild.id,
+                channel_id=channel_id,
+                message_id=self._durable_message_id,
+                view_kind=self.durable_view_kind,
+                payload=self.durable_payload(),
+            )
+
     @staticmethod
     def _thread_finished_embed() -> discord.Embed:
         return discord.Embed(
@@ -1373,7 +1687,8 @@ class BattleView(RestrictedView):
             "Buttons unten: **Es gab einen Bug** | **Kampf-Log per DM** | **Kein Log nötig**"
         )
         try:
-            await sendable_channel.send(message_text, view=view)
+            message = await sendable_channel.send(message_text, view=view)
+            await _maybe_register_durable_message(message, view)
         except Exception:
             logging.exception("Failed to send fight feedback prompt with buttons")
             # Fallback, damit immer zumindest die Info im Kanal ankommt.
@@ -1625,7 +1940,7 @@ class BattleView(RestrictedView):
         actual_damage = min(cap, max(0, int(actual_damage)))
         return actual_damage, is_critical, min_damage, max_damage
 
-    def resolve_incoming_modifiers(
+    def _resolve_incoming_modifiers_with_details(
         self,
         defender_id: int,
         raw_damage: int,
@@ -1640,6 +1955,21 @@ class BattleView(RestrictedView):
             ignore_evade=ignore_evade,
             incoming_min_damage=incoming_min_damage,
         )
+
+    def resolve_incoming_modifiers(
+        self,
+        defender_id: int,
+        raw_damage: int,
+        ignore_evade: bool = False,
+        incoming_min_damage: int | None = None,
+    ) -> tuple[int, int, bool, int]:
+        final_damage, reflected_damage, dodged, counter_damage, _modifier_details = self._resolve_incoming_modifiers_with_details(
+            defender_id,
+            raw_damage,
+            ignore_evade=ignore_evade,
+            incoming_min_damage=incoming_min_damage,
+        )
+        return final_damage, reflected_damage, dodged, counter_damage
 
     def _append_incoming_resolution_events(
         self,
@@ -1667,10 +1997,17 @@ class BattleView(RestrictedView):
             )
 
         if reflected_damage > 0:
-            self._append_effect_event(
-                effect_events,
-                f"Reflexion{source_suffix} durch {defender}: {int(reflected_damage)} Schaden zurückgeworfen.",
-            )
+            reflect_prefix = "Spiegeldimension/Reflexion" if not modifier_source else f"Reflexion{source_suffix}"
+            if not modifier_source:
+                self._append_effect_event(
+                    effect_events,
+                    f"{reflect_prefix} durch {defender}: {int(reflected_damage)} Schaden zurückgeworfen.",
+                )
+            else:
+                self._append_effect_event(
+                    effect_events,
+                    f"Reflexion{source_suffix} durch {defender}: {int(reflected_damage)} Schaden zurückgeworfen.",
+                )
         if counter_damage > 0:
             self._append_effect_event(effect_events, f"Konter{source_suffix} durch {defender}: {int(counter_damage)} Schaden.")
 
@@ -1710,6 +2047,7 @@ class BattleView(RestrictedView):
         for attempt in range(2):
             try:
                 await self.battle_log_message.edit(embed=embed)
+                self._battle_log_text_cache = str(embed.description or "")
                 self._last_log_edit_ts = time.monotonic()
                 return
             except Exception as e:
@@ -2070,32 +2408,39 @@ class BattleView(RestrictedView):
                 btn.disabled = True
 
     # Angriffs-Buttons (rot, 2x2 Grid)
-    @ui.button(label="Angriff 1", style=discord.ButtonStyle.danger, row=0)
+    @ui.button(label="Angriff 1", style=discord.ButtonStyle.danger, row=0, custom_id="battle:attack1")
     async def attack1(self, interaction: discord.Interaction, button: ui.Button):
         await self.execute_attack(interaction, 0)
 
-    @ui.button(label="Angriff 2", style=discord.ButtonStyle.danger, row=0)
+    @ui.button(label="Angriff 2", style=discord.ButtonStyle.danger, row=0, custom_id="battle:attack2")
     async def attack2(self, interaction: discord.Interaction, button: ui.Button):
         await self.execute_attack(interaction, 1)
 
-    @ui.button(label="Angriff 3", style=discord.ButtonStyle.danger, row=1)
+    @ui.button(label="Angriff 3", style=discord.ButtonStyle.danger, row=1, custom_id="battle:attack3")
     async def attack3(self, interaction: discord.Interaction, button: ui.Button):
         await self.execute_attack(interaction, 2)
 
-    @ui.button(label="Angriff 4", style=discord.ButtonStyle.danger, row=1)
+    @ui.button(label="Angriff 4", style=discord.ButtonStyle.danger, row=1, custom_id="battle:attack4")
     async def attack4(self, interaction: discord.Interaction, button: ui.Button):
         await self.execute_attack(interaction, 3)
 
     # Blaue Buttons unten
-    @ui.button(label="Abbrechen", style=discord.ButtonStyle.secondary, row=2)
+    @ui.button(label="Abbrechen", style=discord.ButtonStyle.secondary, row=2, custom_id="battle:cancel")
     async def cancel(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id in [self.player1_id, self.player2_id]:
-            embed = discord.Embed(title="⚔️ Kampf abgebrochen", description="Der Kampf wurde abgebrochen.")
+            embed = discord.Embed(
+                title="⚔️ Kampf abgebrochen",
+                description=f"Der Kampf wurde von {interaction.user.mention} abgebrochen.",
+            )
             await interaction.response.edit_message(embed=embed, view=None)
             try:
                 await self._send_feedback_prompt(interaction.channel, interaction.guild)
             except Exception:
                 logging.exception("Unexpected error")
+            try:
+                await self.persist_session(interaction.channel, status="cancelled")
+            except Exception:
+                logging.exception("Failed to persist cancelled fight session")
             self.stop()
         else:
             await interaction.response.send_message("Du bist nicht an diesem Kampf beteiligt!", ephemeral=True)
@@ -2115,6 +2460,7 @@ class BattleView(RestrictedView):
         if interaction.user.id != self.current_turn:
             await interaction.response.send_message("Du bist nicht an der Reihe!", ephemeral=True)
             return
+        await _safe_defer_interaction(interaction)
 
         if self.stunned_next_turn.get(self.current_turn, False):
             self.stunned_next_turn[self.current_turn] = False
@@ -2122,7 +2468,6 @@ class BattleView(RestrictedView):
             airborne_owner_id = self.player2_id if skipped_player_id == self.player1_id else self.player1_id
             if self.airborne_pending_landing.get(airborne_owner_id):
                 self._consume_airborne_evade_marker(airborne_owner_id)
-            await _safe_defer_interaction(interaction)
             self.current_turn = self.player2_id if self.current_turn == self.player1_id else self.player1_id
             self.reduce_cooldowns(self.current_turn)
             await self.update_attack_buttons()
@@ -2393,15 +2738,20 @@ class BattleView(RestrictedView):
                     delta_out = actual_damage - reduced_damage
                     actual_damage = reduced_damage
                     modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
+                    reduction_prefix = (
+                        f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)}"
+                        if modifier_source
+                        else "Ausgehender Schaden wurde"
+                    )
                     if actual_damage <= 0:
                         self._append_effect_event(
                             effect_events,
-                            f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)} um {delta_out} reduziert und auf 0 gesetzt.",
+                            f"{reduction_prefix} um {delta_out} reduziert.",
                         )
                     else:
                         self._append_effect_event(
                             effect_events,
-                            f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)} um {delta_out} reduziert.",
+                            f"{reduction_prefix} um {delta_out} reduziert.",
                         )
                 if overflow_self_damage > 0:
                     self._apply_non_heal_damage_with_event(
@@ -2416,7 +2766,7 @@ class BattleView(RestrictedView):
 
                 incoming_raw_damage = int(actual_damage)
                 absorbed_before = int(self.absorbed_damage.get(defender_id, 0) or 0)
-                final_damage, reflected_damage, dodged, counter_damage, incoming_modifier = self.resolve_incoming_modifiers(
+                final_damage, reflected_damage, dodged, counter_damage, incoming_modifier = self._resolve_incoming_modifiers_with_details(
                     defender_id,
                     actual_damage,
                     ignore_evade=(guaranteed_hit and not self.has_airborne(defender_id)),
@@ -2770,6 +3120,10 @@ class BattleView(RestrictedView):
                 await self._send_feedback_prompt(interaction.channel, guild)
             except Exception:
                 logging.exception("Unexpected error")
+            try:
+                await self.persist_session(interaction.channel, status="completed")
+            except Exception:
+                logging.exception("Failed to persist completed fight session")
             self.stop()
             return
 
@@ -2804,10 +3158,15 @@ class BattleView(RestrictedView):
         if message is not None:
             try:
                 await message.edit(embed=battle_embed, view=self)
+                await self.persist_session(interaction.channel, status="active", battle_message=message)
             except Exception:
-                await _safe_send_channel(interaction, interaction.channel, embed=battle_embed, view=self)
+                replacement = await _safe_send_channel(interaction, interaction.channel, embed=battle_embed, view=self)
+                if replacement is not None:
+                    await self.persist_session(interaction.channel, status="active", battle_message=replacement)
         else:
-            await _safe_send_channel(interaction, interaction.channel, embed=battle_embed, view=self)
+            replacement = await _safe_send_channel(interaction, interaction.channel, embed=battle_embed, view=self)
+            if replacement is not None:
+                await self.persist_session(interaction.channel, status="active", battle_message=replacement)
         
         # BOT-ANGRIFF: Wenn der Bot an der Reihe ist, führe automatischen Angriff aus
         if self.current_turn == 0:  # Bot ist an der Reihe
@@ -3031,15 +3390,20 @@ class BattleView(RestrictedView):
                     delta_out = actual_damage - reduced_damage
                     actual_damage = reduced_damage
                     modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
+                    reduction_prefix = (
+                        f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)}"
+                        if modifier_source
+                        else "Ausgehender Schaden wurde"
+                    )
                     if actual_damage <= 0:
                         self._append_effect_event(
                             effect_events,
-                            f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)} um {delta_out} reduziert und auf 0 gesetzt.",
+                            f"{reduction_prefix} um {delta_out} reduziert.",
                         )
                     else:
                         self._append_effect_event(
                             effect_events,
-                            f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)} um {delta_out} reduziert.",
+                            f"{reduction_prefix} um {delta_out} reduziert.",
                         )
                 if overflow_self_damage > 0:
                     self._apply_non_heal_damage_with_event(
@@ -3054,7 +3418,7 @@ class BattleView(RestrictedView):
 
                 incoming_raw_damage = int(actual_damage)
                 absorbed_before = int(self.absorbed_damage.get(self.player1_id, 0) or 0)
-                final_damage, reflected_damage, dodged, counter_damage, incoming_modifier = self.resolve_incoming_modifiers(
+                final_damage, reflected_damage, dodged, counter_damage, incoming_modifier = self._resolve_incoming_modifiers_with_details(
                     self.player1_id,
                     actual_damage,
                     ignore_evade=(guaranteed_hit and not self.has_airborne(self.player1_id)),
@@ -3443,6 +3807,84 @@ class CardSelectView(RestrictedView):
         self.stop()
         await interaction.response.defer()
 
+
+class FightCardSelectView(DurableView):
+    durable_view_kind = VIEW_KIND_FIGHT_CARD_SELECT
+
+    def __init__(
+        self,
+        challenger_id: int,
+        challenged_id: int,
+        challenger_card_name: str,
+        challenged_card_options,
+        *,
+        origin_channel_id: int | None,
+        thread_id: int | None,
+        thread_created: bool,
+    ):
+        super().__init__(timeout=None)
+        self.challenger_id = challenger_id
+        self.challenged_id = challenged_id
+        self.challenger_card_name = challenger_card_name
+        self.origin_channel_id = origin_channel_id
+        self.thread_id = thread_id
+        self.thread_created = thread_created
+        self.challenged_card_options = list(challenged_card_options or [])
+        options = [
+            SelectOption(label=str(name), value=str(name))
+            for name in self.challenged_card_options
+            if str(name).strip()
+        ][:25]
+        if not options:
+            options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
+        self.select = ui.Select(
+            placeholder="Wähle deine Karte für den 1v1 Kampf...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="fight_card_select:pick",
+        )
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+
+    def durable_payload(self) -> dict[str, Any]:
+        return {
+            "challenger_id": self.challenger_id,
+            "challenged_id": self.challenged_id,
+            "challenger_card_name": self.challenger_card_name,
+            "challenged_card_options": list(self.challenged_card_options),
+            "origin_channel_id": self.origin_channel_id,
+            "thread_id": self.thread_id,
+            "thread_created": self.thread_created,
+        }
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.challenged_id:
+            await interaction.response.send_message("Nur der Herausgeforderte kann die Karte wählen!", ephemeral=True)
+            return
+        selected_name = str(self.select.values[0] or "").strip()
+        if not selected_name or selected_name == "__none__":
+            await interaction.response.send_message("❌ Keine gültige Karte verfügbar.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        try:
+            if interaction.message is not None:
+                await interaction.message.edit(view=None)
+        except Exception:
+            logging.exception("Failed to clear fight card select view")
+        await _start_fight_battle_from_card_selection(
+            interaction,
+            challenger_id=self.challenger_id,
+            challenged_id=self.challenged_id,
+            challenger_card_name=self.challenger_card_name,
+            challenged_card_name=selected_name,
+            origin_channel_id=self.origin_channel_id,
+            thread_id=self.thread_id,
+            thread_created=self.thread_created,
+        )
+        self.stop()
+
+
 # Neue Suchfunktion-Klassen
 class UserSearchModal(RestrictedModal):
     def __init__(
@@ -3830,6 +4272,7 @@ async def _maybe_delete_fight_thread(thread_id: int | None, thread_created: bool
         if channel is None:
             channel = await bot.fetch_channel(thread_id)
         if isinstance(channel, discord.Thread):
+            await update_managed_thread_status(channel.id, "deleted")
             await channel.delete()
     except Exception:
         logging.exception("Unexpected error")
@@ -3897,6 +4340,11 @@ async def _create_required_private_fight_thread(
                     ephemeral=True,
                 )
                 return None
+        await save_managed_thread(
+            thread_id=fight_thread.id,
+            guild_id=interaction.guild.id if interaction.guild else 0,
+            kind=THREAD_KIND_FIGHT,
+        )
         return fight_thread
     except Exception:
         logging.exception("Failed to create private fight thread")
@@ -3906,7 +4354,87 @@ async def _create_required_private_fight_thread(
         )
         return None
 
-async def _start_fight_from_challenge(
+
+async def _mission_thread_admin_members(guild: discord.Guild | None) -> list[discord.Member]:
+    if guild is None:
+        return []
+    members_by_id: dict[int, discord.Member] = {}
+    owner = await _get_member_safe(guild, guild.owner_id)
+    if owner is not None:
+        members_by_id[owner.id] = owner
+    for member in guild.members:
+        if member.bot:
+            continue
+        if member.id == BASTI_USER_ID:
+            members_by_id[member.id] = member
+            continue
+        if member.guild_permissions.administrator:
+            members_by_id[member.id] = member
+            continue
+        role_ids = _member_role_ids(member)
+        if MFU_ADMIN_ROLE_ID in role_ids or OWNER_ROLE_ROLE_ID in role_ids or DEV_ROLE_ID in role_ids:
+            members_by_id[member.id] = member
+    return list(members_by_id.values())
+
+
+async def _create_required_private_mission_thread(interaction: discord.Interaction) -> discord.Thread | None:
+    me = _get_bot_member(interaction)
+    base_channel = interaction.channel
+    parent_text: discord.TextChannel | None = None
+    if isinstance(base_channel, discord.TextChannel):
+        parent_text = base_channel
+    elif isinstance(base_channel, discord.Thread) and isinstance(base_channel.parent, discord.TextChannel):
+        parent_text = base_channel.parent
+    if parent_text is None or me is None:
+        await interaction.followup.send(
+            f"❌ Privater Missions-Thread konnte nicht erstellt werden. Bitte {interaction.user.mention} und <@{BASTI_USER_ID}> informieren.",
+            ephemeral=True,
+        )
+        return None
+    perms = parent_text.permissions_for(me)
+    if not perms.create_private_threads or not perms.send_messages_in_threads:
+        await interaction.followup.send(
+            (
+                "❌ Ich kann hier keinen privaten Missions-Thread erstellen "
+                f"(fehlende Thread-Rechte). Bitte {interaction.user.mention} und <@{BASTI_USER_ID}> informieren."
+            ),
+            ephemeral=True,
+        )
+        return None
+    try:
+        thread_name = f"Mission: {interaction.user.display_name}"
+        mission_thread = await parent_text.create_thread(
+            name=thread_name,
+            type=discord.ChannelType.private_thread,
+            invitable=True,
+        )
+        await mission_thread.add_user(interaction.user)
+        for admin_member in await _mission_thread_admin_members(interaction.guild):
+            if admin_member.id == interaction.user.id:
+                continue
+            try:
+                await mission_thread.add_user(admin_member)
+            except discord.Forbidden:
+                logging.warning(
+                    "Failed to add admin member %s to mission thread %s",
+                    admin_member.id,
+                    mission_thread.id,
+                )
+        await save_managed_thread(
+            thread_id=mission_thread.id,
+            guild_id=interaction.guild.id if interaction.guild else 0,
+            kind=THREAD_KIND_MISSION,
+        )
+        return mission_thread
+    except Exception:
+        logging.exception("Failed to create private mission thread")
+        await interaction.followup.send(
+            f"❌ Privater Missions-Thread konnte nicht gestartet werden. Bitte {interaction.user.mention} und <@{BASTI_USER_ID}> informieren.",
+            ephemeral=True,
+        )
+        return None
+
+async def _start_fight_card_selection_from_challenge(
     interaction: discord.Interaction,
     *,
     challenger_id: int,
@@ -3943,7 +4471,16 @@ async def _start_fight_from_challenge(
         )
         await _maybe_delete_fight_thread(thread_id, thread_created)
         return
-    gegner_card_select_view = CardSelectView(challenged.id, gegner_karten_liste, 1)
+    option_names = [name for name, _amount in gegner_karten_liste]
+    gegner_card_select_view = FightCardSelectView(
+        challenger.id,
+        challenged.id,
+        challenger_card_name,
+        option_names,
+        origin_channel_id=origin_channel_id,
+        thread_id=thread_id,
+        thread_created=thread_created,
+    )
     if await _safe_send_channel(
         interaction,
         interaction.channel,
@@ -3951,28 +4488,44 @@ async def _start_fight_from_challenge(
         view=gegner_card_select_view,
     ) is None:
         return
-    await gegner_card_select_view.wait()
-    if not gegner_card_select_view.value:
+
+
+async def _start_fight_battle_from_card_selection(
+    interaction: discord.Interaction,
+    *,
+    challenger_id: int,
+    challenged_id: int,
+    challenger_card_name: str,
+    challenged_card_name: str,
+    origin_channel_id: int | None,
+    thread_id: int | None,
+    thread_created: bool,
+) -> None:
+    if interaction.guild is None:
+        return
+    challenger = await _get_member_safe(interaction.guild, challenger_id)
+    challenged = await _get_member_safe(interaction.guild, challenged_id)
+    if not challenger or not challenged:
         await _safe_send_channel(
             interaction,
             interaction.channel,
-            content=f"{challenged.mention} hat keine Karte gewählt. Kampf abgebrochen.",
+            content="❌ Nutzer nicht gefunden. Bitte erneut herausfordern.",
         )
         await _maybe_delete_fight_thread(thread_id, thread_created)
         return
-    gegner_selected_names = gegner_card_select_view.value
-    gegner_selected_cards = [await get_karte_by_name(name) for name in gegner_selected_names]
-    if not gegner_selected_cards or not gegner_selected_cards[0]:
+    challenger_card = await get_karte_by_name(challenger_card_name)
+    challenged_card = await get_karte_by_name(challenged_card_name)
+    if not challenger_card or not challenged_card:
         await _safe_send_channel(
             interaction,
             interaction.channel,
-            content=f"❌ Karte von {challenged.mention} nicht gefunden. Kampf abgebrochen.",
+            content="❌ Eine der ausgewählten Karten konnte nicht gefunden werden. Kampf abgebrochen.",
         )
         await _maybe_delete_fight_thread(thread_id, thread_created)
         return
     battle_view = BattleView(
         challenger_card,
-        gegner_selected_cards[0],
+        challenged_card,
         challenger.id,
         challenged.id,
         None,
@@ -3989,7 +4542,7 @@ async def _start_fight_from_challenge(
 
     embed = create_battle_embed(
         challenger_card,
-        gegner_selected_cards[0],
+        challenged_card,
         battle_view.player1_hp,
         battle_view.player2_hp,
         challenger.id,
@@ -3999,9 +4552,141 @@ async def _start_fight_from_challenge(
         recent_log_lines=battle_view._recent_log_lines,
         highlight_tone=battle_view._last_highlight_tone,
     )
-    await _safe_send_channel(interaction, interaction.channel, embed=embed, view=battle_view)
+    battle_message = await _safe_send_channel(interaction, interaction.channel, embed=embed, view=battle_view)
+    if battle_message is not None:
+        await battle_view.persist_session(interaction.channel, status="active", battle_message=battle_message)
 
-class ChallengeResponseView(RestrictedView):
+
+async def _send_mission_feedback_prompt(
+    channel: object,
+    guild: discord.Guild | None,
+    *,
+    allowed_user_id: int,
+    battle_log_text: str,
+) -> None:
+    sendable_channel = _coerce_sendable_channel(channel)
+    if sendable_channel is None:
+        return
+    view = FightFeedbackView(sendable_channel, guild, {allowed_user_id}, battle_log_text=battle_log_text)
+    message_text = (
+        f"<@{allowed_user_id}> Gab es einen Bug/Fehler?\n\n"
+        "Buttons unten: **Es gab einen Bug** | **Kampf-Log per DM** | **Kein Log nötig**"
+    )
+    try:
+        message = await sendable_channel.send(
+            message_text,
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        )
+        await _maybe_register_durable_message(message, view)
+    except Exception:
+        logging.exception("Failed to send mission feedback prompt")
+
+
+def _mission_success_embed(reward_card: dict[str, Any], total_waves: int, *, is_new_card: bool) -> discord.Embed:
+    reward_color = _card_rarity_color(cast(CardData, reward_card))
+    if is_new_card:
+        embed = discord.Embed(
+            title="🏆 Mission erfolgreich!",
+            description=f"Du hast alle {total_waves} Wellen überstanden und **{reward_card['name']}** erhalten!",
+            color=reward_color,
+        )
+        if reward_card.get("bild"):
+            embed.set_image(url=str(reward_card["bild"]))
+        return embed
+    embed = discord.Embed(
+        title="💎 Mission erfolgreich - Infinitydust!",
+        description=f"Du hast alle {total_waves} Wellen überstanden!",
+        color=reward_color,
+    )
+    embed.add_field(
+        name="Belohnung",
+        value=f"Du hattest **{reward_card['name']}** bereits - wurde zu **Infinitydust** umgewandelt!",
+        inline=False,
+    )
+    embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+    return embed
+
+
+async def _begin_mission_thread_flow(interaction: discord.Interaction, mission_data: dict[str, Any], is_admin: bool) -> None:
+    thread: discord.Thread | None = interaction.channel if isinstance(interaction.channel, discord.Thread) else None
+    if thread is None:
+        thread = await _create_required_private_mission_thread(interaction)
+        if thread is None:
+            return
+        await interaction.followup.send(f"Mission-Thread erstellt: {thread.mention}", ephemeral=True)
+    elif interaction.guild is not None:
+        await save_managed_thread(thread_id=thread.id, guild_id=interaction.guild.id, kind=THREAD_KIND_MISSION)
+    user_karten = _sort_user_cards_like_karten(await get_user_karten(interaction.user.id))
+    if not user_karten:
+        await _safe_send_channel(
+            interaction,
+            thread,
+            content=f"{interaction.user.mention} ❌ Du hast keine Karten für die Mission!",
+        )
+        return
+    select_view = MissionStartCardSelectView(
+        interaction.user.id,
+        _dict_str_any(mission_data),
+        is_admin=is_admin,
+        user_karten=[name for name, _amount in user_karten],
+    )
+    intro_embed = _build_mission_embed(_dict_str_any(mission_data))
+    intro_embed.description = (
+        f"{intro_embed.description or ''}\n\n"
+        f"{interaction.user.mention}, wähle jetzt deine Karte für diese Mission."
+    ).strip()
+    await _safe_send_channel(interaction, thread, embed=intro_embed, view=select_view)
+
+
+async def _start_mission_wave_in_thread(
+    interaction: discord.Interaction,
+    *,
+    mission_state: dict[str, Any],
+) -> MissionBattleView | None:
+    mission_data = _dict_str_any(mission_state.get("mission_data"))
+    selected_card_name = str(mission_state.get("selected_card_name") or "").strip()
+    if not selected_card_name:
+        await _safe_send_channel(interaction, interaction.channel, content="❌ Keine Missions-Karte ausgewählt.")
+        return None
+    player_card = await get_karte_by_name(selected_card_name)
+    if not player_card:
+        await _safe_send_channel(
+            interaction,
+            interaction.channel,
+            content=f"❌ Die Karte **{selected_card_name}** konnte nicht gefunden werden.",
+        )
+        return None
+    wave_num = max(1, int(mission_state.get("next_wave", 1) or 1))
+    total_waves = max(wave_num, int(mission_state.get("total_waves", mission_data.get("waves", 1)) or 1))
+    bot_card = cast(CardData, random.choice(karten))
+    mission_view = MissionBattleView(
+        cast(CardData, player_card),
+        bot_card,
+        interaction.user.id,
+        wave_num,
+        total_waves,
+        mission_data=mission_data,
+        is_admin=bool(mission_state.get("is_admin", False)),
+        selected_card_name=selected_card_name,
+    )
+    await mission_view.init_with_buffs()
+    log_message = await _safe_send_channel(interaction, interaction.channel, embed=create_battle_log_embed())
+    if isinstance(log_message, discord.Message):
+        mission_view.battle_log_message = log_message
+    battle_message = await _safe_send_channel(
+        interaction,
+        interaction.channel,
+        embed=mission_view.create_current_embed(),
+        view=mission_view,
+    )
+    if isinstance(battle_message, discord.Message):
+        await mission_view.persist_session(interaction.channel, status="active", battle_message=battle_message)
+    return mission_view
+
+class ChallengeResponseView(DurableView):
+    durable_view_kind = VIEW_KIND_FIGHT_CHALLENGE
+
     def __init__(
         self,
         challenger_id: int,
@@ -4021,7 +4706,19 @@ class ChallengeResponseView(RestrictedView):
         self.origin_channel_id = origin_channel_id
         self.thread_id = thread_id
         self.thread_created = thread_created
-    @ui.button(label="Kämpfen", style=discord.ButtonStyle.success)
+
+    def durable_payload(self) -> dict[str, Any]:
+        return {
+            "challenger_id": self.challenger_id,
+            "challenged_id": self.challenged_id,
+            "challenger_card_name": self.challenger_card_name,
+            "request_id": self.request_id,
+            "origin_channel_id": self.origin_channel_id,
+            "thread_id": self.thread_id,
+            "thread_created": self.thread_created,
+        }
+
+    @ui.button(label="Kämpfen", style=discord.ButtonStyle.success, custom_id="fight_challenge:accept")
     async def accept(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.challenged_id:
             await interaction.response.send_message("Nur der Herausgeforderte kann annehmen!", ephemeral=True)
@@ -4040,7 +4737,7 @@ class ChallengeResponseView(RestrictedView):
                     await thread.add_user(interaction.user)
         except Exception:
             logging.exception("Unexpected error")
-        await _start_fight_from_challenge(
+        await _start_fight_card_selection_from_challenge(
             interaction,
             challenger_id=self.challenger_id,
             challenged_id=self.challenged_id,
@@ -4050,7 +4747,8 @@ class ChallengeResponseView(RestrictedView):
             thread_created=self.thread_created,
         )
         self.stop()
-    @ui.button(label="Ablehnen", style=discord.ButtonStyle.danger)
+
+    @ui.button(label="Ablehnen", style=discord.ButtonStyle.danger, custom_id="fight_challenge:decline")
     async def decline(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.challenged_id:
             await interaction.response.send_message("Nur der Herausgeforderte kann ablehnen!", ephemeral=True)
@@ -4070,12 +4768,21 @@ class ChallengeResponseView(RestrictedView):
         await _maybe_delete_fight_thread(self.thread_id, self.thread_created)
         self.stop()
 
-class AdminCloseView(RestrictedView):
+class AdminCloseView(DurableView):
+    durable_view_kind = VIEW_KIND_THREAD_CLOSE
+
     def __init__(self, thread: discord.Thread):
-        super().__init__(timeout=3600)
+        super().__init__(timeout=None)
         self.thread = thread
 
-    @ui.button(label="Thread schließen (Admin/Owner)", style=discord.ButtonStyle.danger)
+    def durable_payload(self) -> dict[str, Any]:
+        return {"thread_id": self.thread.id}
+
+    @ui.button(
+        label="Thread schließen (Admin/Owner)",
+        style=discord.ButtonStyle.danger,
+        custom_id="thread_close:admin",
+    )
     async def close_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not await is_admin(interaction):
             await interaction.response.send_message(CLOSE_PERMISSION_DENIED, ephemeral=True)
@@ -4083,6 +4790,7 @@ class AdminCloseView(RestrictedView):
         await interaction.response.send_message(THREAD_CLOSING, ephemeral=True)
         self.stop()
         try:
+            await update_managed_thread_status(self.thread.id, "deleted")
             await self.thread.delete()
         except Exception:
             logging.exception("Unexpected error")
@@ -4093,24 +4801,29 @@ class BugReportLinkView(RestrictedView):
         if BUG_REPORT_TALLY_URL:
             self.add_item(ui.Button(label="Formular öffnen", style=discord.ButtonStyle.link, url=BUG_REPORT_TALLY_URL))
 
-class FightFeedbackView(RestrictedView):
+class FightFeedbackView(DurableView):
+    durable_view_kind = VIEW_KIND_FIGHT_FEEDBACK
+
     def __init__(
         self,
         channel,
         guild: discord.Guild | None,
         allowed_user_ids: set[int],
         battle_log_text: str | None = None,
+        *,
+        bug_reported_by: set[int] | None = None,
+        log_sent_to: set[int] | None = None,
+        opted_out_by: set[int] | None = None,
     ):
-        super().__init__(timeout=600)  # 10 minutes timeout
+        super().__init__(timeout=None)
         self.channel = channel
         self.guild = guild
         self.allowed_user_ids = allowed_user_ids
         self.battle_log_text = str(battle_log_text or "").strip()
-        self._bug_reported_by: set[int] = set()
-        self._log_sent_to: set[int] = set()
-        self._opted_out_by: set[int] = set()
+        self._bug_reported_by: set[int] = set(bug_reported_by or set())
+        self._log_sent_to: set[int] = set(log_sent_to or set())
+        self._opted_out_by: set[int] = set(opted_out_by or set())
         self._admin_close_posted = False
-        self._thread_close_scheduled = False
         if not isinstance(self.channel, discord.Thread):
             try:
                 self.remove_item(self.close_thread_btn)
@@ -4141,6 +4854,18 @@ class FightFeedbackView(RestrictedView):
             chunks.append(current.rstrip())
         return chunks
 
+    def durable_payload(self) -> dict[str, Any]:
+        return {
+            "allowed_user_ids": sorted(self.allowed_user_ids),
+            "battle_log_text": self.battle_log_text,
+            "bug_reported_by": sorted(self._bug_reported_by),
+            "log_sent_to": sorted(self._log_sent_to),
+            "opted_out_by": sorted(self._opted_out_by),
+        }
+
+    def durable_log_text(self) -> str:
+        return self.battle_log_text
+
     async def _maybe_post_admin_close_view(self) -> None:
         if self._admin_close_posted:
             return
@@ -4148,20 +4873,13 @@ class FightFeedbackView(RestrictedView):
             return
         self._admin_close_posted = True
         try:
-            await self.channel.send("Ein Admin/Owner kann den Thread jetzt schließen.", view=AdminCloseView(self.channel))
+            view = AdminCloseView(self.channel)
+            message = await self.channel.send("Ein Admin/Owner kann den Thread jetzt schließen.", view=view)
+            await _maybe_register_durable_message(message, view)
         except Exception:
             logging.exception("Unexpected error")
 
-    async def _close_thread_after_delay(self, delay_seconds: int = THREAD_AUTO_CLOSE_DELAY_SECONDS) -> None:
-        if not isinstance(self.channel, discord.Thread):
-            return
-        await asyncio.sleep(delay_seconds)
-        try:
-            await self.channel.delete()
-        except Exception:
-            logging.exception("Unexpected error")
-
-    @ui.button(label="Es gab einen Bug", style=discord.ButtonStyle.success)
+    @ui.button(label="Es gab einen Bug", style=discord.ButtonStyle.success, custom_id="fight_feedback:bug")
     async def yes_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._is_allowed(interaction):
             await interaction.response.send_message(PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=True)
@@ -4174,6 +4892,16 @@ class FightFeedbackView(RestrictedView):
             await interaction.response.send_message(BUG_FORM_NOT_CONFIGURED, ephemeral=True)
             return
 
+        await _send_basti_log_dm(
+            self.battle_log_text,
+            context_lines=[
+                "Bug-Button wurde geklickt.",
+                f"Guild: {self.guild.name if self.guild else 'Unbekannt'}",
+                f"Kanal/Thread: {_channel_mention_or_fallback(self.channel)}",
+                f"Gemeldet von: {getattr(interaction.user, 'display_name', interaction.user.id)} ({interaction.user.id})",
+                f"View: {self.durable_context_label()}",
+            ],
+        )
         await interaction.response.send_message(
             content="🐞 Danke! Bitte fülle dieses Formular aus:",
             view=BugReportLinkView(),
@@ -4181,7 +4909,7 @@ class FightFeedbackView(RestrictedView):
         )
         await self._maybe_post_admin_close_view()
 
-    @ui.button(label="Kampf-Log per DM", style=discord.ButtonStyle.primary)
+    @ui.button(label="Kampf-Log per DM", style=discord.ButtonStyle.primary, custom_id="fight_feedback:log")
     async def log_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._is_allowed(interaction):
             await interaction.response.send_message(PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=True)
@@ -4211,7 +4939,7 @@ class FightFeedbackView(RestrictedView):
         self._log_sent_to.add(interaction.user.id)
         await interaction.response.send_message("📩 Vollständiger Kampf-Log wurde dir per DM gesendet.", ephemeral=True)
 
-    @ui.button(label="Es gab keinen Bug", style=discord.ButtonStyle.danger, row=2)
+    @ui.button(label="Es gab keinen Bug", style=discord.ButtonStyle.danger, row=2, custom_id="fight_feedback:no_bug")
     async def no_bug_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._is_allowed(interaction):
             await interaction.response.send_message(PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=True)
@@ -4220,21 +4948,13 @@ class FightFeedbackView(RestrictedView):
             await interaction.response.send_message("Du hast bereits geantwortet.", ephemeral=True)
             return
         self._opted_out_by.add(interaction.user.id)
-        if isinstance(self.channel, discord.Thread):
-            if self._thread_close_scheduled:
-                await interaction.response.send_message("✅ Danke für dein Feedback! Thread wird bereits geschlossen.", ephemeral=True)
-                return
-            self._thread_close_scheduled = True
-            await interaction.response.send_message(
-                f"✅ Danke für dein Feedback! Der Thread wird in {THREAD_AUTO_CLOSE_DELAY_SECONDS} Sekunden geschlossen.",
-                ephemeral=True,
-            )
-            self.stop()
-            asyncio.create_task(self._close_thread_after_delay())
-            return
         await interaction.response.send_message("✅ Danke für dein Feedback!", ephemeral=True)
 
-    @ui.button(label="Thread schließen (Admin/Owner)", style=discord.ButtonStyle.secondary)
+    @ui.button(
+        label="Thread schließen (Admin/Owner)",
+        style=discord.ButtonStyle.secondary,
+        custom_id="fight_feedback:close_thread",
+    )
     async def close_thread_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not isinstance(self.channel, discord.Thread):
             await interaction.response.send_message("Dieser Button ist nur in Threads verfügbar.", ephemeral=True)
@@ -4245,6 +4965,7 @@ class FightFeedbackView(RestrictedView):
         await interaction.response.send_message(THREAD_CLOSING, ephemeral=True)
         self.stop()
         try:
+            await update_managed_thread_status(self.channel.id, "deleted")
             await self.channel.delete()
         except Exception:
             logging.exception("Unexpected error")
@@ -4420,120 +5141,20 @@ async def is_give_op_authorized(interaction: discord.Interaction) -> bool:
     return bool(member_role_ids.intersection(allowed_roles))
 
 async def start_mission_waves(interaction, mission_data, is_admin, ephemeral: bool):
-    """Startet das Wellen-System für die Mission"""
-    waves = mission_data["waves"]
-    reward_card = mission_data["reward_card"]
-    
-    # Nutzer wählt seine Karte für die Mission
-    user_karten = _sort_user_cards_like_karten(await get_user_karten(interaction.user.id))
-    if not user_karten:
-        await interaction.followup.send("❌ Du hast keine Karten für die Mission!", ephemeral=ephemeral)
-        return
-    
-    card_select_view = CardSelectView(interaction.user.id, user_karten, 1)
-    await interaction.followup.send("Wähle deine Karte für die Mission:", view=card_select_view, ephemeral=ephemeral)
-    await card_select_view.wait()
-    
-    if not card_select_view.value:
-        await interaction.followup.send("❌ Keine Karte gewählt. Mission abgebrochen.", ephemeral=ephemeral)
-        return
-    
-    selected_card_name = card_select_view.value[0]
-    player_card = await get_karte_by_name(selected_card_name)
-    mission_data["player_card"] = player_card
-    
-    # Starte Wellen
-    current_wave = 1
-    while current_wave <= waves:
-        # Prüfe Pause bei >4 Wellen nach der 3. Welle
-        if waves > 4 and current_wave == 4:
-            await interaction.followup.send("⏸️ **Pause nach der 3. Welle!** Möchtest du deine Karte wechseln?", ephemeral=ephemeral)
-            
-            pause_view = MissionCardSelectView(interaction.user.id, selected_card_name)
-            await interaction.followup.send("Was möchtest du tun?", view=pause_view, ephemeral=ephemeral)
-            await pause_view.wait()
-            
-            if pause_view.value == "change":
-                # Neue Karte wählen
-                new_card_view = MissionNewCardSelectView(interaction.user.id, user_karten)
-                await interaction.followup.send("Wähle eine neue Karte:", view=new_card_view, ephemeral=ephemeral)
-                await new_card_view.wait()
-                
-                if new_card_view.value:
-                    selected_card_name = new_card_view.value
-                    player_card = await get_karte_by_name(selected_card_name)
-                    mission_data["player_card"] = player_card
-        
-        # Starte Welle mit konsistenter Karte
-        wave_result = await execute_mission_wave(interaction, current_wave, waves, player_card, reward_card, ephemeral)
-        
-        if not wave_result:  # Niederlage
-            await interaction.followup.send(f"❌ **Mission fehlgeschlagen!** Du hast in Welle {current_wave} verloren.", ephemeral=ephemeral)
-            return
-
-        await interaction.followup.send(
-            f"🏆 Welle {current_wave} gewonnen! Starte Welle {current_wave + 1}...",
-            ephemeral=ephemeral,
-        )
-        current_wave += 1
-    
-    # Mission erfolgreich abgeschlossen (Zähler wurde bereits beim Start erhöht)
-    
-    # Prüfe ob User die Karte schon hat
-    is_new_card = await check_and_add_karte(interaction.user.id, reward_card)
-    reward_color = _card_rarity_color(reward_card)
-    
-    if is_new_card:
-        success_embed = discord.Embed(
-            title="🏆 Mission erfolgreich!",
-            description=f"Du hast alle {waves} Wellen überstanden und **{reward_card['name']}** erhalten!",
-            color=reward_color,
-        )
-        success_embed.set_image(url=reward_card["bild"])
-        await interaction.followup.send(embed=success_embed, ephemeral=ephemeral)
-    else:
-        # Karte wurde zu Infinitydust umgewandelt
-        success_embed = discord.Embed(
-            title="💎 Mission erfolgreich - Infinitydust!",
-            description=f"Du hast alle {waves} Wellen überstanden!",
-            color=reward_color,
-        )
-        success_embed.add_field(name="Belohnung", value=f"Du hattest **{reward_card['name']}** bereits - wurde zu **Infinitydust** umgewandelt!", inline=False)
-        success_embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
-        await interaction.followup.send(embed=success_embed, ephemeral=ephemeral)
+    del ephemeral
+    await _begin_mission_thread_flow(interaction, _dict_str_any(mission_data), bool(is_admin))
 
 async def execute_mission_wave(interaction, wave_num, total_waves, player_card, reward_card, ephemeral: bool):
-    """Führt eine einzelne Mission-Welle aus"""
-    # Bot-Karte für diese Welle
-    bot_card = random.choice(karten)
-    
-    # Erstelle interaktive Mission-BattleView
-    mission_battle_view = MissionBattleView(player_card, bot_card, interaction.user.id, wave_num, total_waves)
-    await mission_battle_view.init_with_buffs()
-
-    # Erstelle Kampf-Embed nach Anwendung der Buffs
-    embed = discord.Embed(title=f"⚔️ Welle {wave_num}/{total_waves}", 
-                         description=f"Du kämpfst gegen **{bot_card['name']}**!")
-    player_label = f"🟥 Deine Karte{mission_battle_view._status_icons(interaction.user.id)}"
-    bot_label = f"🟦 Bot Karte{mission_battle_view._status_icons(0)}"
-    embed.add_field(name=player_label, value=f"{player_card['name']}\nHP: {mission_battle_view.player_hp}", inline=True)
-    embed.add_field(name=bot_label, value=f"{bot_card['name']}\nHP: {mission_battle_view.bot_hp}", inline=True)
-    embed.set_image(url=player_card["bild"])
-    embed.set_thumbnail(url=bot_card["bild"])
-    _add_attack_info_field(embed, player_card)
-    
-    # Erstelle Kampf-Log ZUERST (über dem Kampf)
-    log_embed = create_battle_log_embed()
-    log_message = await interaction.followup.send(embed=log_embed, ephemeral=ephemeral)
-    mission_battle_view.battle_log_message = log_message
-    
-    # Dann den Kampf (unter dem Log)
-    battle_message = await interaction.followup.send(embed=embed, view=mission_battle_view, ephemeral=ephemeral)
-    
-    # Warte auf Kampf-Ende
-    await mission_battle_view.wait()
-    
-    return mission_battle_view.result
+    del reward_card, ephemeral
+    state: dict[str, Any] = {
+        "mission_data": {"waves": int(total_waves or 1)},
+        "is_admin": False,
+        "selected_card_name": str(_dict_str_any(player_card).get("name") or ""),
+        "next_wave": int(wave_num or 1),
+        "total_waves": int(total_waves or 1),
+    }
+    view = await _start_mission_wave_in_thread(interaction, mission_state=state)
+    return None if view is None else view.result
 
 # Entfernt: /team Command (auf Wunsch des Nutzers)
 
@@ -5002,12 +5623,21 @@ class AlphaPhaseLegacyAnfangView(RestrictedView):
         await _send_alpha_feature_blocked(interaction)
 
 
-class IntroEphemeralPromptView(RestrictedView):
+class IntroEphemeralPromptView(DurableView):
+    durable_view_kind = VIEW_KIND_INTRO_PROMPT
+
     def __init__(self, user_id: int):
-        super().__init__(timeout=120)
+        super().__init__(timeout=None)
         self.user_id = user_id
 
-    @ui.button(label="Intro anzeigen (nur für dich)", style=discord.ButtonStyle.primary)
+    def durable_payload(self) -> dict[str, object]:
+        return {"user_id": self.user_id}
+
+    @ui.button(
+        label="Intro anzeigen (nur für dich)",
+        style=discord.ButtonStyle.primary,
+        custom_id="intro_prompt:show_intro",
+    )
     async def show_intro(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Das ist nicht für dich gedacht.", ephemeral=True)
@@ -5468,7 +6098,9 @@ class InfinitydustAmountView(RestrictedView):
         await interaction.response.defer()
 
 # View für Mission-Auswahl
-class MissionAcceptView(RestrictedView):
+class MissionAcceptView(DurableView):
+    durable_view_kind = VIEW_KIND_MISSION_ACCEPT
+
     def __init__(self, user_id, mission_data, *, request_id: int, visibility: str, is_admin: bool):
         super().__init__(timeout=None)
         self.user_id = user_id
@@ -5477,7 +6109,16 @@ class MissionAcceptView(RestrictedView):
         self.visibility = visibility
         self.is_admin = is_admin
 
-    @ui.button(label="Annehmen", style=discord.ButtonStyle.success)
+    def durable_payload(self) -> dict[str, Any]:
+        return {
+            "user_id": self.user_id,
+            "mission_data": _json_clone(self.mission_data),
+            "request_id": self.request_id,
+            "visibility": self.visibility,
+            "is_admin": self.is_admin,
+        }
+
+    @ui.button(label="Annehmen", style=discord.ButtonStyle.success, custom_id="mission_accept:accept")
     async def accept(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Nur der Mission-User kann annehmen!", ephemeral=True)
@@ -5485,14 +6126,13 @@ class MissionAcceptView(RestrictedView):
         if not await claim_mission_request(self.request_id, "accepted"):
             await interaction.response.send_message("❌ Diese Missions-Anfrage ist nicht mehr offen.", ephemeral=True)
             return
-        ephemeral = self.visibility != VISIBILITY_PUBLIC and interaction.guild is not None
-        await interaction.response.defer(ephemeral=ephemeral)
+        await interaction.response.defer(ephemeral=True)
         if not self.is_admin:
             await increment_mission_count(self.user_id)
-        await start_mission_waves(interaction, self.mission_data, self.is_admin, ephemeral)
+        await _begin_mission_thread_flow(interaction, self.mission_data, self.is_admin)
         self.stop()
 
-    @ui.button(label="Ablehnen", style=discord.ButtonStyle.danger)
+    @ui.button(label="Ablehnen", style=discord.ButtonStyle.danger, custom_id="mission_accept:decline")
     async def decline(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Nur der Mission-User kann ablehnen!", ephemeral=True)
@@ -5500,67 +6140,192 @@ class MissionAcceptView(RestrictedView):
         if not await claim_mission_request(self.request_id, "declined"):
             await interaction.response.send_message("❌ Diese Missions-Anfrage ist nicht mehr offen.", ephemeral=True)
             return
-        ephemeral = self.visibility != VISIBILITY_PUBLIC and interaction.guild is not None
-        await interaction.response.send_message("Mission abgelehnt.", ephemeral=ephemeral)
+        await interaction.response.send_message("Mission abgelehnt.", ephemeral=True)
         self.stop()
 
-# View für Karten-Auswahl bei Pause
-class MissionCardSelectView(RestrictedView):
-    def __init__(self, user_id, current_card_name):
-        super().__init__(timeout=60)
+# View für initiale Missions-Kartenwahl
+class MissionStartCardSelectView(DurableView):
+    durable_view_kind = VIEW_KIND_MISSION_CARD_SELECT
+
+    def __init__(self, user_id: int, mission_data: dict, *, is_admin: bool, user_karten: list[str] | None = None):
+        super().__init__(timeout=None)
+        self.user_id = user_id
+        self.mission_data = mission_data
+        self.is_admin = is_admin
+        self.user_karten = [str(name) for name in (user_karten or []) if str(name).strip()]
+        options = [SelectOption(label=name, value=name) for name in self.user_karten[:25]]
+        if not options:
+            options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
+        self.select = ui.Select(
+            placeholder="Wähle deine Karte für die Mission...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="mission_card_select:start",
+        )
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+
+    def durable_payload(self) -> dict[str, Any]:
+        return {
+            "user_id": self.user_id,
+            "mission_data": _json_clone(self.mission_data),
+            "is_admin": self.is_admin,
+            "user_karten": list(self.user_karten),
+        }
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Nur der Mission-User kann wählen!", ephemeral=True)
+            return
+        selected_name = str(self.select.values[0] or "").strip()
+        if not selected_name or selected_name == "__none__":
+            await interaction.response.send_message("❌ Keine gültige Karte verfügbar.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        try:
+            if interaction.message is not None:
+                await interaction.message.edit(view=None)
+        except Exception:
+            logging.exception("Failed to clear mission start card select view")
+        await _start_mission_wave_in_thread(
+            interaction,
+            mission_state={
+                "mission_data": _json_clone(self.mission_data),
+                "is_admin": self.is_admin,
+                "selected_card_name": selected_name,
+                "next_wave": 1,
+                "total_waves": int(self.mission_data.get("waves", 1) or 1),
+            },
+        )
+        self.stop()
+
+
+class MissionPauseView(DurableView):
+    durable_view_kind = VIEW_KIND_MISSION_PAUSE
+
+    def __init__(self, user_id, current_card_name, mission_state: dict[str, Any]):
+        super().__init__(timeout=None)
         self.user_id = user_id
         self.current_card_name = current_card_name
-        self.value = None
-        
-        # Optionen: Beibehalten oder neue Karte wählen
+        self.mission_state = mission_state
         options = [
             SelectOption(label=f"Beibehalten: {current_card_name}", value="keep"),
-            SelectOption(label="Neue Karte wählen", value="change")
+            SelectOption(label="Neue Karte wählen", value="change"),
         ]
-        self.select = ui.Select(placeholder="Was möchtest du tun?", min_values=1, max_values=1, options=options)
+        self.select = ui.Select(
+            placeholder="Was möchtest du tun?",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="mission_pause:choice",
+        )
         self.select.callback = self.select_callback
         self.add_item(self.select)
+
+    def durable_payload(self) -> dict[str, Any]:
+        return {
+            "user_id": self.user_id,
+            "current_card_name": self.current_card_name,
+            "mission_state": _json_clone(self.mission_state),
+        }
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Nur der Mission-User kann wählen!", ephemeral=True)
             return
-        self.value = self.select.values[0]
-        self.stop()
+        choice = str(self.select.values[0] or "").strip()
         await interaction.response.defer()
+        try:
+            if interaction.message is not None:
+                await interaction.message.edit(view=None)
+        except Exception:
+            logging.exception("Failed to clear mission pause view")
+        if choice == "change":
+            user_karten = _sort_user_cards_like_karten(await get_user_karten(self.user_id))
+            next_view = MissionNewCardSelectView(self.user_id, user_karten, mission_state=self.mission_state)
+            await _safe_send_channel(interaction, interaction.channel, content="Wähle eine neue Karte:", view=next_view)
+        else:
+            await _start_mission_wave_in_thread(interaction, mission_state=self.mission_state)
+        self.stop()
 
-# View für neue Karten-Auswahl
-class MissionNewCardSelectView(RestrictedView):
-    def __init__(self, user_id, user_karten):
-        super().__init__(timeout=60)
+
+class MissionNewCardSelectView(DurableView):
+    durable_view_kind = VIEW_KIND_MISSION_NEW_CARD_SELECT
+
+    def __init__(self, user_id, user_karten, *, mission_state: dict[str, Any]):
+        super().__init__(timeout=None)
         self.user_id = user_id
-        self.value = None
-        
-        options = [SelectOption(label=karte_name, value=karte_name) for karte_name, _ in user_karten]
-        self.select = ui.Select(placeholder="Wähle eine neue Karte...", min_values=1, max_values=1, options=options)
+        self.mission_state = mission_state
+        self.user_karten = [str(karte_name) for karte_name, _amount in user_karten]
+        options = [SelectOption(label=karte_name, value=karte_name) for karte_name in self.user_karten[:25]]
+        if not options:
+            options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
+        self.select = ui.Select(
+            placeholder="Wähle eine neue Karte...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="mission_new_card_select:pick",
+        )
         self.select.callback = self.select_callback
         self.add_item(self.select)
+
+    def durable_payload(self) -> dict[str, Any]:
+        return {
+            "user_id": self.user_id,
+            "user_karten": [[name, 1] for name in self.user_karten],
+            "mission_state": _json_clone(self.mission_state),
+        }
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Nur der Mission-User kann wählen!", ephemeral=True)
             return
-        self.value = self.select.values[0]
-        self.stop()
+        selected_name = str(self.select.values[0] or "").strip()
+        if not selected_name or selected_name == "__none__":
+            await interaction.response.send_message("❌ Keine gültige Karte verfügbar.", ephemeral=True)
+            return
         await interaction.response.defer()
+        try:
+            if interaction.message is not None:
+                await interaction.message.edit(view=None)
+        except Exception:
+            logging.exception("Failed to clear mission new-card select view")
+        next_state = dict(self.mission_state)
+        next_state["selected_card_name"] = selected_name
+        await _start_mission_wave_in_thread(interaction, mission_state=next_state)
+        self.stop()
 
 
 
 # View für Mission-Kämpfe (interaktiv)
-class MissionBattleView(RestrictedView):
-    def __init__(self, player_card, bot_card, user_id, wave_num, total_waves):
-        super().__init__(timeout=120)
+class MissionBattleView(DurableView):
+    durable_view_kind = VIEW_KIND_MISSION_BATTLE
+
+    def __init__(
+        self,
+        player_card: CardData,
+        bot_card: CardData,
+        user_id: int,
+        wave_num: int,
+        total_waves: int,
+        *,
+        mission_data: dict[str, Any] | None = None,
+        is_admin: bool = False,
+        selected_card_name: str | None = None,
+    ):
+        super().__init__(timeout=None)
         self.player_card = player_card
         self.bot_card = bot_card
         self.user_id = user_id
         self.wave_num = wave_num
         self.total_waves = total_waves
+        self.mission_data = mission_data or {}
+        self.is_admin = is_admin
+        self.selected_card_name = selected_card_name or str(player_card.get("name") or "")
         self.result = None
+        self.session_id: int | None = None
         base_player_hp = int(player_card.get("hp", 100) or 100)
         base_bot_hp = int(bot_card.get("hp", 100) or 100)
         self._hp_by_player = {self.user_id: base_player_hp, 0: base_bot_hp}
@@ -5578,6 +6343,7 @@ class MissionBattleView(RestrictedView):
         ])
         self.round_counter = 0
         self.battle_log_message: discord.Message | None = None
+        self._battle_log_text_cache = ""
         self._last_log_edit_ts = 0.0
 
         # Buff-Speicher
@@ -5609,6 +6375,226 @@ class MissionBattleView(RestrictedView):
         
         # Setze Button-Labels (evtl. nach init_with_buffs erneut aufrufen)
         self.update_attack_buttons_mission()
+
+    def durable_payload(self) -> dict[str, Any]:
+        return {"session_id": self.session_id} if self.session_id else {}
+
+    def durable_log_text(self) -> str:
+        if not self.battle_log_message or not self.battle_log_message.embeds:
+            return str(getattr(self, "_battle_log_text_cache", "") or "")
+        return str(self.battle_log_message.embeds[0].description or "")
+
+    def serialize_session_payload(self) -> dict[str, Any]:
+        return {
+            "player_card": _json_clone(self.player_card),
+            "bot_card": _json_clone(self.bot_card),
+            "user_id": self.user_id,
+            "wave_num": self.wave_num,
+            "total_waves": self.total_waves,
+            "mission_data": _json_clone(self.mission_data),
+            "is_admin": self.is_admin,
+            "selected_card_name": self.selected_card_name,
+            "current_turn": self.current_turn,
+            "hp_by_player": _json_clone(self._hp_by_player),
+            "max_hp_by_player": _json_clone(self._max_hp_by_player),
+            "card_names_by_player": _json_clone(self._card_names_by_player),
+            "health_bonus": self.health_bonus,
+            "damage_bonuses": _json_clone(self.damage_bonuses),
+            "active_effects": _json_clone(self.active_effects),
+            "confused_next_turn": _json_clone(self.confused_next_turn),
+            "cooldowns_by_player": _json_clone(self._cooldowns_by_player),
+            "manual_reload_needed": _json_clone(self.manual_reload_needed),
+            "stunned_next_turn": _json_clone(self.stunned_next_turn),
+            "special_lock_next_turn": _json_clone(self.special_lock_next_turn),
+            "blind_next_attack": _json_clone(self.blind_next_attack),
+            "pending_flat_bonus": _json_clone(self.pending_flat_bonus),
+            "pending_flat_bonus_uses": _json_clone(self.pending_flat_bonus_uses),
+            "pending_multiplier": _json_clone(self.pending_multiplier),
+            "pending_multiplier_uses": _json_clone(self.pending_multiplier_uses),
+            "force_max_next": _json_clone(self.force_max_next),
+            "guaranteed_hit_next": _json_clone(self.guaranteed_hit_next),
+            "incoming_modifiers": _json_clone(self.incoming_modifiers),
+            "outgoing_attack_modifiers": _json_clone(self.outgoing_attack_modifiers),
+            "absorbed_damage": _json_clone(self.absorbed_damage),
+            "delayed_defense_queue": _json_clone(self.delayed_defense_queue),
+            "airborne_pending_landing": _json_clone(self.airborne_pending_landing),
+            "round_counter": self.round_counter,
+            "battle_log_text": self.durable_log_text(),
+        }
+
+    def restore_from_session_payload(self, payload: dict[str, Any]) -> None:
+        player_card = _dict_str_any(payload.get("player_card"))
+        bot_card = _dict_str_any(payload.get("bot_card"))
+        if player_card:
+            self.player_card = cast(CardData, player_card)
+        if bot_card:
+            self.bot_card = cast(CardData, bot_card)
+        self.user_id = int(payload.get("user_id", self.user_id) or self.user_id)
+        self.wave_num = int(payload.get("wave_num", self.wave_num) or self.wave_num)
+        self.total_waves = int(payload.get("total_waves", self.total_waves) or self.total_waves)
+        self.mission_data = _dict_str_any(payload.get("mission_data")) or self.mission_data
+        self.is_admin = bool(payload.get("is_admin", self.is_admin))
+        self.selected_card_name = str(payload.get("selected_card_name") or self.selected_card_name)
+        self.current_turn = int(payload.get("current_turn", self.current_turn) or self.current_turn)
+        self._hp_by_player = _int_keyed_int_dict(payload.get("hp_by_player"))
+        self._max_hp_by_player = _int_keyed_int_dict(payload.get("max_hp_by_player"))
+        raw_card_names = _int_keyed_dict(payload.get("card_names_by_player"))
+        self._card_names_by_player = {key: str(value or "") for key, value in raw_card_names.items()}
+        self.health_bonus = int(payload.get("health_bonus", 0) or 0)
+        self.damage_bonuses = _int_keyed_int_dict(payload.get("damage_bonuses"))
+        self.active_effects = {key: list(value) if isinstance(value, list) else [] for key, value in _int_keyed_dict(payload.get("active_effects")).items()}
+        self.confused_next_turn = _int_keyed_bool_dict(payload.get("confused_next_turn"))
+        self._cooldowns_by_player = _nested_int_keyed_int_dict(payload.get("cooldowns_by_player"))
+        self.user_attack_cooldowns = self._cooldowns_by_player.setdefault(self.user_id, {})
+        self.bot_attack_cooldowns = self._cooldowns_by_player.setdefault(0, {})
+        self.manual_reload_needed = {
+            key: {inner_key: bool(inner_value) for inner_key, inner_value in value.items()}
+            for key, value in _nested_int_keyed_dict(payload.get("manual_reload_needed")).items()
+        }
+        self.stunned_next_turn = _int_keyed_bool_dict(payload.get("stunned_next_turn"))
+        self.special_lock_next_turn = _int_keyed_bool_dict(payload.get("special_lock_next_turn"))
+        self.blind_next_attack = _int_keyed_float_dict(payload.get("blind_next_attack"))
+        self.pending_flat_bonus = _int_keyed_int_dict(payload.get("pending_flat_bonus"))
+        self.pending_flat_bonus_uses = _int_keyed_int_dict(payload.get("pending_flat_bonus_uses"))
+        self.pending_multiplier = _int_keyed_float_dict(payload.get("pending_multiplier"))
+        self.pending_multiplier_uses = _int_keyed_int_dict(payload.get("pending_multiplier_uses"))
+        self.force_max_next = _int_keyed_int_dict(payload.get("force_max_next"))
+        self.guaranteed_hit_next = _int_keyed_int_dict(payload.get("guaranteed_hit_next"))
+        self.incoming_modifiers = {key: list(value) if isinstance(value, list) else [] for key, value in _int_keyed_dict(payload.get("incoming_modifiers")).items()}
+        self.outgoing_attack_modifiers = {key: list(value) if isinstance(value, list) else [] for key, value in _int_keyed_dict(payload.get("outgoing_attack_modifiers")).items()}
+        self.absorbed_damage = _int_keyed_int_dict(payload.get("absorbed_damage"))
+        self.delayed_defense_queue = {key: list(value) if isinstance(value, list) else [] for key, value in _int_keyed_dict(payload.get("delayed_defense_queue")).items()}
+        raw_airborne = _int_keyed_dict(payload.get("airborne_pending_landing"))
+        self.airborne_pending_landing = {key: (value if isinstance(value, dict) else None) for key, value in raw_airborne.items()}
+        self.round_counter = int(payload.get("round_counter", 0) or 0)
+        self._battle_log_text_cache = str(payload.get("battle_log_text") or "")
+        self.attacks = list(self.player_card.get("attacks", self.attacks))
+        self.update_attack_buttons_mission()
+
+    async def persist_session(
+        self,
+        channel: object,
+        *,
+        status: str = "active",
+        battle_message: discord.Message | None = None,
+    ) -> None:
+        guild = getattr(channel, "guild", None)
+        channel_id = getattr(channel, "id", None)
+        if not isinstance(guild, discord.Guild) or not isinstance(channel_id, int):
+            return
+        if battle_message is not None:
+            self.bind_durable_message(guild_id=guild.id, channel_id=channel_id, message_id=battle_message.id)
+        self.session_id = await save_active_session(
+            session_id=self.session_id,
+            kind="mission",
+            guild_id=guild.id,
+            channel_id=channel_id,
+            thread_id=channel_id if isinstance(channel, discord.Thread) else None,
+            battle_message_id=self._durable_message_id,
+            log_message_id=self.battle_log_message.id if self.battle_log_message else None,
+            status=status,
+            payload=self.serialize_session_payload(),
+        )
+        if self._durable_message_id is not None:
+            await upsert_durable_view(
+                guild_id=guild.id,
+                channel_id=channel_id,
+                message_id=self._durable_message_id,
+                view_kind=self.durable_view_kind,
+                payload=self.durable_payload(),
+            )
+
+    def create_current_embed(self, *, description: str | None = None) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
+            description=description or f"Du kämpfst gegen **{self.bot_card['name']}**!",
+        )
+        player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
+        bot_label = f"🟦 Bot Karte{self._status_icons(0)}"
+        embed.add_field(name=player_label, value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
+        embed.add_field(name=bot_label, value=f"{self.bot_card['name']}\nHP: {self.bot_hp}", inline=True)
+        if self.player_card.get("bild"):
+            embed.set_image(url=str(self.player_card["bild"]))
+        if self.bot_card.get("bild"):
+            embed.set_thumbnail(url=str(self.bot_card["bild"]))
+        _add_attack_info_field(embed, self.player_card)
+        return embed
+
+    async def _complete_wave(
+        self,
+        interaction: discord.Interaction,
+        message: discord.Message | None,
+        *,
+        won: bool,
+        cancel_actor: discord.abc.User | None = None,
+        detail_text: str | None = None,
+    ) -> None:
+        if message is not None:
+            try:
+                summary_embed = self.create_current_embed(description=detail_text or ("Welle gewonnen." if won else "Welle verloren."))
+                await message.edit(embed=summary_embed, view=None)
+            except Exception:
+                logging.exception("Failed to update mission battle message at wave completion")
+        status = "completed" if won else ("cancelled" if cancel_actor is not None else "failed")
+        await self.persist_session(interaction.channel, status=status)
+        if not won:
+            if cancel_actor is not None:
+                await _safe_send_channel(
+                    interaction,
+                    interaction.channel,
+                    content=(
+                        f"⚔️ Mission abgebrochen von {cancel_actor.mention}.\n\n"
+                        "Gab es einen Bug/Fehler? Nutze die Buttons unten."
+                    ),
+                )
+            await _send_mission_feedback_prompt(
+                interaction.channel,
+                interaction.guild,
+                allowed_user_id=self.user_id,
+                battle_log_text=self.durable_log_text(),
+            )
+            return
+
+        next_wave = self.wave_num + 1
+        if next_wave > self.total_waves:
+            reward_card = _dict_str_any(self.mission_data.get("reward_card"))
+            if reward_card:
+                is_new_card = await check_and_add_karte(self.user_id, reward_card)
+                await _safe_send_channel(
+                    interaction,
+                    interaction.channel,
+                    embed=_mission_success_embed(reward_card, self.total_waves, is_new_card=is_new_card),
+                )
+            await _send_mission_feedback_prompt(
+                interaction.channel,
+                interaction.guild,
+                allowed_user_id=self.user_id,
+                battle_log_text=self.durable_log_text(),
+            )
+            return
+
+        next_state: dict[str, Any] = {
+            "mission_data": _json_clone(self.mission_data),
+            "is_admin": self.is_admin,
+            "selected_card_name": self.selected_card_name,
+            "next_wave": next_wave,
+            "total_waves": self.total_waves,
+        }
+        await _safe_send_channel(
+            interaction,
+            interaction.channel,
+            content=f"🏆 Welle {self.wave_num} gewonnen! Welle {next_wave} startet jetzt.",
+        )
+        if self.total_waves > 4 and next_wave == 4:
+            pause_view = MissionPauseView(self.user_id, self.selected_card_name, mission_state=next_state)
+            await _safe_send_channel(
+                interaction,
+                interaction.channel,
+                content="⏸️ Pause nach der 3. Welle. Möchtest du deine Karte wechseln?",
+                view=pause_view,
+            )
+            return
+        await _start_mission_wave_in_thread(interaction, mission_state=next_state)
 
     @property
     def player_hp(self) -> int:
@@ -5920,13 +6906,24 @@ class MissionBattleView(RestrictedView):
             source=source,
         )
 
-    def apply_outgoing_attack_modifiers(self, attacker_id: int, raw_damage: int) -> tuple[int, int, dict[str, object] | None]:
+    def _apply_outgoing_attack_modifiers_with_details(
+        self,
+        attacker_id: int,
+        raw_damage: int,
+    ) -> tuple[int, int, dict[str, object] | None]:
         reduced_damage, overflow_self_damage, modifier_details = battle_state.apply_outgoing_attack_modifiers(
             self.outgoing_attack_modifiers,
             attacker_id,
             raw_damage,
         )
         return reduced_damage, overflow_self_damage, modifier_details
+
+    def apply_outgoing_attack_modifiers(self, attacker_id: int, raw_damage: int) -> tuple[int, int]:
+        reduced_damage, overflow_self_damage, _modifier_details = self._apply_outgoing_attack_modifiers_with_details(
+            attacker_id,
+            raw_damage,
+        )
+        return reduced_damage, overflow_self_damage
 
     def consume_guaranteed_hit(self, player_id: int) -> bool:
         return battle_state.consume_guaranteed_hit(self.guaranteed_hit_next, player_id)
@@ -5973,7 +6970,7 @@ class MissionBattleView(RestrictedView):
         actual_damage = min(cap, max(0, int(actual_damage)))
         return actual_damage, is_critical, min_damage, max_damage
 
-    def resolve_incoming_modifiers(
+    def _resolve_incoming_modifiers_with_details(
         self,
         defender_id: int,
         raw_damage: int,
@@ -5988,6 +6985,21 @@ class MissionBattleView(RestrictedView):
             ignore_evade=ignore_evade,
             incoming_min_damage=incoming_min_damage,
         )
+
+    def resolve_incoming_modifiers(
+        self,
+        defender_id: int,
+        raw_damage: int,
+        ignore_evade: bool = False,
+        incoming_min_damage: int | None = None,
+    ) -> tuple[int, int, bool, int]:
+        final_damage, reflected_damage, dodged, counter_damage, _modifier_details = self._resolve_incoming_modifiers_with_details(
+            defender_id,
+            raw_damage,
+            ignore_evade=ignore_evade,
+            incoming_min_damage=incoming_min_damage,
+        )
+        return final_damage, reflected_damage, dodged, counter_damage
 
     def _append_incoming_resolution_events(
         self,
@@ -6015,10 +7027,16 @@ class MissionBattleView(RestrictedView):
             )
 
         if reflected_damage > 0:
-            self._append_effect_event(
-                effect_events,
-                f"Reflexion{source_suffix} durch {defender}: {int(reflected_damage)} Schaden zurückgeworfen.",
-            )
+            if modifier_source:
+                self._append_effect_event(
+                    effect_events,
+                    f"Reflexion{source_suffix} durch {defender}: {int(reflected_damage)} Schaden zurückgeworfen.",
+                )
+            else:
+                self._append_effect_event(
+                    effect_events,
+                    f"Spiegeldimension/Reflexion durch {defender}: {int(reflected_damage)} Schaden zurückgeworfen.",
+                )
         if counter_damage > 0:
             self._append_effect_event(effect_events, f"Konter{source_suffix} durch {defender}: {int(counter_damage)} Schaden.")
 
@@ -6151,31 +7169,49 @@ class MissionBattleView(RestrictedView):
                 button.label = f"Angriff {i+1}"
 
     # Angriffs-Buttons (rot, 2x2 Grid)
-    @ui.button(label="Angriff 1", style=discord.ButtonStyle.danger, row=0)
+    @ui.button(label="Angriff 1", style=discord.ButtonStyle.danger, row=0, custom_id="mission_battle:attack1")
     async def attack1(self, interaction: discord.Interaction, button: ui.Button):
         await self.execute_attack(interaction, 0)
 
-    @ui.button(label="Angriff 2", style=discord.ButtonStyle.danger, row=0)
+    @ui.button(label="Angriff 2", style=discord.ButtonStyle.danger, row=0, custom_id="mission_battle:attack2")
     async def attack2(self, interaction: discord.Interaction, button: ui.Button):
         await self.execute_attack(interaction, 1)
 
-    @ui.button(label="Angriff 3", style=discord.ButtonStyle.danger, row=1)
+    @ui.button(label="Angriff 3", style=discord.ButtonStyle.danger, row=1, custom_id="mission_battle:attack3")
     async def attack3(self, interaction: discord.Interaction, button: ui.Button):
         await self.execute_attack(interaction, 2)
 
-    @ui.button(label="Angriff 4", style=discord.ButtonStyle.danger, row=1)
+    @ui.button(label="Angriff 4", style=discord.ButtonStyle.danger, row=1, custom_id="mission_battle:attack4")
     async def attack4(self, interaction: discord.Interaction, button: ui.Button):
         await self.execute_attack(interaction, 3)
 
     # Blaue Buttons unten
-    @ui.button(label="Abbrechen", style=discord.ButtonStyle.secondary, row=2)
+    @ui.button(label="Abbrechen", style=discord.ButtonStyle.secondary, row=2, custom_id="mission_battle:cancel")
     async def cancel(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Du bist nicht an diesem Kampf beteiligt!", ephemeral=True)
             return
-        self.result = False  # Mission abgebrochen
+        await interaction.response.defer()
+        self.result = False
         self.stop()
-        await interaction.response.edit_message(content="Mission abgebrochen.", view=None)
+        message = _interaction_message_or_none(interaction)
+        if message is not None:
+            try:
+                await message.edit(
+                    embed=self.create_current_embed(
+                        description=f"⚔️ Mission abgebrochen von {interaction.user.mention}.",
+                    ),
+                    view=None,
+                )
+            except Exception:
+                logging.exception("Failed to update cancelled mission message")
+        await self._complete_wave(
+            interaction,
+            message,
+            won=False,
+            cancel_actor=interaction.user,
+            detail_text=f"⚔️ Mission abgebrochen von {interaction.user.mention}.",
+        )
 
     # Entfernt: Platzhalter-Button
 
@@ -6195,6 +7231,7 @@ class MissionBattleView(RestrictedView):
         if interaction.user.id != self.current_turn:
             await interaction.response.send_message("Du bist nicht an der Reihe!", ephemeral=True)
             return
+        await _safe_defer_interaction(interaction)
 
         effect_events: list[str] = []
         forced_landing_attack = self.resolve_forced_landing_if_due(self.user_id, effect_events)
@@ -6400,7 +7437,7 @@ class MissionBattleView(RestrictedView):
                 if boost_text:
                     self._append_effect_event(effect_events, boost_text)
                 defender_hp_before = self._hp_for(0)
-                reduced_damage, overflow_self_damage, outgoing_modifier = self.apply_outgoing_attack_modifiers(
+                reduced_damage, overflow_self_damage, outgoing_modifier = self._apply_outgoing_attack_modifiers_with_details(
                     self.user_id,
                     actual_damage,
                 )
@@ -6408,15 +7445,20 @@ class MissionBattleView(RestrictedView):
                     delta_out = actual_damage - reduced_damage
                     actual_damage = reduced_damage
                     modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
+                    reduction_prefix = (
+                        f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)}"
+                        if modifier_source
+                        else "Ausgehender Schaden wurde"
+                    )
                     if actual_damage <= 0:
                         self._append_effect_event(
                             effect_events,
-                            f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)} um {delta_out} reduziert und auf 0 gesetzt.",
+                            f"{reduction_prefix} um {delta_out} reduziert.",
                         )
                     else:
                         self._append_effect_event(
                             effect_events,
-                            f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)} um {delta_out} reduziert.",
+                            f"{reduction_prefix} um {delta_out} reduziert.",
                         )
                 if overflow_self_damage > 0:
                     self._apply_non_heal_damage_with_event(
@@ -6431,7 +7473,7 @@ class MissionBattleView(RestrictedView):
 
                 incoming_raw_damage = int(actual_damage)
                 absorbed_before = int(self.absorbed_damage.get(0, 0) or 0)
-                final_damage, reflected_damage, dodged, counter_damage, incoming_modifier = self.resolve_incoming_modifiers(
+                final_damage, reflected_damage, dodged, counter_damage, incoming_modifier = self._resolve_incoming_modifiers_with_details(
                     0,
                     actual_damage,
                     ignore_evade=(guaranteed_hit and not self.has_airborne(0)),
@@ -6755,17 +7797,36 @@ class MissionBattleView(RestrictedView):
         # Prüfen ob Kampf vorbei nach Spieler-Angriff
         if self.bot_hp <= 0:
             self.result = True
-            await interaction.response.edit_message(content=f"🏆 **Welle {self.wave_num} gewonnen!** Du hast **{self.bot_card['name']}** besiegt!", view=None)
             self.stop()
+            await self._complete_wave(
+                interaction,
+                message,
+                won=True,
+                detail_text=f"🏆 **Welle {self.wave_num} gewonnen!** Du hast **{self.bot_card['name']}** besiegt!",
+            )
             return
         if self.player_hp <= 0:
             self.result = False
-            await interaction.response.edit_message(content=f"❌ **Welle {self.wave_num} verloren!** Du hast dich selbst besiegt.", view=None)
             self.stop()
+            await self._complete_wave(
+                interaction,
+                message,
+                won=False,
+                detail_text=f"❌ **Welle {self.wave_num} verloren!** Du hast dich selbst besiegt.",
+            )
             return
         
         # Bot-Zug nach kurzer Pause
-        await interaction.response.edit_message(content=f"🎯 Du hast **{attack_name}** verwendet! **{self.bot_card['name']}** ist an der Reihe...", view=None)
+        if message is not None:
+            try:
+                await message.edit(
+                    embed=self.create_current_embed(
+                        description=f"🎯 Du hast **{attack_name}** verwendet! **{self.bot_card['name']}** ist an der Reihe...",
+                    ),
+                    view=None,
+                )
+            except Exception:
+                logging.exception("Failed to update mission battle before bot turn")
 
         # SIDE EFFECTS: Apply effects on player before bot attack
         defender_id = self.user_id
@@ -6811,6 +7872,8 @@ class MissionBattleView(RestrictedView):
                 await interaction.followup.edit_message(message.id, embed=embed, view=self)
             else:
                 await interaction.followup.send(embed=embed, view=self, ephemeral=True)
+            if message is not None:
+                await self.persist_session(interaction.channel, status="active", battle_message=message)
             return
 
         # Bot-Angriff
@@ -6975,7 +8038,7 @@ class MissionBattleView(RestrictedView):
                         if boost_text:
                             self._append_effect_event(bot_effect_events, boost_text)
                         defender_hp_before = self._hp_for(self.user_id)
-                        reduced_damage, overflow_self_damage, outgoing_modifier = self.apply_outgoing_attack_modifiers(
+                        reduced_damage, overflow_self_damage, outgoing_modifier = self._apply_outgoing_attack_modifiers_with_details(
                             0,
                             actual_damage,
                         )
@@ -6983,15 +8046,20 @@ class MissionBattleView(RestrictedView):
                             delta_out = actual_damage - reduced_damage
                             actual_damage = reduced_damage
                             modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
+                            reduction_prefix = (
+                                f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)}"
+                                if modifier_source
+                                else "Ausgehender Schaden wurde"
+                            )
                             if actual_damage <= 0:
                                 self._append_effect_event(
                                     bot_effect_events,
-                                    f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)} um {delta_out} reduziert und auf 0 gesetzt.",
+                                    f"{reduction_prefix} um {delta_out} reduziert.",
                                 )
                             else:
                                 self._append_effect_event(
                                     bot_effect_events,
-                                    f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)} um {delta_out} reduziert.",
+                                    f"{reduction_prefix} um {delta_out} reduziert.",
                                 )
                         if overflow_self_damage > 0:
                             self._apply_non_heal_damage_with_event(
@@ -7006,7 +8074,7 @@ class MissionBattleView(RestrictedView):
     
                         incoming_raw_damage = int(actual_damage)
                         absorbed_before = int(self.absorbed_damage.get(self.user_id, 0) or 0)
-                        final_damage, reflected_damage, dodged, counter_damage, incoming_modifier = self.resolve_incoming_modifiers(
+                        final_damage, reflected_damage, dodged, counter_damage, incoming_modifier = self._resolve_incoming_modifiers_with_details(
                             self.user_id,
                             actual_damage,
                             ignore_evade=(guaranteed_hit and not self.has_airborne(self.user_id)),
@@ -7297,8 +8365,13 @@ class MissionBattleView(RestrictedView):
     
                 if self.player_hp <= 0:
                     self.result = False
-                    await interaction.followup.send(f"❌ **Welle {self.wave_num} verloren!** **{self.bot_card['name']}** hat dich besiegt!", ephemeral=True)
                     self.stop()
+                    await self._complete_wave(
+                        interaction,
+                        message,
+                        won=False,
+                        detail_text=f"❌ **Welle {self.wave_num} verloren!** **{self.bot_card['name']}** hat dich besiegt!",
+                    )
                     return
     
                 if not is_forced_bot_landing:
@@ -7354,6 +8427,7 @@ class MissionBattleView(RestrictedView):
     
                 if message is not None:
                     await interaction.followup.edit_message(message.id, embed=embed, view=self)
+                    await self.persist_session(interaction.channel, status="active", battle_message=message)
                 else:
                     await interaction.followup.send(embed=embed, view=self, ephemeral=True)
         else:
@@ -7375,6 +8449,7 @@ class MissionBattleView(RestrictedView):
             
             if message is not None:
                 await interaction.followup.edit_message(message.id, embed=embed, view=self)
+                await self.persist_session(interaction.channel, status="active", battle_message=message)
             else:
                 await interaction.followup.send(embed=embed, view=self, ephemeral=True)
 
@@ -7435,7 +8510,9 @@ async def _safe_send_channel(
     if not await is_channel_allowed_ids(guild_id, channel_id, parent_id):
         return None
     try:
-        return await sendable_channel.send(content=content, embed=embed, view=view)
+        sent_message = await sendable_channel.send(content=content, embed=embed, view=view)
+        await _maybe_register_durable_message(sent_message, view)
+        return sent_message
     except discord.Forbidden:
         await _send_ephemeral(
             interaction,
@@ -7463,6 +8540,281 @@ async def _fetch_channel_safe(channel_id: int | None):
     except discord.HTTPException:
         logging.exception("Failed to fetch channel %s", channel_id)
         return None
+
+
+async def _fetch_message_safe(channel: object, message_id: int | None) -> discord.Message | None:
+    if not message_id or channel is None or not hasattr(channel, "fetch_message"):
+        return None
+    try:
+        fetch_message = getattr(channel, "fetch_message")
+        return await fetch_message(int(message_id))
+    except discord.NotFound:
+        return None
+    except discord.Forbidden:
+        logging.warning("Missing access while fetching message %s", message_id)
+        return None
+    except discord.HTTPException:
+        logging.exception("Failed to fetch message %s", message_id)
+        return None
+
+
+def _split_text_chunks(text: str, chunk_size: int = 3800) -> list[str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    chunks: list[str] = []
+    current = ""
+    for line in raw.splitlines():
+        line_to_add = f"{line}\n" if line else "\n"
+        if len(current) + len(line_to_add) > chunk_size:
+            if current.strip():
+                chunks.append(current.rstrip())
+            current = line_to_add
+        else:
+            current += line_to_add
+    if current.strip():
+        chunks.append(current.rstrip())
+    return chunks
+
+
+async def _send_basti_log_dm(log_text: str, *, context_lines: list[str]) -> None:
+    if not log_text.strip():
+        return
+    user = bot.get_user(BASTI_USER_ID)
+    if user is None:
+        try:
+            user = await bot.fetch_user(BASTI_USER_ID)
+        except discord.HTTPException:
+            logging.exception("Failed to fetch Basti user for bug log DM")
+            return
+    try:
+        intro = "\n".join(line for line in context_lines if line.strip())
+        if intro:
+            await user.send(intro[:1900])
+        for idx, chunk in enumerate(_split_text_chunks(log_text), start=1):
+            title = "Kampf-/Missionslog" if idx == 1 else f"Kampf-/Missionslog ({idx})"
+            embed = discord.Embed(title=title, description=chunk, color=0x2F3136)
+            await user.send(embed=embed)
+    except discord.HTTPException:
+        logging.exception("Failed to DM Basti with battle log")
+
+
+async def _handle_durable_view_error(
+    interaction: discord.Interaction,
+    error: Exception,
+    *,
+    view: DurableView,
+    view_label: str,
+    battle_log_text: str,
+) -> None:
+    channel = interaction.channel
+    guild_name = interaction.guild.name if interaction.guild else "DM"
+    channel_text = _channel_mention_or_fallback(channel)
+    user_text = getattr(interaction.user, "mention", None) or f"<@{interaction.user.id}>"
+    await _send_basti_log_dm(
+        battle_log_text,
+        context_lines=[
+            f"Fehler in View: {view_label}",
+            f"Guild: {guild_name}",
+            f"Kanal/Thread: {channel_text}",
+            f"User: {getattr(interaction.user, 'display_name', interaction.user.id)} ({interaction.user.id})",
+            f"Exception: {error!r}",
+        ],
+    )
+    try:
+        await send_interaction_response(
+            interaction,
+            content="❌ Da ist vermutlich ein Bug passiert. Ich habe Basti informiert. Wenn du willst, nutze das Formular unten.",
+            view=BugReportLinkView(),
+            ephemeral=True,
+        )
+    except Exception:
+        logging.exception("Failed to send durable-view error response")
+    try:
+        if channel is not None:
+            sendable_channel = _coerce_sendable_channel(channel)
+            if sendable_channel is not None:
+                await sendable_channel.send(
+                    content=f"{user_text} Es gab vermutlich einen Bug. Wenn du willst, nutze das Formular unten.",
+                    view=BugReportLinkView(),
+                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+                )
+    except Exception:
+        logging.exception("Failed to send durable-view error channel fallback")
+
+
+async def _maybe_register_durable_message(message: discord.Message | None, view: ui.View | None) -> None:
+    if message is None or not isinstance(view, DurableView):
+        return
+    guild = getattr(message.channel, "guild", None)
+    if not isinstance(guild, discord.Guild):
+        return
+    channel_id = getattr(message.channel, "id", None)
+    if not isinstance(channel_id, int):
+        return
+    await upsert_durable_view(
+        guild_id=guild.id,
+        channel_id=channel_id,
+        message_id=message.id,
+        view_kind=view.durable_view_kind,
+        payload=view.durable_payload(),
+    )
+    view.bind_durable_message(guild_id=guild.id, channel_id=channel_id, message_id=message.id)
+
+
+async def _restore_fight_battle_view_from_session(session_id: int) -> DurableView | None:
+    session = await get_active_session(session_id)
+    if not session or session.get("status") != "active":
+        return None
+    payload = _dict_str_any(session.get("payload"))
+    if not payload:
+        return None
+    view = BattleView(
+        cast(CardData, _dict_str_any(payload.get("player1_card"))),
+        cast(CardData, _dict_str_any(payload.get("player2_card"))),
+        int(payload.get("player1_id", 0) or 0),
+        int(payload.get("player2_id", 0) or 0),
+        None,
+        public_result_channel_id=int(payload.get("public_result_channel_id", 0) or 0) or None,
+    )
+    view.restore_from_session_payload(payload)
+    view.session_id = session_id
+    channel = bot.get_channel(int(session.get("channel_id", 0) or 0)) or await _fetch_channel_safe(int(session.get("channel_id", 0) or 0))
+    log_message = await _fetch_message_safe(channel, session.get("log_message_id"))
+    if log_message is not None:
+        view.battle_log_message = log_message
+    return view
+
+
+async def _restore_mission_battle_view_from_session(session_id: int) -> DurableView | None:
+    session = await get_active_session(session_id)
+    if not session or session.get("status") != "active":
+        return None
+    payload = _dict_str_any(session.get("payload"))
+    if not payload:
+        return None
+    view = MissionBattleView(
+        cast(CardData, _dict_str_any(payload.get("player_card"))),
+        cast(CardData, _dict_str_any(payload.get("bot_card"))),
+        int(payload.get("user_id", 0) or 0),
+        int(payload.get("wave_num", 1) or 1),
+        int(payload.get("total_waves", 1) or 1),
+        mission_data=_dict_str_any(payload.get("mission_data")),
+        is_admin=bool(payload.get("is_admin", False)),
+        selected_card_name=str(payload.get("selected_card_name") or ""),
+    )
+    view.restore_from_session_payload(payload)
+    view.session_id = session_id
+    channel = bot.get_channel(int(session.get("channel_id", 0) or 0)) or await _fetch_channel_safe(int(session.get("channel_id", 0) or 0))
+    log_message = await _fetch_message_safe(channel, session.get("log_message_id"))
+    if log_message is not None:
+        view.battle_log_message = log_message
+    return view
+
+
+async def _restore_durable_view_instance(
+    *,
+    guild_id: int,
+    channel: object,
+    view_kind: str,
+    payload: dict[str, Any],
+) -> DurableView | None:
+    guild = bot.get_guild(guild_id)
+    if view_kind == VIEW_KIND_INTRO_PROMPT:
+        return IntroEphemeralPromptView(int(payload.get("user_id", 0) or 0))
+    if view_kind == VIEW_KIND_FIGHT_CHALLENGE:
+        return ChallengeResponseView(
+            int(payload.get("challenger_id", 0) or 0),
+            int(payload.get("challenged_id", 0) or 0),
+            str(payload.get("challenger_card_name") or ""),
+            request_id=int(payload.get("request_id", 0) or 0),
+            origin_channel_id=int(payload.get("origin_channel_id", 0) or 0) or None,
+            thread_id=int(payload.get("thread_id", 0) or 0) or None,
+            thread_created=bool(payload.get("thread_created", False)),
+        )
+    if view_kind == VIEW_KIND_FIGHT_CARD_SELECT:
+        return FightCardSelectView(
+            int(payload.get("challenger_id", 0) or 0),
+            int(payload.get("challenged_id", 0) or 0),
+            str(payload.get("challenger_card_name") or ""),
+            payload.get("challenged_card_options", []),
+            origin_channel_id=int(payload.get("origin_channel_id", 0) or 0) or None,
+            thread_id=int(payload.get("thread_id", 0) or 0) or None,
+            thread_created=bool(payload.get("thread_created", False)),
+        )
+    if view_kind == VIEW_KIND_BATTLE:
+        return await _restore_fight_battle_view_from_session(int(payload.get("session_id", 0) or 0))
+    if view_kind == VIEW_KIND_FIGHT_FEEDBACK:
+        return FightFeedbackView(
+            channel,
+            guild,
+            {int(value) for value in _list_any(payload.get("allowed_user_ids")) if str(value).strip()},
+            battle_log_text=str(payload.get("battle_log_text") or ""),
+            bug_reported_by={int(value) for value in _list_any(payload.get("bug_reported_by")) if str(value).strip()},
+            log_sent_to={int(value) for value in _list_any(payload.get("log_sent_to")) if str(value).strip()},
+            opted_out_by={int(value) for value in _list_any(payload.get("opted_out_by")) if str(value).strip()},
+        )
+    if view_kind == VIEW_KIND_THREAD_CLOSE:
+        if isinstance(channel, discord.Thread):
+            return AdminCloseView(channel)
+        return None
+    if view_kind == VIEW_KIND_MISSION_ACCEPT:
+        return MissionAcceptView(
+            int(payload.get("user_id", 0) or 0),
+            _dict_str_any(payload.get("mission_data")),
+            request_id=int(payload.get("request_id", 0) or 0),
+            visibility=str(payload.get("visibility") or VISIBILITY_PRIVATE),
+            is_admin=bool(payload.get("is_admin", False)),
+        )
+    if view_kind == VIEW_KIND_MISSION_CARD_SELECT:
+        return MissionStartCardSelectView(
+            int(payload.get("user_id", 0) or 0),
+            _dict_str_any(payload.get("mission_data")),
+            is_admin=bool(payload.get("is_admin", False)),
+            user_karten=[str(item) for item in _list_any(payload.get("user_karten"))],
+        )
+    if view_kind == VIEW_KIND_MISSION_PAUSE:
+        return MissionPauseView(
+            int(payload.get("user_id", 0) or 0),
+            str(payload.get("current_card_name") or ""),
+            _dict_str_any(payload.get("mission_state")),
+        )
+    if view_kind == VIEW_KIND_MISSION_NEW_CARD_SELECT:
+        return MissionNewCardSelectView(
+            int(payload.get("user_id", 0) or 0),
+            [tuple(item) for item in _list_any(payload.get("user_karten")) if isinstance(item, list) and len(item) == 2],
+            mission_state=_dict_str_any(payload.get("mission_state")),
+        )
+    if view_kind == VIEW_KIND_MISSION_BATTLE:
+        return await _restore_mission_battle_view_from_session(int(payload.get("session_id", 0) or 0))
+    return None
+
+
+async def _restore_durable_views() -> None:
+    rows = await list_durable_views()
+    for row in rows:
+        guild_id = int(row.get("guild_id", 0) or 0)
+        channel_id = int(row.get("channel_id", 0) or 0)
+        channel = bot.get_channel(channel_id) or await _fetch_channel_safe(channel_id)
+        if channel is None:
+            await delete_durable_view(guild_id=guild_id, channel_id=channel_id)
+            continue
+        message = await _fetch_message_safe(channel, int(row.get("message_id", 0) or 0))
+        if message is None:
+            await delete_durable_view(guild_id=guild_id, channel_id=channel_id)
+            continue
+        payload = _dict_str_any(row.get("payload"))
+        view = await _restore_durable_view_instance(
+            guild_id=guild_id,
+            channel=channel,
+            view_kind=str(row.get("view_kind") or ""),
+            payload=payload,
+        )
+        if view is None:
+            await delete_durable_view(guild_id=guild_id, channel_id=channel_id)
+            continue
+        view.bind_durable_message(guild_id=guild_id, channel_id=channel_id, message_id=message.id)
+        bot.add_view(view, message_id=message.id)
 
 async def resend_pending_requests() -> None:
     try:
@@ -7500,6 +8852,11 @@ async def resend_pending_requests() -> None:
                 thread_id=int(row["thread_id"]) if row["thread_id"] else None,
                 thread_created=bool(row["thread_created"]),
             )
+            existing_message = await _fetch_message_safe(channel, int(row["message_id"])) if row["message_id"] else None
+            if existing_message is not None:
+                await _maybe_register_durable_message(existing_message, view)
+                bot.add_view(view, message_id=existing_message.id)
+                continue
             msg = await sendable_channel.send(
                 content=f"<@{row['challenged_id']}>, du wurdest zu einem 1v1 Kartenkampf herausgefordert!",
                 view=view,
@@ -7546,6 +8903,11 @@ async def resend_pending_requests() -> None:
                 visibility=row["visibility"] or VISIBILITY_PRIVATE,
                 is_admin=bool(row["is_admin"]),
             )
+            existing_message = await _fetch_message_safe(channel, int(row["message_id"])) if row["message_id"] else None
+            if existing_message is not None:
+                await _maybe_register_durable_message(existing_message, view)
+                bot.add_view(view, message_id=existing_message.id)
+                continue
             msg = await sendable_channel.send(embed=embed, view=view)
             await update_mission_request_message(int(row["id"]), msg.id, msg.channel.id)
         except Exception:

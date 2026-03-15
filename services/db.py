@@ -216,6 +216,46 @@ async def init_db():
     )
     await db.execute(
         """
+        CREATE TABLE IF NOT EXISTS durable_view_registry (
+            guild_id INTEGER,
+            channel_id INTEGER,
+            message_id INTEGER,
+            view_kind TEXT,
+            payload_json TEXT,
+            updated_at INTEGER,
+            PRIMARY KEY (guild_id, channel_id)
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS active_sessions (
+            session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT,
+            guild_id INTEGER,
+            channel_id INTEGER,
+            thread_id INTEGER,
+            battle_message_id INTEGER,
+            log_message_id INTEGER,
+            status TEXT,
+            payload_json TEXT,
+            updated_at INTEGER
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS managed_threads (
+            thread_id INTEGER PRIMARY KEY,
+            guild_id INTEGER,
+            kind TEXT,
+            status TEXT,
+            updated_at INTEGER
+        )
+        """
+    )
+    await db.execute(
+        """
         CREATE TABLE IF NOT EXISTS guild_give_op_users (
             guild_id INTEGER,
             user_id INTEGER,
