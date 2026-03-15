@@ -108,6 +108,7 @@ configure_logging()
 KATABUMP_MAX_INTERACTIONS_PER_MIN = 200
 KATABUMP_INTERACTION_WINDOW_SEC = 60
 THREAD_AUTO_CLOSE_DELAY_SECONDS = 18
+FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 karten: list[CardData] = cast(list[CardData], RAW_KARTEN)
@@ -136,6 +137,18 @@ def _channel_mention_or_fallback(channel: object) -> str:
 def _effect_source_name(source: object) -> str:
     text = str(source or "").strip()
     return text or "Effekt"
+
+
+def _member_has_role(member: discord.Member, role_id: int) -> bool:
+    return any(getattr(role, "id", None) == role_id for role in getattr(member, "roles", ()))
+
+
+def _get_fight_opponent_candidates(guild: discord.Guild, challenger: discord.Member) -> list[discord.Member]:
+    return [
+        member
+        for member in guild.members
+        if not member.bot and member != challenger and _member_has_role(member, FIGHT_OPPONENT_ROLE_ID)
+    ]
 
 
 def _effect_source_text(source: object, message: str) -> str:
@@ -3432,12 +3445,20 @@ class CardSelectView(RestrictedView):
 
 # Neue Suchfunktion-Klassen
 class UserSearchModal(RestrictedModal):
-    def __init__(self, guild, challenger, parent_view: object | None = None, include_bot_option: bool = True):
+    def __init__(
+        self,
+        guild,
+        challenger,
+        parent_view: object | None = None,
+        include_bot_option: bool = True,
+        required_role_id: int | None = None,
+    ):
         super().__init__(title="🔍 User suchen")
         self.guild = guild
         self.challenger = challenger
         self.parent_view = parent_view
         self.include_bot_option = include_bot_option
+        self.required_role_id = required_role_id
     
     search_input = ui.TextInput(
         label="Name eingeben:",
@@ -3455,10 +3476,18 @@ class UserSearchModal(RestrictedModal):
         # Finde passende User
         matches = []
         for member in self.guild.members:
-            if (not member.bot and 
-                member != self.challenger and 
-                (search_term in member.display_name.lower() or 
-                 search_term in member.name.lower())):
+            if (
+                not member.bot
+                and member != self.challenger
+                and (
+                    self.required_role_id is None
+                    or _member_has_role(member, self.required_role_id)
+                )
+                and (
+                    search_term in member.display_name.lower()
+                    or search_term in member.name.lower()
+                )
+            ):
                 matches.append(member)
         
         if not matches:
@@ -3534,12 +3563,7 @@ class OpponentSelectView(RestrictedView):
         self.challenger = challenger
         self.guild = guild
         self.value = None
-        self.all_members = []
-        
-        # Sammle alle verfügbaren Mitglieder
-        for member in guild.members:
-            if not member.bot and member != challenger:
-                self.all_members.append(member)
+        self.all_members = _get_fight_opponent_candidates(guild, challenger)
         
         # Zeige intelligente Auswahl
         self.show_smart_options()
@@ -3566,19 +3590,20 @@ class OpponentSelectView(RestrictedView):
                 return f"🔴 {m.display_name}"
             return f"⚫ {m.display_name}"
         
-        options = [SelectOption(label="🤖 Bot", value="bot")]
-        
-        if len(self.all_members) <= 24:
-            # Kleiner Server: Zeige alle nach Präsenz sortiert
+        options = [
+            SelectOption(label="🔍 Nach Name suchen", value="search"),
+            SelectOption(label="🤖 Bot", value="bot"),
+        ]
+
+        if len(self.all_members) <= 23:
+            # Kompakte Liste: Suche zuerst, dann Bot, dann alle gültigen Nutzer
             for member in sorted(self.all_members, key=presence_priority):
                 options.append(SelectOption(label=label_with_circle(member), value=str(member.id)))
         else:
-            # Großer Server: Zeige nach Präsenz sortierte Online/Idle/DnD-User
+            # Größere Liste: Suche zuerst, dann Bot, dann häufig sichtbare Nutzer und Vollansicht
             online_like = [m for m in self.all_members if m.status != discord.Status.offline]
             for member in sorted(online_like, key=presence_priority)[:22]:
                 options.append(SelectOption(label=label_with_circle(member), value=str(member.id)))
-            # Steuer-Optionen
-            options.append(SelectOption(label="🔍 Nach Name suchen", value="search"))
             options.append(SelectOption(label="📋 Alle User anzeigen", value="show_all"))
         
         self.select = ui.Select(placeholder="Wähle einen Gegner...", min_values=1, max_values=1, options=options)
@@ -3605,7 +3630,12 @@ class OpponentSelectView(RestrictedView):
         
         if selected_value == "search":
             # Öffne Suchmodal und verknüpfe mit Parent-View
-            modal = UserSearchModal(self.guild, self.challenger, parent_view=self)
+            modal = UserSearchModal(
+                self.guild,
+                self.challenger,
+                parent_view=self,
+                required_role_id=FIGHT_OPPONENT_ROLE_ID,
+            )
             await interaction.response.send_modal(modal)
             return
         
