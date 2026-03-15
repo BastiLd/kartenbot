@@ -145,6 +145,10 @@ class SendableChannel(Protocol):
     async def send(self, *args: Any, **kwargs: Any) -> discord.Message: ...
 
 
+class SupportsUpdateHp(Protocol):
+    def update_hp(self, new_hp: int) -> None: ...
+
+
 def _coerce_sendable_channel(channel: object) -> SendableChannel | None:
     if channel is None or not hasattr(channel, "send"):
         return None
@@ -1141,7 +1145,7 @@ class BattleView(DurableView):
         player2_card: CardData,
         player1_id: int,
         player2_id: int,
-        hp_view: object,
+        hp_view: SupportsUpdateHp | None,
         public_result_channel_id: int | None = None,
     ):
         super().__init__(timeout=None)
@@ -1439,10 +1443,19 @@ class BattleView(DurableView):
         if self.battle_log_message:
             await self._safe_edit_battle_log(self._full_battle_log_embed)
 
-    def _winner_embed(self, winner_mention: str, winner_card: str) -> discord.Embed:
+    def _winner_embed(
+        self,
+        winner_mention: str,
+        winner_card: str,
+        loser_mention: str | None = None,
+        loser_card: str | None = None,
+    ) -> discord.Embed:
+        description = f"{winner_mention} hat mit {winner_card} gewonnen."
+        if loser_mention and loser_card:
+            description += f"\n\n{loser_mention} hat mit {loser_card} verlohren."
         embed = discord.Embed(
             title="🏆 Sieger!",
-            description=f"**{winner_mention} mit {winner_card}** hat gewonnen!",
+            description=description,
         )
         stats_lines = [
             f"Runden: {self.round_counter}",
@@ -2267,7 +2280,7 @@ class BattleView(DurableView):
         self.player2_hp += health_buff2
         self.player1_max_hp = self.player1_hp
         self.player2_max_hp = self.player2_hp
-        if self.hp_view:
+        if self.hp_view is not None:
             self.hp_view.update_hp(self.player1_hp)
         await self.update_attack_buttons()
         
@@ -3101,15 +3114,25 @@ class BattleView(DurableView):
                 winner_id = self.player1_id
                 winner_user = _get_member_if_available(guild, self.player1_id)
                 winner_card = self.player1_card["name"]
+                loser_id = self.player2_id
+                loser_user = _get_member_if_available(guild, self.player2_id)
+                loser_card = self.player2_card["name"]
             else:
                 winner_id = self.player2_id
                 winner_user = _get_member_if_available(guild, self.player2_id)
                 winner_card = self.player2_card["name"]
+                loser_id = self.player1_id
+                loser_user = _get_member_if_available(guild, self.player1_id)
+                loser_card = self.player1_card["name"]
             if winner_user:
                 winner_mention = winner_user.mention
             else:
                 winner_mention = "Bot" if winner_id == 0 else f"<@{winner_id}>"
-            winner_embed = self._winner_embed(winner_mention, winner_card)
+            if loser_user:
+                loser_mention = loser_user.mention
+            else:
+                loser_mention = "Bot" if loser_id == 0 else f"<@{loser_id}>"
+            winner_embed = self._winner_embed(winner_mention, winner_card, loser_mention, loser_card)
             if message is not None:
                 try:
                     await message.edit(embed=self._thread_finished_embed(), view=None)
@@ -3742,15 +3765,25 @@ class BattleView(DurableView):
                 winner_id = self.player1_id
                 winner_user = _get_member_if_available(message.guild, self.player1_id)
                 winner_card = self.player1_card["name"]
+                loser_id = self.player2_id
+                loser_user = _get_member_if_available(message.guild, self.player2_id)
+                loser_card = self.player2_card["name"]
             else:
                 winner_id = self.player2_id
                 winner_user = _get_member_if_available(message.guild, self.player2_id)
                 winner_card = self.player2_card["name"]
+                loser_id = self.player1_id
+                loser_user = _get_member_if_available(message.guild, self.player1_id)
+                loser_card = self.player1_card["name"]
             if winner_user:
                 winner_mention = winner_user.mention
             else:
                 winner_mention = "Bot" if winner_id == 0 else f"<@{winner_id}>"
-            winner_embed = self._winner_embed(winner_mention, winner_card)
+            if loser_user:
+                loser_mention = loser_user.mention
+            else:
+                loser_mention = "Bot" if loser_id == 0 else f"<@{loser_id}>"
+            winner_embed = self._winner_embed(winner_mention, winner_card, loser_mention, loser_card)
             try:
                 await message.edit(embed=self._thread_finished_embed(), view=None)
             except Exception:
@@ -4359,9 +4392,11 @@ async def _mission_thread_admin_members(guild: discord.Guild | None) -> list[dis
     if guild is None:
         return []
     members_by_id: dict[int, discord.Member] = {}
-    owner = await _get_member_safe(guild, guild.owner_id)
-    if owner is not None:
-        members_by_id[owner.id] = owner
+    owner_id = guild.owner_id
+    if owner_id is not None:
+        owner = await _get_member_safe(guild, owner_id)
+        if owner is not None:
+            members_by_id[owner.id] = owner
     for member in guild.members:
         if member.bot:
             continue

@@ -492,6 +492,17 @@ class FightFeedbackViewTests(unittest.IsolatedAsyncioTestCase):
         text = asyncio.run(_build_prompt())
         self.assertIn("Kampf-Log per DM", text)
 
+    def test_winner_embed_lists_winner_and_loser(self) -> None:
+        player_card = {"name": "PlayerCard", "hp": 140, "bild": "https://example.com/player.png", "attacks": []}
+        enemy_card = {"name": "EnemyCard", "hp": 140, "bild": "https://example.com/enemy.png", "attacks": []}
+        view = BattleView(player_card, enemy_card, 1, 2, None)
+        try:
+            embed = view._winner_embed("<@1>", "PlayerCard", "<@2>", "EnemyCard")
+        finally:
+            view.stop()
+        self.assertIn("<@1> hat mit PlayerCard gewonnen.", str(embed.description or ""))
+        self.assertIn("<@2> hat mit EnemyCard verlohren.", str(embed.description or ""))
+
 
 class CapDamageRuleTests(unittest.IsolatedAsyncioTestCase):
     async def test_attack_min_cap_in_pvp_resolver(self) -> None:
