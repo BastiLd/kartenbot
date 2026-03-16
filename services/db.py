@@ -30,8 +30,11 @@ async def db_context():
     db = await connect_db()
     try:
         yield db
-    except Exception:
-        logging.exception("DB operation failed")
+    except Exception as exc:
+        if isinstance(exc, aiosqlite.OperationalError) and "no such table: active_sessions" in str(exc).lower():
+            logging.debug("DB table active_sessions is not available yet")
+        else:
+            logging.exception("DB operation failed")
         raise
 
 
@@ -269,6 +272,22 @@ async def init_db():
             guild_id INTEGER,
             role_id INTEGER,
             PRIMARY KEY (guild_id, role_id)
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS admin_dust_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor_id INTEGER,
+            target_id INTEGER,
+            guild_id INTEGER,
+            channel_id INTEGER,
+            action TEXT,
+            mode TEXT,
+            requested_amount INTEGER,
+            applied_amount INTEGER,
+            created_at INTEGER
         )
         """
     )

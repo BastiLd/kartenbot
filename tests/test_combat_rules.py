@@ -566,12 +566,25 @@ class DustFlowTests(unittest.IsolatedAsyncioTestCase):
             "bot._select_number",
             new=AsyncMock(return_value=10),
         ), patch("bot.remove_infinitydust", new=AsyncMock(return_value=4)) as remove_mock, patch(
+            "bot.log_admin_dust_action",
+            new=AsyncMock(),
+        ) as audit_mock, patch(
             "bot._post_dust_result_message",
             new=AsyncMock(return_value=True),
         ) as result_mock:
             await bot_module.run_dust_command_flow(interaction, mode="single", remove=True)
 
         remove_mock.assert_awaited_once_with(7, 10)
+        audit_mock.assert_awaited_once_with(
+            99,
+            7,
+            guild_id=0,
+            channel_id=0,
+            action="remove",
+            mode="single",
+            requested_amount=10,
+            applied_amount=4,
+        )
         result_mock.assert_awaited_once()
         kwargs = result_mock.await_args.kwargs
         self.assertEqual(kwargs["results"], [(7, 4)])
@@ -602,6 +615,34 @@ class DustFlowTests(unittest.IsolatedAsyncioTestCase):
             view.selected_user_ids = [1]
             filtered_values = [str(option.value) for option in view._build_options()]
             self.assertNotIn("1", filtered_values)
+        finally:
+            view.stop()
+
+    def test_dust_multi_user_select_view_summary_embed_shows_selection(self) -> None:
+        class _Member:
+            def __init__(self, member_id: int, name: str, *, bot: bool = False, status=None):
+                self.id = member_id
+                self.display_name = name
+                self.name = name
+                self.bot = bot
+                self.status = status if status is not None else bot_module.discord.Status.offline
+
+        guild = SimpleNamespace(
+            get_member=lambda user_id: {1: _Member(1, "Alpha_User"), 3: _Member(3, "Beta-User")}.get(user_id),
+            members=[
+                _Member(1, "Alpha_User", status=bot_module.discord.Status.online),
+                _Member(3, "Beta-User", status=bot_module.discord.Status.idle),
+                _Member(4, "Gamma", status=bot_module.discord.Status.offline),
+            ],
+        )
+        view = bot_module.DustMultiUserSelectView(77, guild)
+        try:
+            view.selected_user_ids = [1, 3]
+            embed = view._summary_embed()
+            self.assertEqual(embed.title, "\U0001f48e Multi-Auswahl f\u00fcr Infinitydust")
+            self.assertIn("Alpha\\_User", embed.fields[2].value)
+            self.assertIn("Beta-User", embed.fields[2].value)
+            self.assertEqual(embed.fields[0].value, "2")
         finally:
             view.stop()
 
@@ -670,6 +711,57 @@ class FightFeedbackAutoCloseTests(unittest.IsolatedAsyncioTestCase):
 
         update_mock.assert_not_awaited()
         self.assertFalse(thread.deleted)
+
+    async def test_feedback_view_no_bug_starts_auto_close_when_needed(self) -> None:
+        class _FakeTask:
+            def __init__(self):
+                self._done = False
+
+            def done(self) -> bool:
+                return self._done
+
+            def cancel(self) -> None:
+                self._done = True
+
+        class _FakeThread:
+            def __init__(self, thread_id: int):
+                self.id = thread_id
+
+            async def delete(self) -> None:
+                return None
+
+        def _fake_create_task(coro):
+            coro.close()
+            return _FakeTask()
+
+        with patch.object(bot_module.discord, "Thread", _FakeThread), patch(
+            "bot.asyncio.create_task",
+            side_effect=_fake_create_task,
+        ) as create_task_mock:
+            thread = _FakeThread(777)
+            view = FightFeedbackView(
+                channel=thread,
+                guild=None,
+                allowed_user_ids={1},
+                battle_log_text="",
+                auto_close_delay=2,
+                close_on_idle=False,
+                close_after_no_bug=True,
+            )
+            interaction = SimpleNamespace(
+                user=SimpleNamespace(id=1),
+                response=SimpleNamespace(send_message=AsyncMock()),
+            )
+            button = next(item for item in view.children if getattr(item, "custom_id", "") == "fight_feedback:no_bug")
+            try:
+                await button.callback(interaction)
+            finally:
+                view.stop()
+
+        create_task_mock.assert_called_once()
+        self.assertTrue(view.close_on_idle)
+        self.assertIsNotNone(view.auto_close_started_at)
+        interaction.response.send_message.assert_awaited_once_with("\u2705 Danke f\u00fcr dein Feedback!", ephemeral=True)
 
 
 class CapDamageRuleTests(unittest.IsolatedAsyncioTestCase):

@@ -1,5 +1,6 @@
 import json
 import random
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -63,6 +64,48 @@ async def remove_infinitydust(user_id, amount):
             await db.execute("INSERT INTO user_infinitydust (user_id, amount) VALUES (?, 0)", (user_id,))
         await db.commit()
         return removed
+
+
+async def log_admin_dust_action(
+    actor_id: int,
+    target_id: int,
+    *,
+    guild_id: int = 0,
+    channel_id: int = 0,
+    action: str,
+    mode: str,
+    requested_amount: int,
+    applied_amount: int,
+) -> None:
+    async with db_context() as db:
+        await db.execute(
+            """
+            INSERT INTO admin_dust_audit (
+                actor_id,
+                target_id,
+                guild_id,
+                channel_id,
+                action,
+                mode,
+                requested_amount,
+                applied_amount,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(actor_id or 0),
+                int(target_id or 0),
+                int(guild_id or 0),
+                int(channel_id or 0),
+                str(action or "give"),
+                str(mode or "single"),
+                int(requested_amount or 0),
+                int(applied_amount or 0),
+                int(time.time()),
+            ),
+        )
+        await db.commit()
 
 
 async def add_card_buff(user_id, card_name, buff_type, attack_number, buff_amount):

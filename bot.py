@@ -112,6 +112,7 @@ from services.user_data import (
     get_team,
     get_user_karten,
     increment_mission_count,
+    log_admin_dust_action,
     remove_infinitydust,
     remove_karte_amount,
     set_team,
@@ -123,8 +124,6 @@ configure_logging()
 
 KATABUMP_MAX_INTERACTIONS_PER_MIN = 200
 KATABUMP_INTERACTION_WINDOW_SEC = 60
-THREAD_AUTO_CLOSE_DELAY_SECONDS = 18
-THREAD_CANCEL_CLOSE_DELAY_SECONDS = 10
 DUST_MENU_AMOUNTS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 70, 100]
 FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
@@ -145,6 +144,53 @@ VIEW_KIND_MISSION_BATTLE = "mission_battle"
 
 THREAD_KIND_FIGHT = "fight"
 THREAD_KIND_MISSION = "mission"
+
+
+class ThreadAutoClosePolicy(TypedDict):
+    delay: int | None
+    close_on_idle: bool
+    close_after_no_bug: bool
+    keep_open_after_bug: bool
+
+
+DEFAULT_THREAD_AUTO_CLOSE_POLICY: ThreadAutoClosePolicy = {
+    "delay": 18,
+    "close_on_idle": True,
+    "close_after_no_bug": True,
+    "keep_open_after_bug": True,
+}
+CANCELLED_THREAD_AUTO_CLOSE_POLICY: ThreadAutoClosePolicy = {
+    "delay": 10,
+    "close_on_idle": True,
+    "close_after_no_bug": True,
+    "keep_open_after_bug": True,
+}
+MISSION_THREAD_AUTO_CLOSE_POLICY: ThreadAutoClosePolicy = dict(DEFAULT_THREAD_AUTO_CLOSE_POLICY)
+
+
+def _copy_thread_auto_close_policy(policy: ThreadAutoClosePolicy | None) -> ThreadAutoClosePolicy | None:
+    if policy is None:
+        return None
+    return {
+        "delay": int(policy.get("delay") or 0) or None,
+        "close_on_idle": bool(policy.get("close_on_idle", False)),
+        "close_after_no_bug": bool(policy.get("close_after_no_bug", True)),
+        "keep_open_after_bug": bool(policy.get("keep_open_after_bug", True)),
+    }
+
+
+def _thread_auto_close_delay(policy: ThreadAutoClosePolicy | None) -> int | None:
+    copied = _copy_thread_auto_close_policy(policy)
+    if copied is None:
+        return None
+    return copied.get("delay")
+
+
+def _thread_auto_close_hint(policy: ThreadAutoClosePolicy | None) -> str:
+    delay = _thread_auto_close_delay(policy)
+    if not delay:
+        return ""
+    return f"Der Thread schlie?t automatisch in {int(delay)} Sekunden, wenn kein Bug gemeldet wird."
 
 
 class SendableChannel(Protocol):
@@ -1804,7 +1850,7 @@ class BattleView(DurableView):
         channel: object,
         guild: discord.Guild | None,
         *,
-        auto_close_delay: int | None = THREAD_AUTO_CLOSE_DELAY_SECONDS,
+        auto_close_policy: ThreadAutoClosePolicy | None = DEFAULT_THREAD_AUTO_CLOSE_POLICY,
     ) -> None:
         allowed = set(self._feedback_player_ids())
         if not allowed:
@@ -1812,19 +1858,22 @@ class BattleView(DurableView):
         sendable_channel = _coerce_sendable_channel(channel)
         if sendable_channel is None:
             return
+        policy = _copy_thread_auto_close_policy(auto_close_policy)
         view = FightFeedbackView(
             sendable_channel,
             guild,
             allowed,
             battle_log_text=self._full_battle_log_text(),
-            auto_close_delay=auto_close_delay,
-            close_on_idle=auto_close_delay is not None,
-            close_after_no_bug=True,
-            keep_open_after_bug=True,
+            auto_close_delay=_thread_auto_close_delay(policy),
+            close_on_idle=bool(policy and policy.get("close_on_idle", False)),
+            close_after_no_bug=bool(policy and policy.get("close_after_no_bug", True)),
+            keep_open_after_bug=bool(policy and policy.get("keep_open_after_bug", True)),
         )
         auto_close_hint = ""
-        if isinstance(sendable_channel, discord.Thread) and auto_close_delay:
-            auto_close_hint = f"\n\nDer Thread schließt automatisch in {int(auto_close_delay)} Sekunden, wenn kein Bug gemeldet wird."
+        if isinstance(sendable_channel, discord.Thread):
+            hint = _thread_auto_close_hint(policy)
+            if hint:
+                auto_close_hint = f"\n\n{hint}"
         message_text = (
             f"{self._feedback_prompt_text(guild)}{auto_close_hint}\n\n"
             "Buttons unten: **Es gab einen Bug** | **Kampf-Log per DM** | **Es gab keinen Bug**"
@@ -2585,7 +2634,7 @@ class BattleView(DurableView):
                 await self._send_feedback_prompt(
                     interaction.channel,
                     interaction.guild,
-                    auto_close_delay=THREAD_CANCEL_CLOSE_DELAY_SECONDS,
+                    auto_close_policy=CANCELLED_THREAD_AUTO_CLOSE_POLICY,
                 )
             except Exception:
                 logging.exception("Unexpected error")
@@ -4401,10 +4450,7 @@ class DustMultiUserSelectView(RestrictedView):
         self._message = message
 
     def _content(self) -> str:
-        return (
-            "W\u00e4hle mehrere Nutzer f\u00fcr Infinitydust.\n"
-            f"Aktuell ausgew\u00e4hlt: {self._selected_summary()}"
-        )
+        return "Wähle mehrere Nutzer für Infinitydust. Die Suche steht immer ganz oben."
 
     def _available_members(self) -> list[discord.Member]:
         chosen = set(self.selected_user_ids)
@@ -4418,22 +4464,35 @@ class DustMultiUserSelectView(RestrictedView):
     def _placeholder(self) -> str:
         selected_count = len(self.selected_user_ids)
         if selected_count <= 0:
-            return "W\u00e4hle Nutzer oder suche oben..."
-        return f"W\u00e4hle weitere Nutzer... ({selected_count} ausgew\u00e4hlt)"
+            return "Wähle Nutzer oder suche oben..."
+        return f"Wähle weitere Nutzer... ({selected_count} ausgewählt)"
 
     def _selected_summary(self) -> str:
         if not self.selected_user_ids:
-            return "Noch niemand ausgew\u00e4hlt."
+            return "Noch niemand ausgewählt."
         names: list[str] = []
         for user_id in self.selected_user_ids:
             member = self.guild.get_member(user_id)
             names.append(safe_display_name(member or str(user_id), fallback=str(user_id)))
         return ", ".join(names)
 
+    def _summary_embed(self) -> discord.Embed:
+        available_count = len(self._available_members())
+        selected_count = len(self.selected_user_ids)
+        embed = discord.Embed(
+            title="💎 Multi-Auswahl für Infinitydust",
+            description="Speichere mehrere Nutzer und drücke danach auf **Fertig**.",
+            color=0x3498DB,
+        )
+        embed.add_field(name="Ausgewählt", value=str(selected_count), inline=True)
+        embed.add_field(name="Noch verfügbar", value=str(available_count), inline=True)
+        embed.add_field(name="Gewählte Nutzer", value=self._selected_summary(), inline=False)
+        return embed
+
     def _build_options(self) -> list[SelectOption]:
         options: list[SelectOption] = [
-            SelectOption(label="\U0001F50D Nach Name suchen", value="search"),
-            SelectOption(label="\u2705 Fertig", value="done"),
+            SelectOption(label="🔍 Nach Name suchen", value="search"),
+            SelectOption(label="✅ Fertig", value="done"),
         ]
         for member in self._available_members()[:23]:
             options.append(
@@ -4448,7 +4507,7 @@ class DustMultiUserSelectView(RestrictedView):
         self.select.options = self._build_options()
         self.select.placeholder = self._placeholder()
         if self._message is not None:
-            await self._message.edit(content=self._content(), view=self)
+            await self._message.edit(content=self._content(), embed=self._summary_embed(), view=self)
 
     async def _append_user(
         self,
@@ -4460,24 +4519,24 @@ class DustMultiUserSelectView(RestrictedView):
         try:
             user_id = int(raw_value)
         except (TypeError, ValueError):
-            await interaction.response.send_message("\u274c Ung\u00fcltiger Nutzer.", ephemeral=True)
+            await interaction.response.send_message("❌ Ungültiger Nutzer.", ephemeral=True)
             return
         if user_id in self.selected_user_ids:
-            await interaction.response.send_message("Dieser Nutzer ist bereits ausgew\u00e4hlt.", ephemeral=True)
+            await interaction.response.send_message("Dieser Nutzer ist bereits ausgewählt.", ephemeral=True)
             return
         member = self.guild.get_member(user_id)
         if member is None or member.bot:
-            await interaction.response.send_message("\u274c Nutzer nicht gefunden.", ephemeral=True)
+            await interaction.response.send_message("❌ Nutzer nicht gefunden.", ephemeral=True)
             return
         self.selected_user_ids.append(user_id)
         self.select.options = self._build_options()
         self.select.placeholder = self._placeholder()
         if edit_origin_with_response:
-            await interaction.response.edit_message(content=self._content(), view=self)
+            await interaction.response.edit_message(content=self._content(), embed=self._summary_embed(), view=self)
             return
         await self._refresh_origin_message()
         await interaction.response.send_message(
-            f"\u2705 {safe_display_name(member, fallback=str(user_id))} hinzugef\u00fcgt.",
+            f"✅ {safe_display_name(member, fallback=str(user_id))} hinzugefügt.",
             ephemeral=True,
         )
 
@@ -4486,7 +4545,7 @@ class DustMultiUserSelectView(RestrictedView):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nur der Command-User kann w\u00e4hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Command-User kann wählen!", ephemeral=True)
             return
 
         selected = str(self.select.values[0] or "").strip()
@@ -4502,7 +4561,7 @@ class DustMultiUserSelectView(RestrictedView):
             return
         if selected == "done":
             if not self.selected_user_ids:
-                await interaction.response.send_message("\u274c Du musst erst mindestens einen Nutzer ausw\u00e4hlen.", ephemeral=True)
+                await interaction.response.send_message("❌ Du musst erst mindestens einen Nutzer auswählen.", ephemeral=True)
                 return
             self.value = list(self.selected_user_ids)
             self.stop()
@@ -4572,18 +4631,13 @@ async def _maybe_delete_fight_thread(thread_id: int | None, thread_created: bool
         if channel is None:
             channel = await bot.fetch_channel(thread_id)
         if isinstance(channel, discord.Thread):
-            try:
-                await channel.send(
-                    f"⚠️ Dieser Thread wird in {THREAD_CANCEL_CLOSE_DELAY_SECONDS} Sekunden geschlossen."
-                )
-            except Exception:
-                logging.exception("Failed to send delayed-close notice for thread %s", channel.id)
-            asyncio.create_task(
-                _delete_managed_thread_after_delay(
-                    channel,
-                    THREAD_CANCEL_CLOSE_DELAY_SECONDS,
-                )
-            )
+            delay = _thread_auto_close_delay(CANCELLED_THREAD_AUTO_CLOSE_POLICY)
+            if delay:
+                try:
+                    await channel.send(f"?? Dieser Thread wird in {int(delay)} Sekunden geschlossen.")
+                except Exception:
+                    logging.exception("Failed to send delayed-close notice for thread %s", channel.id)
+                asyncio.create_task(_delete_managed_thread_after_delay(channel, int(delay)))
     except Exception:
         logging.exception("Unexpected error")
 
@@ -4880,13 +4934,29 @@ async def _send_mission_feedback_prompt(
     *,
     allowed_user_id: int,
     battle_log_text: str,
+    auto_close_policy: ThreadAutoClosePolicy | None = MISSION_THREAD_AUTO_CLOSE_POLICY,
 ) -> None:
     sendable_channel = _coerce_sendable_channel(channel)
     if sendable_channel is None:
         return
-    view = FightFeedbackView(sendable_channel, guild, {allowed_user_id}, battle_log_text=battle_log_text)
+    policy = _copy_thread_auto_close_policy(auto_close_policy)
+    view = FightFeedbackView(
+        sendable_channel,
+        guild,
+        {allowed_user_id},
+        battle_log_text=battle_log_text,
+        auto_close_delay=_thread_auto_close_delay(policy),
+        close_on_idle=bool(policy and policy.get("close_on_idle", False)),
+        close_after_no_bug=bool(policy and policy.get("close_after_no_bug", True)),
+        keep_open_after_bug=bool(policy and policy.get("keep_open_after_bug", True)),
+    )
+    auto_close_hint = ""
+    if isinstance(sendable_channel, discord.Thread):
+        hint = _thread_auto_close_hint(policy)
+        if hint:
+            auto_close_hint = f"\n\n{hint}"
     message_text = (
-        f"<@{allowed_user_id}> Gab es einen Bug/Fehler?\n\n"
+        f"<@{allowed_user_id}> Gab es einen Bug/Fehler?{auto_close_hint}\n\n"
         "Buttons unten: **Es gab einen Bug** | **Kampf-Log per DM** | **Es gab keinen Bug**"
     )
     try:
@@ -5342,7 +5412,14 @@ class FightFeedbackView(DurableView):
             await interaction.response.send_message("Du hast bereits geantwortet.", ephemeral=True)
             return
         self._opted_out_by.add(interaction.user.id)
-        await interaction.response.send_message("✅ Danke für dein Feedback!", ephemeral=True)
+        if self.close_after_no_bug and isinstance(self.channel, discord.Thread) and not self._auto_close_blocked():
+            self.close_on_idle = True
+            if not self.auto_close_delay:
+                self.auto_close_delay = _thread_auto_close_delay(DEFAULT_THREAD_AUTO_CLOSE_POLICY)
+            if self.auto_close_delay and not self.auto_close_started_at:
+                self.auto_close_started_at = int(time.time())
+            self._ensure_auto_close_task()
+        await interaction.response.send_message("\u2705 Danke f\u00fcr dein Feedback!", ephemeral=True)
 
     @ui.button(
         label="Thread schließen (Admin/Owner)",
@@ -9614,7 +9691,7 @@ async def run_dust_command_flow(
 
     mode_value = str(mode or "").strip().lower()
     if mode_value not in {"single", "multi"}:
-        await interaction.followup.send("❌ Ungültiger Modus. Nutze `single` oder `multi`.", ephemeral=True)
+        await interaction.followup.send("? Ung?ltiger Modus. Nutze `single` oder `multi`.", ephemeral=True)
         return
 
     action_phrase = "entfernen" if remove else "geben"
@@ -9623,19 +9700,20 @@ async def run_dust_command_flow(
     if mode_value == "single":
         user_select_view = AdminUserSelectView(interaction.user.id, interaction.guild)
         await interaction.followup.send(
-            content=f"Wähle den Nutzer, dem du Infinitydust {action_phrase} möchtest:",
+            content=f"W?hle den Nutzer, dem du Infinitydust {action_phrase} m?chtest:",
             view=user_select_view,
             ephemeral=True,
         )
         await user_select_view.wait()
         if not user_select_view.value:
-            await interaction.followup.send("⏰ Keine Auswahl getroffen. Abgebrochen.", ephemeral=True)
+            await interaction.followup.send("? Keine Auswahl getroffen. Abgebrochen.", ephemeral=True)
             return
         target_user_ids = [int(user_select_view.value)]
     else:
         multi_view = DustMultiUserSelectView(interaction.user.id, interaction.guild)
         multi_message = await interaction.followup.send(
             content=multi_view._content(),
+            embed=multi_view._summary_embed(),
             view=multi_view,
             ephemeral=True,
             wait=True,
@@ -9643,40 +9721,55 @@ async def run_dust_command_flow(
         multi_view.bind_message(multi_message)
         await multi_view.wait()
         if not multi_view.value:
-            await interaction.followup.send("⏰ Keine Nutzer gewählt. Abgebrochen.", ephemeral=True)
+            await interaction.followup.send("? Keine Nutzer gew?hlt. Abgebrochen.", ephemeral=True)
             return
         target_user_ids = [int(user_id) for user_id in multi_view.value]
 
     amount = await _select_number(
         interaction,
-        "Wähle die Menge Infinitydust:",
+        "W?hle die Menge Infinitydust:",
         DUST_MENU_AMOUNTS,
     )
     if not amount:
-        await interaction.followup.send("⏰ Keine Menge gewählt. Abgebrochen.", ephemeral=True)
+        await interaction.followup.send("? Keine Menge gew?hlt. Abgebrochen.", ephemeral=True)
         return
 
+    channel_id = int(getattr(interaction.channel, "id", 0) or 0)
+    guild_id = int(getattr(interaction, "guild_id", 0) or getattr(interaction.guild, "id", 0) or 0)
+    action_key = "remove" if remove else "give"
+    requested_amount = int(amount)
     results: list[tuple[int, int]] = []
     for user_id in target_user_ids:
         if remove:
-            applied_amount = await remove_infinitydust(user_id, int(amount))
+            applied_amount = await remove_infinitydust(user_id, requested_amount)
         else:
-            await add_infinitydust(user_id, int(amount))
-            applied_amount = int(amount)
-        results.append((user_id, int(applied_amount)))
+            await add_infinitydust(user_id, requested_amount)
+            applied_amount = requested_amount
+        applied_amount = int(applied_amount)
+        results.append((user_id, applied_amount))
+        await log_admin_dust_action(
+            interaction.user.id,
+            user_id,
+            guild_id=guild_id,
+            channel_id=channel_id,
+            action=action_key,
+            mode=mode_value,
+            requested_amount=requested_amount,
+            applied_amount=applied_amount,
+        )
 
     result_sent = await _post_dust_result_message(
         interaction,
         mode=mode_value,
         remove=remove,
-        amount=int(amount),
+        amount=requested_amount,
         results=results,
     )
     if result_sent:
-        await interaction.followup.send("✅ Vorgang abgeschlossen. Die öffentliche Ergebnisnachricht wurde gesendet.", ephemeral=True)
+        await interaction.followup.send("? Vorgang abgeschlossen. Die ?ffentliche Ergebnisnachricht wurde gesendet.", ephemeral=True)
         return
     await interaction.followup.send(
-        "✅ Vorgang abgeschlossen, aber ich konnte die öffentliche Ergebnisnachricht nicht senden.",
+        "? Vorgang abgeschlossen, aber ich konnte die ?ffentliche Ergebnisnachricht nicht senden.",
         ephemeral=True,
     )
 
