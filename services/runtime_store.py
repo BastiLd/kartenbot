@@ -1,4 +1,5 @@
 import json
+import aiosqlite
 import time
 from typing import Any
 
@@ -162,6 +163,48 @@ async def get_active_session(session_id: int) -> dict[str, Any] | None:
     }
 
 
+async def get_active_session_for_channel(
+    channel_id: int,
+    *,
+    statuses: tuple[str, ...] = ("active",),
+    kinds: tuple[str, ...] | None = None,
+) -> dict[str, Any] | None:
+    if not channel_id:
+        return None
+    status_placeholders = ",".join("?" for _ in statuses)
+    params: list[Any] = [int(channel_id), *statuses]
+    query = (
+        "SELECT session_id, kind, guild_id, channel_id, thread_id, battle_message_id, log_message_id, status, payload_json, updated_at "
+        "FROM active_sessions WHERE channel_id = ? "
+        f"AND status IN ({status_placeholders})"
+    )
+    if kinds:
+        kind_placeholders = ",".join("?" for _ in kinds)
+        query += f" AND kind IN ({kind_placeholders})"
+        params.extend(kinds)
+    query += " ORDER BY updated_at DESC LIMIT 1"
+    try:
+        async with db_context() as db:
+            cursor = await db.execute(query, params)
+            row = await cursor.fetchone()
+    except aiosqlite.OperationalError:
+        return None
+    if row is None:
+        return None
+    return {
+        "session_id": int(row["session_id"]),
+        "kind": str(row["kind"] or ""),
+        "guild_id": int(row["guild_id"] or 0),
+        "channel_id": int(row["channel_id"] or 0),
+        "thread_id": int(row["thread_id"]) if row["thread_id"] else None,
+        "battle_message_id": int(row["battle_message_id"]) if row["battle_message_id"] else None,
+        "log_message_id": int(row["log_message_id"]) if row["log_message_id"] else None,
+        "status": str(row["status"] or ""),
+        "payload": _decode_payload(row["payload_json"]),
+        "updated_at": int(row["updated_at"] or 0),
+    }
+
+
 async def list_active_sessions(*, statuses: tuple[str, ...] = ("active",)) -> list[dict[str, Any]]:
     placeholders = ",".join("?" for _ in statuses)
     query = (
@@ -195,6 +238,26 @@ async def update_session_status(session_id: int, status: str) -> None:
             (status, int(time.time()), session_id),
         )
         await db.commit()
+
+
+async def patch_active_session_payload(session_id: int, payload_updates: dict[str, Any]) -> dict[str, Any] | None:
+    session = await get_active_session(session_id)
+    if session is None:
+        return None
+    payload = dict(session.get("payload") or {})
+    payload.update(payload_updates or {})
+    await save_active_session(
+        session_id=session_id,
+        kind=str(session.get("kind") or ""),
+        guild_id=int(session.get("guild_id") or 0),
+        channel_id=int(session.get("channel_id") or 0),
+        thread_id=session.get("thread_id"),
+        battle_message_id=session.get("battle_message_id"),
+        log_message_id=session.get("log_message_id"),
+        status=str(session.get("status") or ""),
+        payload=payload,
+    )
+    return payload
 
 
 async def save_managed_thread(*, thread_id: int, guild_id: int, kind: str, status: str = "active") -> None:

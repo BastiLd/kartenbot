@@ -55,6 +55,8 @@ class CardSpecTests(unittest.TestCase):
         treffsicherheit = _find_attack(hawkeye, "Treffsicherheit")
         effects = treffsicherheit.get("effects", [])
         self.assertTrue(any(e.get("type") == "guaranteed_hit" for e in effects))
+        self.assertTrue(any(e.get("type") == "force_max" for e in effects))
+        self.assertIn("Maximalschaden", str(treffsicherheit.get("info") or ""))
 
         triple = _find_attack(hawkeye, "Triple Arrow")
         mh = triple.get("multi_hit", {})
@@ -63,6 +65,8 @@ class CardSpecTests(unittest.TestCase):
         self.assertAlmostEqual(float(mh.get("hit_chance")), 0.45)
         self.assertEqual(mh.get("per_hit_damage"), [1, 10])
         self.assertEqual(int(mh.get("guaranteed_min_per_hit", 0) or 0), 3)
+        self.assertIn("jeder Pfeil", str(triple.get("info") or ""))
+        self.assertIn("Maximalschaden", str(triple.get("info") or ""))
 
     def test_ironman_overladung_specs(self) -> None:
         iron = _find_card("Iron-Man")
@@ -501,7 +505,171 @@ class FightFeedbackViewTests(unittest.IsolatedAsyncioTestCase):
         finally:
             view.stop()
         self.assertIn("<@1> hat mit PlayerCard gewonnen.", str(embed.description or ""))
-        self.assertIn("<@2> hat mit EnemyCard verlohren.", str(embed.description or ""))
+        self.assertIn("<@2> hat mit EnemyCard verloren.", str(embed.description or ""))
+
+
+class BattleUiRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_repost_battle_ui_if_needed_posts_new_messages_and_clears_flag(self) -> None:
+        player_card = {"name": "PlayerCard", "hp": 140, "bild": "https://example.com/player.png", "attacks": []}
+        enemy_card = {"name": "EnemyCard", "hp": 140, "bild": "https://example.com/enemy.png", "attacks": []}
+        view = BattleView(player_card, enemy_card, 1, 2, None)
+        view.ui_needs_resend = True
+        old_battle = SimpleNamespace(id=1001)
+        old_log = SimpleNamespace(id=1002)
+        new_log = SimpleNamespace(id=1003)
+        new_battle = SimpleNamespace(id=1004)
+        interaction = SimpleNamespace(channel=object())
+        view.battle_log_message = old_log
+
+        with patch("bot._safe_send_channel", new=AsyncMock(side_effect=[new_log, new_battle])) as send_mock, patch.object(
+            view,
+            "persist_session",
+            new=AsyncMock(),
+        ) as persist_mock, patch("bot._delete_message_quietly", new=AsyncMock()) as delete_mock:
+            result = await view._repost_battle_ui_if_needed(
+                interaction.channel,
+                interaction=interaction,
+                current_message=old_battle,
+                battle_embed=bot_module.discord.Embed(title="Neu"),
+                view=None,
+                status="completed",
+            )
+
+        self.assertIs(result, new_battle)
+        self.assertFalse(view.ui_needs_resend)
+        self.assertIs(view.battle_log_message, new_log)
+        self.assertEqual(send_mock.await_count, 2)
+        persist_mock.assert_awaited_once_with(interaction.channel, status="completed", battle_message=new_battle)
+        self.assertEqual(delete_mock.await_count, 2)
+        view.stop()
+
+
+class DustFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_dust_command_flow_remove_uses_actual_removed_amount(self) -> None:
+        class _FakeAdminSelectView:
+            def __init__(self, *_args, **_kwargs):
+                self.value = "7"
+
+            async def wait(self) -> None:
+                return None
+
+        guild = SimpleNamespace(get_member=lambda user_id: None)
+        followup = SimpleNamespace(send=AsyncMock())
+        interaction = SimpleNamespace(
+            guild=guild,
+            user=SimpleNamespace(id=99, mention="<@99>", display_name="Admin"),
+            followup=followup,
+            channel=object(),
+        )
+
+        with patch("bot.AdminUserSelectView", side_effect=lambda *args, **kwargs: _FakeAdminSelectView()), patch(
+            "bot._select_number",
+            new=AsyncMock(return_value=10),
+        ), patch("bot.remove_infinitydust", new=AsyncMock(return_value=4)) as remove_mock, patch(
+            "bot._post_dust_result_message",
+            new=AsyncMock(return_value=True),
+        ) as result_mock:
+            await bot_module.run_dust_command_flow(interaction, mode="single", remove=True)
+
+        remove_mock.assert_awaited_once_with(7, 10)
+        result_mock.assert_awaited_once()
+        kwargs = result_mock.await_args.kwargs
+        self.assertEqual(kwargs["results"], [(7, 4)])
+        self.assertEqual(kwargs["amount"], 10)
+        self.assertTrue(kwargs["remove"])
+
+    def test_dust_multi_user_select_view_has_search_and_done_first(self) -> None:
+        class _Member:
+            def __init__(self, member_id: int, name: str, *, bot: bool = False, status=None):
+                self.id = member_id
+                self.display_name = name
+                self.name = name
+                self.bot = bot
+                self.status = status if status is not None else bot_module.discord.Status.offline
+
+        guild = SimpleNamespace(
+            members=[
+                _Member(1, "Alpha", status=bot_module.discord.Status.online),
+                _Member(2, "SystemBot", bot=True, status=bot_module.discord.Status.online),
+                _Member(3, "Beta", status=bot_module.discord.Status.idle),
+            ]
+        )
+        view = bot_module.DustMultiUserSelectView(77, guild)
+        try:
+            values = [str(option.value) for option in view.select.options]
+            self.assertEqual(values[:2], ["search", "done"])
+            self.assertNotIn("2", values)
+            view.selected_user_ids = [1]
+            filtered_values = [str(option.value) for option in view._build_options()]
+            self.assertNotIn("1", filtered_values)
+        finally:
+            view.stop()
+
+
+class FightFeedbackAutoCloseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_feedback_view_auto_close_deletes_thread_without_bug(self) -> None:
+        class _FakeThread:
+            def __init__(self, thread_id: int):
+                self.id = thread_id
+                self.deleted = False
+
+            async def delete(self) -> None:
+                self.deleted = True
+
+        with patch.object(bot_module.discord, "Thread", _FakeThread), patch(
+            "bot.update_managed_thread_status",
+            new=AsyncMock(),
+        ) as update_mock:
+            thread = _FakeThread(321)
+            view = FightFeedbackView(
+                channel=thread,
+                guild=None,
+                allowed_user_ids={1},
+                battle_log_text="",
+                auto_close_delay=1,
+                auto_close_started_at=int(bot_module.time.time()) - 5,
+                close_on_idle=False,
+            )
+            try:
+                await view._auto_close_loop()
+            finally:
+                view.stop()
+
+        update_mock.assert_awaited_once_with(321, "deleted")
+        self.assertTrue(thread.deleted)
+
+    async def test_feedback_view_bug_blocks_auto_close(self) -> None:
+        class _FakeThread:
+            def __init__(self, thread_id: int):
+                self.id = thread_id
+                self.deleted = False
+
+            async def delete(self) -> None:
+                self.deleted = True
+
+        with patch.object(bot_module.discord, "Thread", _FakeThread), patch(
+            "bot.update_managed_thread_status",
+            new=AsyncMock(),
+        ) as update_mock:
+            thread = _FakeThread(654)
+            view = FightFeedbackView(
+                channel=thread,
+                guild=None,
+                allowed_user_ids={1},
+                battle_log_text="",
+                bug_reported_by={1},
+                auto_close_delay=1,
+                auto_close_started_at=int(bot_module.time.time()) - 5,
+                close_on_idle=False,
+                keep_open_after_bug=True,
+            )
+            try:
+                await view._auto_close_loop()
+            finally:
+                view.stop()
+
+        update_mock.assert_not_awaited()
+        self.assertFalse(thread.deleted)
 
 
 class CapDamageRuleTests(unittest.IsolatedAsyncioTestCase):
@@ -994,7 +1162,7 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
             await self._execute_player_attack_without_buffs(view)
         full_log = view._full_battle_log_text()
         self.assertNotIn("VOLLTREFFER", full_log)
-        self.assertIn("Ausgehender Schaden wurde um 20 reduziert.", full_log)
+        self.assertIn("Ausgehende Reduktion: 20 -> 0.", full_log)
         self.assertIn("Überlauf-Rückstoß: 10 Selbstschaden.", full_log)
         self.assertIn("hat jetzt noch 130 Leben", full_log)
 
@@ -1416,7 +1584,7 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
             absorbed_after=10,
         )
         joined = " | ".join(effect_events)
-        self.assertIn("Schutzwirkung: Schaden von 20 auf 10 reduziert.", joined)
+        self.assertIn("Schutzwirkung: 20 -> 10.", joined)
         self.assertIn("Spiegeldimension/Reflexion durch Doctor Strange: 10 Schaden zurückgeworfen.", joined)
         self.assertIn("Absorption durch Doctor Strange: 10 Schaden gespeichert.", joined)
 
@@ -1842,7 +2010,7 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
             absorbed_after=18,
         )
         joined = " | ".join(effect_events)
-        self.assertIn("Schutzwirkung: Schaden von 25 auf 12 reduziert.", joined)
+        self.assertIn("Schutzwirkung: 25 -> 12.", joined)
         self.assertIn("Spiegeldimension/Reflexion durch Doctor Strange: 13 Schaden zurückgeworfen.", joined)
         self.assertIn("Absorption durch Doctor Strange: 13 Schaden gespeichert.", joined)
 

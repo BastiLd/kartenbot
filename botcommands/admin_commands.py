@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from types import ModuleType
 
@@ -263,6 +263,46 @@ def register_admin_commands(bot, module: ModuleType) -> dict[str, object]:
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
         await module._send_with_visibility(interaction, visibility_key, embed=embed)
 
+    @bot.tree.command(name="dust", description="Nur für Admins!!!")
+    @app_commands.describe(modus="Single für einen Nutzer oder Multi für mehrere Nutzer")
+    @app_commands.choices(
+        modus=[
+            app_commands.Choice(name="single", value="single"),
+            app_commands.Choice(name="multi", value="multi"),
+        ]
+    )
+    async def dust(interaction: discord.Interaction, modus: str):
+        if not await module.is_channel_allowed(interaction):
+            return
+        if not await module.is_admin(interaction):
+            await interaction.response.send_message(
+                "❌ Du hast keine Berechtigung für diesen Command! Nur Admins/Owner können Infinitydust vergeben.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        await module.run_dust_command_flow(interaction, mode=modus, remove=False)
+
+    @bot.tree.command(name="lödust", description="Nur für Admins!!!")
+    @app_commands.describe(modus="Single für einen Nutzer oder Multi für mehrere Nutzer")
+    @app_commands.choices(
+        modus=[
+            app_commands.Choice(name="single", value="single"),
+            app_commands.Choice(name="multi", value="multi"),
+        ]
+    )
+    async def loedust(interaction: discord.Interaction, modus: str):
+        if not await module.is_channel_allowed(interaction):
+            return
+        if not await module.is_admin(interaction):
+            await interaction.response.send_message(
+                "❌ Du hast keine Berechtigung für diesen Command! Nur Admins/Owner können Infinitydust entfernen.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        await module.run_dust_command_flow(interaction, mode=modus, remove=True)
+
     @bot.tree.command(name="op-verwaltung", description="Nur für Admins!!!")
     @app_commands.guild_only()
     async def give_op(interaction: discord.Interaction):
@@ -476,6 +516,8 @@ def register_admin_commands(bot, module: ModuleType) -> dict[str, object]:
         "vaultlook": vaultlook,
         "test_bericht": test_bericht,
         "give": give,
+        "dust": dust,
+        "loedust": loedust,
         "give_op": give_op,
         "panel": panel,
         "BALANCE_GROUP": balance_group,

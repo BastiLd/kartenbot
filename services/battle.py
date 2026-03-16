@@ -4,6 +4,7 @@ from typing import Literal, overload
 
 import discord
 
+from botcore.name_utils import escape_display_text, safe_display_name
 from services.battle_types import CardData, DamageValue, MultiHitConfig, MultiHitRollDetails
 
 DamageInput = DamageValue
@@ -238,16 +239,13 @@ def _keep_last_rounds(text: str, max_rounds: int | None) -> str:
 
 def _display_name(user_obj) -> str:
     if isinstance(user_obj, str):
-        text = user_obj.strip()
-        if not text:
-            return "Bot"
-        return discord.utils.escape_markdown(text, as_needed=False)
+        return escape_display_text(user_obj, fallback="Bot")
     display_name = getattr(user_obj, "display_name", None)
     if display_name:
-        return discord.utils.escape_markdown(str(display_name), as_needed=False)
+        return safe_display_name(user_obj, fallback="Bot")
     mention = getattr(user_obj, "mention", None)
     if mention:
-        return discord.utils.escape_markdown(str(mention), as_needed=False)
+        return escape_display_text(mention, fallback="Bot")
     return "Bot"
 
 
@@ -255,7 +253,7 @@ def _card_display_name(card_name: object) -> str:
     text = str(card_name or "").strip()
     if not text:
         return "Unbekannte Karte"
-    return discord.utils.escape_markdown(text, as_needed=False)
+    return escape_display_text(text, fallback="Unbekannte Karte")
 
 
 def _owned_card_label(owner_display: str, card_name: object) -> str:

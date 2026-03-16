@@ -35,6 +35,7 @@ from botcore.messages import (
     SERVER_ONLY,
     THREAD_CLOSING,
 )
+from botcore.name_utils import escape_display_text, safe_display_name, safe_thread_name, safe_user_option_label
 from botcore.ui_common import (
     RestrictedModal as BaseRestrictedModal,
     RestrictedView as BaseRestrictedView,
@@ -85,9 +86,11 @@ from services.request_store import (
 from services.runtime_store import (
     delete_durable_view,
     get_active_session,
+    get_active_session_for_channel,
     is_managed_thread,
     list_active_sessions,
     list_durable_views,
+    patch_active_session_payload,
     save_active_session,
     save_managed_thread,
     update_managed_thread_status,
@@ -109,6 +112,7 @@ from services.user_data import (
     get_team,
     get_user_karten,
     increment_mission_count,
+    remove_infinitydust,
     remove_karte_amount,
     set_team,
     spend_infinitydust,
@@ -120,6 +124,8 @@ configure_logging()
 KATABUMP_MAX_INTERACTIONS_PER_MIN = 200
 KATABUMP_INTERACTION_WINDOW_SEC = 60
 THREAD_AUTO_CLOSE_DELAY_SECONDS = 18
+THREAD_CANCEL_CLOSE_DELAY_SECONDS = 10
+DUST_MENU_AMOUNTS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 70, 100]
 FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
@@ -170,6 +176,32 @@ def _effect_source_name(source: object) -> str:
     return text or "Effekt"
 
 
+def _damage_transition_text(
+    original_damage: int,
+    final_damage: int,
+    *,
+    source: object | None = None,
+    context: str = "Schaden",
+) -> str:
+    before = max(0, int(original_damage or 0))
+    after = max(0, int(final_damage or 0))
+    source_name = str(_effect_source_name(source)).strip() if source else ""
+    if source_name:
+        return f"{context}: {before} -> {after} durch {escape_display_text(source_name, fallback='Effekt')}."
+    return f"{context}: {before} -> {after}."
+
+
+async def _delete_message_quietly(message: discord.Message | None) -> None:
+    if message is None:
+        return
+    try:
+        await message.delete()
+    except discord.NotFound:
+        return
+    except Exception:
+        logging.exception("Failed to delete message %s", getattr(message, "id", None))
+
+
 def _member_has_role(member: discord.Member, role_id: int) -> bool:
     return any(getattr(role, "id", None) == role_id for role in getattr(member, "roles", ()))
 
@@ -180,6 +212,28 @@ def _get_fight_opponent_candidates(guild: discord.Guild, challenger: discord.Mem
         for member in guild.members
         if not member.bot and member != challenger and _member_has_role(member, FIGHT_OPPONENT_ROLE_ID)
     ]
+
+
+def _member_presence_priority(member: discord.Member) -> int:
+    status = member.status
+    if status == discord.Status.online:
+        return 0
+    if status == discord.Status.idle:
+        return 1
+    if status == discord.Status.dnd:
+        return 2
+    return 3
+
+
+def _member_status_circle(member: discord.Member) -> str:
+    status = member.status
+    if status == discord.Status.online:
+        return "🟢"
+    if status == discord.Status.idle:
+        return "🟡"
+    if status == discord.Status.dnd:
+        return "🔴"
+    return "⚫"
 
 
 def _effect_source_text(source: object, message: str) -> str:
@@ -522,6 +576,7 @@ EFFECT_TYPES_WITH_EFFECT_LOGS = frozenset(
         "enemy_next_attack_reduction_flat",
         "enemy_next_attack_reduction_percent",
         "evade",
+        "force_max",
         "guaranteed_hit",
         "mix_heal_or_max",
         "reflect",
@@ -901,35 +956,27 @@ async def on_message(message: discord.Message):
     if not await is_channel_allowed_ids(message.guild.id, message.channel.id, getattr(message.channel, "parent_id", None)):
         return
     if isinstance(message.channel, discord.Thread) and await is_managed_thread(message.channel.id):
-        await bot.process_commands(message)
-        return
-    # Prüfe, ob User in diesem Kanal das Intro schon gesehen hat
-    async with db_context() as db:
-        cursor = await db.execute(
-            "SELECT 1 FROM user_seen_channels WHERE user_id = ? AND guild_id = ? AND channel_id = ?",
-            (message.author.id, message.guild.id, message.channel.id),
-        )
-        seen = await cursor.fetchone()
-        if not seen:
-            # Speichere, dass der User es gesehen hat
-            await db.execute(
-                "INSERT OR REPLACE INTO user_seen_channels (user_id, guild_id, channel_id) VALUES (?, ?, ?)",
-                (message.author.id, message.guild.id, message.channel.id),
+        try:
+            session = await get_active_session_for_channel(
+                message.channel.id,
+                kinds=("fight_pvp", "fight_bot"),
             )
-            await db.commit()
-            # Poste Prompt im Kanal; Button öffnet das Intro ephemer (nur für den Nutzer sichtbar)
-            try:
-                prompt = f"{message.author.mention} Willkommen! Klicke unten, um das Intro nur für dich zu sehen."
-                view = IntroEphemeralPromptView(message.author.id)
-                prompt_message = await message.channel.send(
-                    content=prompt,
-                    view=view,
-                    silent=True,
-                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
-                )
-                await _maybe_register_durable_message(prompt_message, view)
-            except Exception:
-                logging.exception("Unexpected error")
+        except Exception:
+            logging.exception("Failed to load active fight session for managed thread %s", message.channel.id)
+            session = None
+        if session is not None and str(session.get("status") or "") == "active":
+            payload = _dict_str_any(session.get("payload"))
+            if not bool(payload.get("ui_needs_resend")):
+                try:
+                    await patch_active_session_payload(
+                        int(session.get("session_id") or 0),
+                        {
+                            "ui_needs_resend": True,
+                            "ui_needs_resend_message_id": int(message.id),
+                        },
+                    )
+                except Exception:
+                    logging.exception("Failed to patch managed fight session %s", session.get("session_id"))
 
     # Commands weiter verarbeiten lassen
     await bot.process_commands(message)
@@ -1188,6 +1235,7 @@ class BattleView(DurableView):
         self._effect_event_history: list[EffectBestMoment] = []
         self.round_counter = 0
         self._last_log_edit_ts = 0.0
+        self.ui_needs_resend = False
 
         self.active_effects = runtime_maps["active_effects"]
         self.confused_next_turn = runtime_maps["confused_next_turn"]
@@ -1432,7 +1480,7 @@ class BattleView(DurableView):
         )
         self._recent_log_lines = self._recent_log_preview_from_embed()
         self._last_highlight_tone = self._resolve_highlight_tone(effective_critical, effect_events)
-        attacker_display = str(getattr(attacker_user, "display_name", "") or getattr(attacker_user, "mention", "") or "Bot")
+        attacker_display = safe_display_name(attacker_user, fallback="Bot")
         self._update_highlight_stats(
             actual_damage,
             effective_critical,
@@ -1440,7 +1488,7 @@ class BattleView(DurableView):
             attacker_display,
             effect_events,
         )
-        if self.battle_log_message:
+        if self.battle_log_message and not self.ui_needs_resend:
             await self._safe_edit_battle_log(self._full_battle_log_embed)
 
     def _winner_embed(
@@ -1452,7 +1500,7 @@ class BattleView(DurableView):
     ) -> discord.Embed:
         description = f"{winner_mention} hat mit {winner_card} gewonnen."
         if loser_mention and loser_card:
-            description += f"\n\n{loser_mention} hat mit {loser_card} verlohren."
+            description += f"\n\n{loser_mention} hat mit {loser_card} verloren."
         embed = discord.Embed(
             title="🏆 Sieger!",
             description=description,
@@ -1532,6 +1580,7 @@ class BattleView(DurableView):
             "effect_best_moments": _json_clone(self._effect_best_moments),
             "effect_event_history": _json_clone(self._effect_event_history),
             "round_counter": self.round_counter,
+            "ui_needs_resend": self.ui_needs_resend,
         }
 
     def restore_from_session_payload(self, payload: dict[str, Any]) -> None:
@@ -1590,6 +1639,7 @@ class BattleView(DurableView):
             if isinstance(item, dict)
         ]
         self.round_counter = int(payload.get("round_counter", 0) or 0)
+        self.ui_needs_resend = bool(payload.get("ui_needs_resend", False))
         self._full_battle_log_embed = create_battle_log_embed()
         self._full_battle_log_embed.description = self._full_battle_log_text()
 
@@ -1625,6 +1675,68 @@ class BattleView(DurableView):
                 view_kind=self.durable_view_kind,
                 payload=self.durable_payload(),
             )
+
+    async def _repost_battle_ui_if_needed(
+        self,
+        channel: object,
+        *,
+        interaction: discord.Interaction | None,
+        current_message: discord.Message | None,
+        battle_embed: discord.Embed,
+        view: ui.View | None = None,
+        status: str = "active",
+    ) -> discord.Message | None:
+        if not self.ui_needs_resend:
+            return current_message
+        old_battle_message = current_message
+        old_log_message = self.battle_log_message
+        if interaction is not None:
+            new_log_message = await _safe_send_channel(
+                interaction,
+                channel,
+                embed=self._full_battle_log_embed,
+            )
+        else:
+            new_log_message = await _send_channel_message(
+                channel,
+                embed=self._full_battle_log_embed,
+            )
+        if new_log_message is None:
+            return current_message
+        self.battle_log_message = new_log_message
+        if interaction is not None:
+            new_battle_message = await _safe_send_channel(
+                interaction,
+                channel,
+                embed=battle_embed,
+                view=view,
+            )
+        else:
+            new_battle_message = await _send_channel_message(
+                channel,
+                embed=battle_embed,
+                view=view,
+            )
+        if new_battle_message is None:
+            self.battle_log_message = old_log_message
+            await _delete_message_quietly(new_log_message)
+            return current_message
+        self.ui_needs_resend = False
+        await self.persist_session(channel, status=status, battle_message=new_battle_message)
+        if old_log_message is not None and old_log_message.id != new_log_message.id:
+            await _delete_message_quietly(old_log_message)
+        if old_battle_message is not None and old_battle_message.id != new_battle_message.id:
+            await _delete_message_quietly(old_battle_message)
+        return new_battle_message
+
+    async def _sync_runtime_flags_from_session(self) -> None:
+        if not self.session_id:
+            return
+        session = await get_active_session(int(self.session_id))
+        if session is None:
+            return
+        payload = _dict_str_any(session.get("payload"))
+        self.ui_needs_resend = bool(payload.get("ui_needs_resend", self.ui_needs_resend))
 
     @staticmethod
     def _thread_finished_embed() -> discord.Embed:
@@ -1687,17 +1799,35 @@ class BattleView(DurableView):
             return f"{' '.join(mentions)} {prompt}"
         return prompt
 
-    async def _send_feedback_prompt(self, channel: object, guild: discord.Guild | None) -> None:
+    async def _send_feedback_prompt(
+        self,
+        channel: object,
+        guild: discord.Guild | None,
+        *,
+        auto_close_delay: int | None = THREAD_AUTO_CLOSE_DELAY_SECONDS,
+    ) -> None:
         allowed = set(self._feedback_player_ids())
         if not allowed:
             return
         sendable_channel = _coerce_sendable_channel(channel)
         if sendable_channel is None:
             return
-        view = FightFeedbackView(sendable_channel, guild, allowed, battle_log_text=self._full_battle_log_text())
+        view = FightFeedbackView(
+            sendable_channel,
+            guild,
+            allowed,
+            battle_log_text=self._full_battle_log_text(),
+            auto_close_delay=auto_close_delay,
+            close_on_idle=auto_close_delay is not None,
+            close_after_no_bug=True,
+            keep_open_after_bug=True,
+        )
+        auto_close_hint = ""
+        if isinstance(sendable_channel, discord.Thread) and auto_close_delay:
+            auto_close_hint = f"\n\nDer Thread schließt automatisch in {int(auto_close_delay)} Sekunden, wenn kein Bug gemeldet wird."
         message_text = (
-            f"{self._feedback_prompt_text(guild)}\n\n"
-            "Buttons unten: **Es gab einen Bug** | **Kampf-Log per DM** | **Kein Log nötig**"
+            f"{self._feedback_prompt_text(guild)}{auto_close_hint}\n\n"
+            "Buttons unten: **Es gab einen Bug** | **Kampf-Log per DM** | **Es gab keinen Bug**"
         )
         try:
             message = await sendable_channel.send(message_text, view=view)
@@ -2006,7 +2136,12 @@ class BattleView(DurableView):
         elif final_damage < raw_damage:
             self._append_effect_event(
                 effect_events,
-                f"Schutzwirkung{source_suffix}: Schaden von {int(raw_damage)} auf {int(final_damage)} reduziert.",
+                _damage_transition_text(
+                    int(raw_damage),
+                    int(final_damage),
+                    source=modifier_source or None,
+                    context="Schutzwirkung",
+                ),
             )
 
         if reflected_damage > 0:
@@ -2447,7 +2582,11 @@ class BattleView(DurableView):
             )
             await interaction.response.edit_message(embed=embed, view=None)
             try:
-                await self._send_feedback_prompt(interaction.channel, interaction.guild)
+                await self._send_feedback_prompt(
+                    interaction.channel,
+                    interaction.guild,
+                    auto_close_delay=THREAD_CANCEL_CLOSE_DELAY_SECONDS,
+                )
             except Exception:
                 logging.exception("Unexpected error")
             try:
@@ -2474,6 +2613,7 @@ class BattleView(DurableView):
             await interaction.response.send_message("Du bist nicht an der Reihe!", ephemeral=True)
             return
         await _safe_defer_interaction(interaction)
+        await self._sync_runtime_flags_from_session()
 
         if self.stunned_next_turn.get(self.current_turn, False):
             self.stunned_next_turn[self.current_turn] = False
@@ -2748,24 +2888,17 @@ class BattleView(DurableView):
                     actual_damage,
                 )
                 if reduced_damage != actual_damage:
-                    delta_out = actual_damage - reduced_damage
-                    actual_damage = reduced_damage
                     modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
-                    reduction_prefix = (
-                        f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)}"
-                        if modifier_source
-                        else "Ausgehender Schaden wurde"
+                    self._append_effect_event(
+                        effect_events,
+                        _damage_transition_text(
+                            int(actual_damage),
+                            int(reduced_damage),
+                            source=modifier_source or None,
+                            context="Ausgehende Reduktion",
+                        ),
                     )
-                    if actual_damage <= 0:
-                        self._append_effect_event(
-                            effect_events,
-                            f"{reduction_prefix} um {delta_out} reduziert.",
-                        )
-                    else:
-                        self._append_effect_event(
-                            effect_events,
-                            f"{reduction_prefix} um {delta_out} reduziert.",
-                        )
+                    actual_damage = reduced_damage
                 if overflow_self_damage > 0:
                     self._apply_non_heal_damage_with_event(
                         effect_events,
@@ -3133,7 +3266,17 @@ class BattleView(DurableView):
             else:
                 loser_mention = "Bot" if loser_id == 0 else f"<@{loser_id}>"
             winner_embed = self._winner_embed(winner_mention, winner_card, loser_mention, loser_card)
-            if message is not None:
+            final_battle_message = message
+            if self.ui_needs_resend:
+                final_battle_message = await self._repost_battle_ui_if_needed(
+                    interaction.channel,
+                    interaction=interaction,
+                    current_message=message,
+                    battle_embed=self._thread_finished_embed(),
+                    view=None,
+                    status="completed",
+                )
+            elif message is not None:
                 try:
                     await message.edit(embed=self._thread_finished_embed(), view=None)
                 except Exception:
@@ -3144,7 +3287,11 @@ class BattleView(DurableView):
             except Exception:
                 logging.exception("Unexpected error")
             try:
-                await self.persist_session(interaction.channel, status="completed")
+                await self.persist_session(
+                    interaction.channel,
+                    status="completed",
+                    battle_message=final_battle_message,
+                )
             except Exception:
                 logging.exception("Failed to persist completed fight session")
             self.stop()
@@ -3178,7 +3325,16 @@ class BattleView(DurableView):
         )
         
         # Aktualisiere Kampf-UI (Kampf-Log wurde bereits oben behandelt)
-        if message is not None:
+        if self.ui_needs_resend:
+            message = await self._repost_battle_ui_if_needed(
+                interaction.channel,
+                interaction=interaction,
+                current_message=message,
+                battle_embed=battle_embed,
+                view=self,
+                status="active",
+            )
+        elif message is not None:
             try:
                 await message.edit(embed=battle_embed, view=self)
                 await self.persist_session(interaction.channel, status="active", battle_message=message)
@@ -3410,24 +3566,17 @@ class BattleView(DurableView):
                     actual_damage,
                 )
                 if reduced_damage != actual_damage:
-                    delta_out = actual_damage - reduced_damage
-                    actual_damage = reduced_damage
                     modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
-                    reduction_prefix = (
-                        f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)}"
-                        if modifier_source
-                        else "Ausgehender Schaden wurde"
+                    self._append_effect_event(
+                        effect_events,
+                        _damage_transition_text(
+                            int(actual_damage),
+                            int(reduced_damage),
+                            source=modifier_source or None,
+                            context="Ausgehende Reduktion",
+                        ),
                     )
-                    if actual_damage <= 0:
-                        self._append_effect_event(
-                            effect_events,
-                            f"{reduction_prefix} um {delta_out} reduziert.",
-                        )
-                    else:
-                        self._append_effect_event(
-                            effect_events,
-                            f"{reduction_prefix} um {delta_out} reduziert.",
-                        )
+                    actual_damage = reduced_damage
                 if overflow_self_damage > 0:
                     self._apply_non_heal_damage_with_event(
                         effect_events,
@@ -3784,15 +3933,34 @@ class BattleView(DurableView):
             else:
                 loser_mention = "Bot" if loser_id == 0 else f"<@{loser_id}>"
             winner_embed = self._winner_embed(winner_mention, winner_card, loser_mention, loser_card)
-            try:
-                await message.edit(embed=self._thread_finished_embed(), view=None)
-            except Exception:
-                logging.exception("Failed to update fight thread end-state")
+            final_battle_message = message
+            if self.ui_needs_resend:
+                final_battle_message = await self._repost_battle_ui_if_needed(
+                    message.channel,
+                    interaction=None,
+                    current_message=message,
+                    battle_embed=self._thread_finished_embed(),
+                    view=None,
+                    status="completed",
+                )
+            else:
+                try:
+                    await message.edit(embed=self._thread_finished_embed(), view=None)
+                except Exception:
+                    logging.exception("Failed to update fight thread end-state")
             await self._post_winner_public(message.guild, message.channel, winner_embed)
             try:
                 await self._send_feedback_prompt(message.channel, message.guild)
             except Exception:
                 logging.exception("Unexpected error")
+            try:
+                await self.persist_session(
+                    message.channel,
+                    status="completed",
+                    battle_message=final_battle_message,
+                )
+            except Exception:
+                logging.exception("Failed to persist completed fight session")
             self.stop()
             return
 
@@ -3927,13 +4095,22 @@ class UserSearchModal(RestrictedModal):
         parent_view: object | None = None,
         include_bot_option: bool = True,
         required_role_id: int | None = None,
+        exclude_user_id: int | None = None,
+        exclude_user_ids: set[int] | None = None,
     ):
         super().__init__(title="🔍 User suchen")
         self.guild = guild
         self.challenger = challenger
+        self.requester_id = int(getattr(challenger, "id", challenger))
         self.parent_view = parent_view
         self.include_bot_option = include_bot_option
         self.required_role_id = required_role_id
+        self.exclude_user_ids = {
+            int(user_id)
+            for user_id in (exclude_user_ids or set())
+            if str(user_id).strip()
+        }
+        self.exclude_user_ids.add(int(exclude_user_id or self.requester_id or 0))
     
     search_input = ui.TextInput(
         label="Name eingeben:",
@@ -3953,7 +4130,7 @@ class UserSearchModal(RestrictedModal):
         for member in self.guild.members:
             if (
                 not member.bot
-                and member != self.challenger
+                and member.id not in self.exclude_user_ids
                 and (
                     self.required_role_id is None
                     or _member_has_role(member, self.required_role_id)
@@ -3980,7 +4157,7 @@ class UserSearchModal(RestrictedModal):
             for member in matches:
                 status_emoji = self.get_status_emoji(member)
                 options.append(SelectOption(
-                    label=f"{status_emoji} {member.display_name}",
+                    label=safe_user_option_label(member, prefix=f"{status_emoji} "),
                     value=str(member.id)
                 ))
             
@@ -4010,6 +4187,7 @@ class UserSearchResultView(RestrictedView):
     def __init__(self, challenger, options, parent_view: object | None = None):
         super().__init__(timeout=60)
         self.challenger = challenger
+        self.requester_id = int(getattr(challenger, "id", challenger))
         self.value = None
         self.parent_view = parent_view
         
@@ -4018,7 +4196,7 @@ class UserSearchResultView(RestrictedView):
         self.add_item(self.select)
     
     async def select_callback(self, interaction: discord.Interaction):
-        if interaction.user != self.challenger:
+        if interaction.user.id != self.requester_id:
             await interaction.response.send_message("Nur der Herausforderer kann den Gegner wählen!", ephemeral=True)
             return
         
@@ -4026,12 +4204,21 @@ class UserSearchResultView(RestrictedView):
         # Übergib die Auswahl zurück an die Eltern-View (z. B. OpponentSelectView/AdminUserSelectView) und beende sie
         if self.parent_view is not None:
             try:
-                setattr(self.parent_view, "value", self.value)
-                stop_callback = getattr(self.parent_view, "stop", None)
-                if callable(stop_callback):
-                    stop_callback()
+                search_handler = getattr(self.parent_view, "handle_search_selection", None)
+                if callable(search_handler):
+                    handled = search_handler(self.value, interaction)
+                    if asyncio.iscoroutine(handled):
+                        await handled
+                else:
+                    setattr(self.parent_view, "value", self.value)
+                    stop_callback = getattr(self.parent_view, "stop", None)
+                    if callable(stop_callback):
+                        stop_callback()
             except Exception:
                 logging.exception("Unexpected error")
+        self.stop()
+        if not interaction.response.is_done():
+            await interaction.response.defer()
 class OpponentSelectView(RestrictedView):
     def __init__(self, challenger: discord.Member, guild: discord.Guild):
         super().__init__(timeout=60)
@@ -4045,25 +4232,9 @@ class OpponentSelectView(RestrictedView):
     
     def show_smart_options(self):
         """Zeigt intelligente Optionen basierend auf Server-Größe (mit Status-Kreisen und Präsenz-Sortierung)"""
-        def presence_priority(m: discord.Member) -> int:
-            s = m.status
-            if s == discord.Status.online:
-                return 0
-            if s == discord.Status.idle:
-                return 1
-            if s == discord.Status.dnd:
-                return 2
-            return 3  # offline/unknown
-        
         def label_with_circle(m: discord.Member) -> str:
             # identische Kreise wie in der Suche: 🟢 🟡 🔴 ⚫
-            if m.status == discord.Status.online:
-                return f"🟢 {m.display_name}"
-            if m.status == discord.Status.idle:
-                return f"🟡 {m.display_name}"
-            if m.status == discord.Status.dnd:
-                return f"🔴 {m.display_name}"
-            return f"⚫ {m.display_name}"
+            return safe_user_option_label(m, prefix=f"{_member_status_circle(m)} ")
         
         options = [
             SelectOption(label="🔍 Nach Name suchen", value="search"),
@@ -4072,12 +4243,12 @@ class OpponentSelectView(RestrictedView):
 
         if len(self.all_members) <= 23:
             # Kompakte Liste: Suche zuerst, dann Bot, dann alle gültigen Nutzer
-            for member in sorted(self.all_members, key=presence_priority):
+            for member in sorted(self.all_members, key=_member_presence_priority):
                 options.append(SelectOption(label=label_with_circle(member), value=str(member.id)))
         else:
             # Größere Liste: Suche zuerst, dann Bot, dann häufig sichtbare Nutzer und Vollansicht
             online_like = [m for m in self.all_members if m.status != discord.Status.offline]
-            for member in sorted(online_like, key=presence_priority)[:22]:
+            for member in sorted(online_like, key=_member_presence_priority)[:22]:
                 options.append(SelectOption(label=label_with_circle(member), value=str(member.id)))
             options.append(SelectOption(label="📋 Alle User anzeigen", value="show_all"))
         
@@ -4117,20 +4288,11 @@ class OpponentSelectView(RestrictedView):
         elif selected_value == "show_all":
             # Zeige alle User (mit Paginierung falls nötig)
             if len(self.all_members) <= 25:
-                def presence_priority(m: discord.Member) -> int:
-                    s = m.status
-                    if s == discord.Status.online:
-                        return 0
-                    if s == discord.Status.idle:
-                        return 1
-                    if s == discord.Status.dnd:
-                        return 2
-                    return 3  # offline/unknown
                 options = [SelectOption(label="🤖 Bot", value="bot")]
-                for member in sorted(self.all_members, key=presence_priority):
+                for member in sorted(self.all_members, key=_member_presence_priority):
                     status_emoji = self.get_status_emoji(member)
                     options.append(SelectOption(
-                        label=f"{status_emoji} {member.display_name}",
+                        label=safe_user_option_label(member, prefix=f"{status_emoji} "),
                         value=str(member.id)
                     ))
                 
@@ -4159,47 +4321,26 @@ class AdminUserSelectView(RestrictedView):
         self.show_smart_options()
 
     def show_smart_options(self):
-        # Präsenz-Priorität für Sortierung: grün > orange > rot > schwarz
-        def presence_priority(m: discord.Member) -> int:
-            s = m.status
-            if s == discord.Status.online:
-                return 0
-            if s == discord.Status.idle:
-                return 1
-            if s == discord.Status.dnd:
-                return 2
-            return 3
-
-        def status_circle(m: discord.Member) -> str:
-            s = m.status
-            if s == discord.Status.online:
-                return "🟢"
-            if s == discord.Status.idle:
-                return "🟡"
-            if s == discord.Status.dnd:
-                return "🔴"
-            return "⚫"
-
         options: list[SelectOption] = []
-        members_sorted = sorted(self.all_members, key=presence_priority)
+        members_sorted = sorted(self.all_members, key=_member_presence_priority)
 
         if not members_sorted:
             options.append(SelectOption(label="Keine Nutzer verfügbar", value="none"))
         elif len(members_sorted) <= 24:
             # Bis 24 User: alle anzeigen + Suchoption (max. 25 Optionen)
             for member in members_sorted:
-                circle = status_circle(member)
-                label = f"{circle} {member.display_name[:100]}"
+                circle = _member_status_circle(member)
+                label = safe_user_option_label(member, prefix=f"{circle} ")
                 options.append(SelectOption(label=label, value=str(member.id)))
-            options.append(SelectOption(label="🔍 Nach Name suchen", value="search"))
+            options.insert(0, SelectOption(label="🔍 Nach Name suchen", value="search"))
         else:
             # Größerer Server: kompakte Liste + Such-/Alle-Optionen (max. 25)
-            for member in members_sorted[:23]:
-                circle = status_circle(member)
-                label = f"{circle} {member.display_name[:100]}"
-                options.append(SelectOption(label=label, value=str(member.id)))
             options.append(SelectOption(label="🔍 Nach Name suchen", value="search"))
             options.append(SelectOption(label="📋 Alle User anzeigen", value="show_all"))
+            for member in members_sorted[:23]:
+                circle = _member_status_circle(member)
+                label = safe_user_option_label(member, prefix=f"{circle} ")
+                options.append(SelectOption(label=label, value=str(member.id)))
 
         self.select = ui.Select(placeholder="Wähle einen Nutzer...", min_values=1, max_values=1, options=options)
         self.select.callback = self.select_callback
@@ -4219,28 +4360,12 @@ class AdminUserSelectView(RestrictedView):
             return
         if selected == "show_all":
             if len(self.all_members) <= 25:
-                # Präsenz-sorted und mit Status-Kreis
-                def presence_priority(m: discord.Member) -> int:
-                    s = m.status
-                    if s == discord.Status.online:
-                        return 0
-                    if s == discord.Status.idle:
-                        return 1
-                    if s == discord.Status.dnd:
-                        return 2
-                    return 3
-                def status_circle(m: discord.Member) -> str:
-                    s = m.status
-                    if s == discord.Status.online:
-                        return "🟢"
-                    if s == discord.Status.idle:
-                        return "🟡"
-                    if s == discord.Status.dnd:
-                        return "🔴"
-                    return "⚫"
-                members_sorted = sorted(self.all_members, key=presence_priority)
+                members_sorted = sorted(self.all_members, key=_member_presence_priority)
                 options = [
-                    SelectOption(label=f"{status_circle(m)} {m.display_name[:100]}", value=str(m.id))
+                    SelectOption(
+                        label=safe_user_option_label(m, prefix=f"{_member_status_circle(m)} "),
+                        value=str(m.id),
+                    )
                     for m in members_sorted
                 ]
                 view = UserSearchResultView(interaction.user, options, parent_view=self)
@@ -4252,6 +4377,138 @@ class AdminUserSelectView(RestrictedView):
         self.value = selected
         self.stop()
         await interaction.response.defer()
+
+
+class DustMultiUserSelectView(RestrictedView):
+    def __init__(self, requester_id: int, guild: discord.Guild):
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        self.guild = guild
+        self.selected_user_ids: list[int] = []
+        self.value: list[int] | None = None
+        self._message: discord.Message | None = None
+
+        self.select = ui.Select(
+            placeholder=self._placeholder(),
+            min_values=1,
+            max_values=1,
+            options=self._build_options(),
+        )
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+
+    def bind_message(self, message: discord.Message | None) -> None:
+        self._message = message
+
+    def _content(self) -> str:
+        return (
+            "W\u00e4hle mehrere Nutzer f\u00fcr Infinitydust.\n"
+            f"Aktuell ausgew\u00e4hlt: {self._selected_summary()}"
+        )
+
+    def _available_members(self) -> list[discord.Member]:
+        chosen = set(self.selected_user_ids)
+        members = [
+            member
+            for member in self.guild.members
+            if not member.bot and member.id not in chosen
+        ]
+        return sorted(members, key=_member_presence_priority)
+
+    def _placeholder(self) -> str:
+        selected_count = len(self.selected_user_ids)
+        if selected_count <= 0:
+            return "W\u00e4hle Nutzer oder suche oben..."
+        return f"W\u00e4hle weitere Nutzer... ({selected_count} ausgew\u00e4hlt)"
+
+    def _selected_summary(self) -> str:
+        if not self.selected_user_ids:
+            return "Noch niemand ausgew\u00e4hlt."
+        names: list[str] = []
+        for user_id in self.selected_user_ids:
+            member = self.guild.get_member(user_id)
+            names.append(safe_display_name(member or str(user_id), fallback=str(user_id)))
+        return ", ".join(names)
+
+    def _build_options(self) -> list[SelectOption]:
+        options: list[SelectOption] = [
+            SelectOption(label="\U0001F50D Nach Name suchen", value="search"),
+            SelectOption(label="\u2705 Fertig", value="done"),
+        ]
+        for member in self._available_members()[:23]:
+            options.append(
+                SelectOption(
+                    label=safe_user_option_label(member, prefix=f"{_member_status_circle(member)} "),
+                    value=str(member.id),
+                )
+            )
+        return options
+
+    async def _refresh_origin_message(self) -> None:
+        self.select.options = self._build_options()
+        self.select.placeholder = self._placeholder()
+        if self._message is not None:
+            await self._message.edit(content=self._content(), view=self)
+
+    async def _append_user(
+        self,
+        interaction: discord.Interaction,
+        raw_value: str,
+        *,
+        edit_origin_with_response: bool,
+    ) -> None:
+        try:
+            user_id = int(raw_value)
+        except (TypeError, ValueError):
+            await interaction.response.send_message("\u274c Ung\u00fcltiger Nutzer.", ephemeral=True)
+            return
+        if user_id in self.selected_user_ids:
+            await interaction.response.send_message("Dieser Nutzer ist bereits ausgew\u00e4hlt.", ephemeral=True)
+            return
+        member = self.guild.get_member(user_id)
+        if member is None or member.bot:
+            await interaction.response.send_message("\u274c Nutzer nicht gefunden.", ephemeral=True)
+            return
+        self.selected_user_ids.append(user_id)
+        self.select.options = self._build_options()
+        self.select.placeholder = self._placeholder()
+        if edit_origin_with_response:
+            await interaction.response.edit_message(content=self._content(), view=self)
+            return
+        await self._refresh_origin_message()
+        await interaction.response.send_message(
+            f"\u2705 {safe_display_name(member, fallback=str(user_id))} hinzugef\u00fcgt.",
+            ephemeral=True,
+        )
+
+    async def handle_search_selection(self, raw_value: str, interaction: discord.Interaction) -> None:
+        await self._append_user(interaction, raw_value, edit_origin_with_response=False)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nur der Command-User kann w\u00e4hlen!", ephemeral=True)
+            return
+
+        selected = str(self.select.values[0] or "").strip()
+        if selected == "search":
+            modal = UserSearchModal(
+                self.guild,
+                interaction.user,
+                parent_view=self,
+                include_bot_option=False,
+                exclude_user_ids=set(self.selected_user_ids),
+            )
+            await interaction.response.send_modal(modal)
+            return
+        if selected == "done":
+            if not self.selected_user_ids:
+                await interaction.response.send_message("\u274c Du musst erst mindestens einen Nutzer ausw\u00e4hlen.", ephemeral=True)
+                return
+            self.value = list(self.selected_user_ids)
+            self.stop()
+            await interaction.response.defer()
+            return
+        await self._append_user(interaction, selected, edit_origin_with_response=True)
 
 class FightVisibilityView(RestrictedView):
     def __init__(self, user_id: int):
@@ -4297,6 +4554,16 @@ async def _get_member_safe(guild: discord.Guild, user_id: int) -> discord.Member
     except Exception:
         return None
 
+async def _delete_managed_thread_after_delay(thread: discord.Thread, delay_seconds: int) -> None:
+    await asyncio.sleep(max(0, int(delay_seconds or 0)))
+    try:
+        await update_managed_thread_status(thread.id, "deleted")
+        await thread.delete()
+    except discord.NotFound:
+        return
+    except Exception:
+        logging.exception("Unexpected error")
+
 async def _maybe_delete_fight_thread(thread_id: int | None, thread_created: bool) -> None:
     if not thread_created or not thread_id:
         return
@@ -4305,8 +4572,18 @@ async def _maybe_delete_fight_thread(thread_id: int | None, thread_created: bool
         if channel is None:
             channel = await bot.fetch_channel(thread_id)
         if isinstance(channel, discord.Thread):
-            await update_managed_thread_status(channel.id, "deleted")
-            await channel.delete()
+            try:
+                await channel.send(
+                    f"⚠️ Dieser Thread wird in {THREAD_CANCEL_CLOSE_DELAY_SECONDS} Sekunden geschlossen."
+                )
+            except Exception:
+                logging.exception("Failed to send delayed-close notice for thread %s", channel.id)
+            asyncio.create_task(
+                _delete_managed_thread_after_delay(
+                    channel,
+                    THREAD_CANCEL_CLOSE_DELAY_SECONDS,
+                )
+            )
     except Exception:
         logging.exception("Unexpected error")
 
@@ -4346,9 +4623,14 @@ async def _create_required_private_fight_thread(
         )
         return None
     try:
-        thread_name = f"Privater Kampf: {interaction.user.display_name}"
+        thread_name = safe_thread_name("Privater Kampf:", safe_display_name(interaction.user, fallback=str(interaction.user.id)))
         if challenged is not None:
-            thread_name = f"Privater Kampf: {interaction.user.display_name} vs {challenged.display_name}"
+            thread_name = safe_thread_name(
+                "Privater Kampf:",
+                safe_display_name(interaction.user, fallback=str(interaction.user.id)),
+                "vs",
+                safe_display_name(challenged, fallback=str(challenged.id)),
+            )
         fight_thread = await parent_text.create_thread(
             name=thread_name,
             type=discord.ChannelType.private_thread,
@@ -4437,7 +4719,7 @@ async def _create_required_private_mission_thread(interaction: discord.Interacti
         )
         return None
     try:
-        thread_name = f"Mission: {interaction.user.display_name}"
+        thread_name = safe_thread_name("Mission:", safe_display_name(interaction.user, fallback=str(interaction.user.id)))
         mission_thread = await parent_text.create_thread(
             name=thread_name,
             type=discord.ChannelType.private_thread,
@@ -4605,7 +4887,7 @@ async def _send_mission_feedback_prompt(
     view = FightFeedbackView(sendable_channel, guild, {allowed_user_id}, battle_log_text=battle_log_text)
     message_text = (
         f"<@{allowed_user_id}> Gab es einen Bug/Fehler?\n\n"
-        "Buttons unten: **Es gab einen Bug** | **Kampf-Log per DM** | **Kein Log nötig**"
+        "Buttons unten: **Es gab einen Bug** | **Kampf-Log per DM** | **Es gab keinen Bug**"
     )
     try:
         message = await sendable_channel.send(
@@ -4849,6 +5131,11 @@ class FightFeedbackView(DurableView):
         bug_reported_by: set[int] | None = None,
         log_sent_to: set[int] | None = None,
         opted_out_by: set[int] | None = None,
+        auto_close_delay: int | None = None,
+        auto_close_started_at: int | None = None,
+        close_on_idle: bool = True,
+        close_after_no_bug: bool = True,
+        keep_open_after_bug: bool = True,
     ):
         super().__init__(timeout=None)
         self.channel = channel
@@ -4859,11 +5146,23 @@ class FightFeedbackView(DurableView):
         self._log_sent_to: set[int] = set(log_sent_to or set())
         self._opted_out_by: set[int] = set(opted_out_by or set())
         self._admin_close_posted = False
+        self.auto_close_delay = max(0, int(auto_close_delay or 0)) or None
+        self.auto_close_started_at = (
+            int(auto_close_started_at or time.time())
+            if self.auto_close_delay
+            else None
+        )
+        self.close_on_idle = bool(close_on_idle)
+        self.close_after_no_bug = bool(close_after_no_bug)
+        self.keep_open_after_bug = bool(keep_open_after_bug)
+        self._auto_close_task: asyncio.Task | None = None
         if not isinstance(self.channel, discord.Thread):
             try:
                 self.remove_item(self.close_thread_btn)
             except Exception:
                 logging.exception("Unexpected error")
+        else:
+            self._ensure_auto_close_task()
 
     async def _is_allowed(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id in self.allowed_user_ids:
@@ -4896,10 +5195,68 @@ class FightFeedbackView(DurableView):
             "bug_reported_by": sorted(self._bug_reported_by),
             "log_sent_to": sorted(self._log_sent_to),
             "opted_out_by": sorted(self._opted_out_by),
+            "auto_close_delay": self.auto_close_delay,
+            "auto_close_started_at": self.auto_close_started_at,
+            "close_on_idle": self.close_on_idle,
+            "close_after_no_bug": self.close_after_no_bug,
+            "keep_open_after_bug": self.keep_open_after_bug,
         }
 
     def durable_log_text(self) -> str:
         return self.battle_log_text
+
+    def stop(self) -> None:
+        super().stop()
+        if self._auto_close_task and not self._auto_close_task.done():
+            self._auto_close_task.cancel()
+
+    def _auto_close_blocked(self) -> bool:
+        return bool(self.keep_open_after_bug and self._bug_reported_by)
+
+    def _remaining_auto_close_delay(self) -> int | None:
+        if not isinstance(self.channel, discord.Thread):
+            return None
+        if not self.auto_close_delay or not self.auto_close_started_at:
+            return None
+        elapsed = max(0, int(time.time()) - int(self.auto_close_started_at))
+        return max(0, int(self.auto_close_delay) - elapsed)
+
+    async def _close_thread_automatically(self) -> None:
+        if not isinstance(self.channel, discord.Thread):
+            return
+        if self._auto_close_blocked():
+            return
+        try:
+            await update_managed_thread_status(self.channel.id, "deleted")
+            await self.channel.delete()
+        except discord.NotFound:
+            return
+        except Exception:
+            logging.exception("Failed to auto-close thread %s", self.channel.id)
+
+    async def _auto_close_loop(self) -> None:
+        remaining = self._remaining_auto_close_delay()
+        if remaining is None:
+            return
+        try:
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            if self._auto_close_blocked():
+                return
+            await self._close_thread_automatically()
+        except asyncio.CancelledError:
+            return
+
+    def _ensure_auto_close_task(self) -> None:
+        if not isinstance(self.channel, discord.Thread):
+            return
+        if not self.close_on_idle or not self.auto_close_delay:
+            return
+        if self._auto_close_blocked():
+            return
+        if self._auto_close_task and not self._auto_close_task.done():
+            return
+        self._auto_close_task = asyncio.create_task(self._auto_close_loop())
 
     async def _maybe_post_admin_close_view(self) -> None:
         if self._admin_close_posted:
@@ -4933,7 +5290,7 @@ class FightFeedbackView(DurableView):
                 "Bug-Button wurde geklickt.",
                 f"Guild: {self.guild.name if self.guild else 'Unbekannt'}",
                 f"Kanal/Thread: {_channel_mention_or_fallback(self.channel)}",
-                f"Gemeldet von: {getattr(interaction.user, 'display_name', interaction.user.id)} ({interaction.user.id})",
+                f"Gemeldet von: {safe_display_name(interaction.user, fallback=str(interaction.user.id))} ({interaction.user.id})",
                 f"View: {self.durable_context_label()}",
             ],
         )
@@ -4942,6 +5299,8 @@ class FightFeedbackView(DurableView):
             view=BugReportLinkView(),
             ephemeral=True,
         )
+        if self.keep_open_after_bug and self._auto_close_task and not self._auto_close_task.done():
+            self._auto_close_task.cancel()
         await self._maybe_post_admin_close_view()
 
     @ui.button(label="Kampf-Log per DM", style=discord.ButtonStyle.primary, custom_id="fight_feedback:log")
@@ -5501,7 +5860,9 @@ class InviteUserSelect(ui.Select):
                 # Versuche User-Objekt zu bekommen (funktioniert nur wenn Bot den User sehen kann)
                 user = bot.get_user(user_id)
                 if user:
-                    display_name = f"{user.display_name} ({user.name})"
+                    primary_name = safe_display_name(user, fallback=f"User {user_id}")
+                    username = escape_display_text(getattr(user, "name", ""), fallback=str(user_id))
+                    display_name = f"{primary_name} ({username})"
                 else:
                     display_name = f"User {user_id}"
                 
@@ -5689,9 +6050,9 @@ class UserSelectView(RestrictedView):
         self.value = None
         self.members = sorted(
             [member for member in guild.members if not member.bot],
-            key=lambda m: m.display_name.lower(),
+            key=lambda m: safe_display_name(m, fallback=str(m.id)).lower(),
         )
-        self.pages = [self.members[i:i + 25] for i in range(0, len(self.members), 25)] or [[]]
+        self.pages = [self.members[i:i + 24] for i in range(0, len(self.members), 24)] or [[]]
         self.page_index = 0
 
         self.select = ui.Select(
@@ -5716,28 +6077,36 @@ class UserSelectView(RestrictedView):
         self.add_item(self.prev_btn)
         self.add_item(self.next_btn)
 
-        if not self.members:
-            self.select.disabled = True
-
     def _placeholder(self) -> str:
         if not self.members:
-            return "Keine Nutzer verfügbar"
+            return "Wähle einen Nutzer oder suche oben..."
         return f"Wähle einen Nutzer... (Seite {self.page_index + 1}/{len(self.pages)})"
 
     def _build_options_for_current_page(self) -> list[SelectOption]:
+        options = [SelectOption(label="🔍 Nach Name suchen", value="search")]
         if not self.members:
-            return [SelectOption(label="Keine Nutzer verfügbar", value="__none__")]
+            options.append(SelectOption(label="Keine Nutzer verfügbar", value="__none__"))
+            return options
         page_members = self.pages[self.page_index]
-        return [
-            SelectOption(label=member.display_name[:100], value=str(member.id))
-            for member in page_members
-        ]
+        for member in page_members:
+            options.append(SelectOption(label=safe_user_option_label(member), value=str(member.id)))
+        return options
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Nur der Command-User kann den Nutzer wählen!", ephemeral=True)
             return
         selected_value = self.select.values[0]
+        if selected_value == "search":
+            modal = UserSearchModal(
+                self.guild,
+                interaction.user,
+                parent_view=self,
+                include_bot_option=False,
+                exclude_user_id=None,
+            )
+            await interaction.response.send_modal(modal)
+            return
         if selected_value == "__none__":
             await interaction.response.send_message("❌ Keine Nutzer verfügbar.", ephemeral=True)
             return
@@ -7058,7 +7427,12 @@ class MissionBattleView(DurableView):
         elif final_damage < raw_damage:
             self._append_effect_event(
                 effect_events,
-                f"Schutzwirkung{source_suffix}: Schaden von {int(raw_damage)} auf {int(final_damage)} reduziert.",
+                _damage_transition_text(
+                    int(raw_damage),
+                    int(final_damage),
+                    source=modifier_source or None,
+                    context="Schutzwirkung",
+                ),
             )
 
         if reflected_damage > 0:
@@ -7477,24 +7851,17 @@ class MissionBattleView(DurableView):
                     actual_damage,
                 )
                 if reduced_damage != actual_damage:
-                    delta_out = actual_damage - reduced_damage
-                    actual_damage = reduced_damage
                     modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
-                    reduction_prefix = (
-                        f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)}"
-                        if modifier_source
-                        else "Ausgehender Schaden wurde"
+                    self._append_effect_event(
+                        effect_events,
+                        _damage_transition_text(
+                            int(actual_damage),
+                            int(reduced_damage),
+                            source=modifier_source or None,
+                            context="Ausgehende Reduktion",
+                        ),
                     )
-                    if actual_damage <= 0:
-                        self._append_effect_event(
-                            effect_events,
-                            f"{reduction_prefix} um {delta_out} reduziert.",
-                        )
-                    else:
-                        self._append_effect_event(
-                            effect_events,
-                            f"{reduction_prefix} um {delta_out} reduziert.",
-                        )
+                    actual_damage = reduced_damage
                 if overflow_self_damage > 0:
                     self._apply_non_heal_damage_with_event(
                         effect_events,
@@ -8078,24 +8445,17 @@ class MissionBattleView(DurableView):
                             actual_damage,
                         )
                         if reduced_damage != actual_damage:
-                            delta_out = actual_damage - reduced_damage
-                            actual_damage = reduced_damage
                             modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
-                            reduction_prefix = (
-                                f"Ausgehender Schaden wurde durch {_effect_source_name(modifier_source)}"
-                                if modifier_source
-                                else "Ausgehender Schaden wurde"
+                            self._append_effect_event(
+                                bot_effect_events,
+                                _damage_transition_text(
+                                    int(actual_damage),
+                                    int(reduced_damage),
+                                    source=modifier_source or None,
+                                    context="Ausgehende Reduktion",
+                                ),
                             )
-                            if actual_damage <= 0:
-                                self._append_effect_event(
-                                    bot_effect_events,
-                                    f"{reduction_prefix} um {delta_out} reduziert.",
-                                )
-                            else:
-                                self._append_effect_event(
-                                    bot_effect_events,
-                                    f"{reduction_prefix} um {delta_out} reduziert.",
-                                )
+                            actual_damage = reduced_damage
                         if overflow_self_damage > 0:
                             self._apply_non_heal_damage_with_event(
                                 bot_effect_events,
@@ -8527,8 +8887,7 @@ def _can_send_in_channel(channel: discord.abc.GuildChannel | discord.Thread, mem
         return perms.send_messages_in_threads
     return perms.send_messages
 
-async def _safe_send_channel(
-    interaction: discord.Interaction,
+async def _send_channel_message(
     channel: object,
     *,
     content: str | None = None,
@@ -8549,18 +8908,53 @@ async def _safe_send_channel(
         await _maybe_register_durable_message(sent_message, view)
         return sent_message
     except discord.Forbidden:
-        await _send_ephemeral(
-            interaction,
-            content="❌ Mir fehlen Rechte in diesem Kanal/Thread (View/Send/Thread-Rechte). Bitte gib mir Zugriff.",
-        )
+        logging.warning("Missing send permissions in channel %s", channel_id)
         return None
     except discord.HTTPException:
         logging.exception("Failed to send message to channel %s", channel_id)
+        return None
+
+
+async def _safe_send_channel(
+    interaction: discord.Interaction,
+    channel: object,
+    *,
+    content: str | None = None,
+    embed: discord.Embed | None = None,
+    view: ui.View | None = None,
+) -> discord.Message | None:
+    if _coerce_sendable_channel(channel) is None:
+        return None
+    guild_obj = getattr(channel, "guild", None)
+    guild_id = guild_obj.id if isinstance(guild_obj, discord.Guild) else None
+    channel_id = getattr(channel, "id", None)
+    parent_id = getattr(channel, "parent_id", None)
+    if not await is_channel_allowed_ids(guild_id, channel_id, parent_id):
+        return None
+    sent_message = await _send_channel_message(
+        channel,
+        content=content,
+        embed=embed,
+        view=view,
+    )
+    if sent_message is not None:
+        return sent_message
+    if not hasattr(interaction, "guild_id") or not hasattr(interaction, "channel_id"):
+        return None
+    try:
         await _send_ephemeral(
             interaction,
-            content="❌ Nachricht konnte in diesem Kanal/Thread gerade nicht gesendet werden.",
+            content="? Mir fehlen Rechte in diesem Kanal/Thread (View/Send/Thread-Rechte). Bitte gib mir Zugriff.",
         )
-        return None
+    except Exception:
+        try:
+            await _send_ephemeral(
+                interaction,
+                content="? Nachricht konnte in diesem Kanal/Thread gerade nicht gesendet werden.",
+            )
+        except Exception:
+            return None
+    return None
 
 async def _fetch_channel_safe(channel_id: int | None):
     if not channel_id:
@@ -8652,7 +9046,7 @@ async def _handle_durable_view_error(
             f"Fehler in View: {view_label}",
             f"Guild: {guild_name}",
             f"Kanal/Thread: {channel_text}",
-            f"User: {getattr(interaction.user, 'display_name', interaction.user.id)} ({interaction.user.id})",
+            f"User: {safe_display_name(interaction.user, fallback=str(interaction.user.id))} ({interaction.user.id})",
             f"Exception: {error!r}",
         ],
     )
@@ -8788,6 +9182,11 @@ async def _restore_durable_view_instance(
             bug_reported_by={int(value) for value in _list_any(payload.get("bug_reported_by")) if str(value).strip()},
             log_sent_to={int(value) for value in _list_any(payload.get("log_sent_to")) if str(value).strip()},
             opted_out_by={int(value) for value in _list_any(payload.get("opted_out_by")) if str(value).strip()},
+            auto_close_delay=int(payload.get("auto_close_delay", 0) or 0) or None,
+            auto_close_started_at=int(payload.get("auto_close_started_at", 0) or 0) or None,
+            close_on_idle=bool(payload.get("close_on_idle", True)),
+            close_after_no_bug=bool(payload.get("close_after_no_bug", True)),
+            keep_open_after_bug=bool(payload.get("keep_open_after_bug", True)),
         )
     if view_kind == VIEW_KIND_THREAD_CLOSE:
         if isinstance(channel, discord.Thread):
@@ -9119,10 +9518,10 @@ async def _select_user(interaction: discord.Interaction, prompt: str) -> tuple[i
     user_id = int(view.value)
     member = _get_member_if_available(interaction.guild, user_id)
     if member:
-        return user_id, member.display_name
+        return user_id, safe_display_name(member, fallback=str(user_id))
     try:
         user = await interaction.client.fetch_user(user_id)
-        return user_id, user.display_name
+        return user_id, safe_display_name(user, fallback=str(user_id))
     except discord.NotFound:
         return user_id, str(user_id)
     except discord.HTTPException:
@@ -9158,6 +9557,128 @@ class NumberSelectView(RestrictedView):
         self.value = int(self.select.values[0])
         self.stop()
         await interaction.response.defer()
+
+
+def _member_mention_or_fallback(guild: discord.Guild | None, user_id: int) -> str:
+    member = guild.get_member(user_id) if guild is not None else None
+    return member.mention if member is not None else f"<@{user_id}>"
+
+
+async def _post_dust_result_message(
+    interaction: discord.Interaction,
+    *,
+    mode: str,
+    remove: bool,
+    amount: int,
+    results: list[tuple[int, int]],
+) -> bool:
+    action_title = "Infinitydust entfernt" if remove else "Infinitydust vergeben"
+    actor_mention = getattr(interaction.user, "mention", None) or f"<@{interaction.user.id}>"
+    lines = [
+        f"{actor_mention} hat {'Infinitydust entfernt' if remove else 'Infinitydust vergeben'}.",
+        f"Modus: **{escape_display_text(mode, fallback='single')}**",
+        "",
+    ]
+    for user_id, applied_amount in results:
+        target = _member_mention_or_fallback(interaction.guild, user_id)
+        if remove:
+            lines.append(f"• {target}: **{applied_amount}x** entfernt")
+        else:
+            lines.append(f"• {target}: **{applied_amount}x** erhalten")
+    if remove:
+        lines.append("")
+        lines.append(f"Angeforderte Menge pro Nutzer: **{amount}x**")
+
+    embed = discord.Embed(
+        title=f"💎 {action_title}",
+        description="\n".join(lines),
+        color=0xD64B4B if remove else 0x2ECC71,
+    )
+    embed.set_footer(text=f"Ausgeführt von {safe_display_name(interaction.user, fallback=str(interaction.user.id))}")
+    sent_message = await _send_channel_message(
+        interaction.channel,
+        embed=embed,
+    )
+    return sent_message is not None
+
+
+async def run_dust_command_flow(
+    interaction: discord.Interaction,
+    *,
+    mode: str,
+    remove: bool,
+) -> None:
+    if interaction.guild is None:
+        await interaction.followup.send(SERVER_ONLY, ephemeral=True)
+        return
+
+    mode_value = str(mode or "").strip().lower()
+    if mode_value not in {"single", "multi"}:
+        await interaction.followup.send("❌ Ungültiger Modus. Nutze `single` oder `multi`.", ephemeral=True)
+        return
+
+    action_phrase = "entfernen" if remove else "geben"
+    target_user_ids: list[int] = []
+
+    if mode_value == "single":
+        user_select_view = AdminUserSelectView(interaction.user.id, interaction.guild)
+        await interaction.followup.send(
+            content=f"Wähle den Nutzer, dem du Infinitydust {action_phrase} möchtest:",
+            view=user_select_view,
+            ephemeral=True,
+        )
+        await user_select_view.wait()
+        if not user_select_view.value:
+            await interaction.followup.send("⏰ Keine Auswahl getroffen. Abgebrochen.", ephemeral=True)
+            return
+        target_user_ids = [int(user_select_view.value)]
+    else:
+        multi_view = DustMultiUserSelectView(interaction.user.id, interaction.guild)
+        multi_message = await interaction.followup.send(
+            content=multi_view._content(),
+            view=multi_view,
+            ephemeral=True,
+            wait=True,
+        )
+        multi_view.bind_message(multi_message)
+        await multi_view.wait()
+        if not multi_view.value:
+            await interaction.followup.send("⏰ Keine Nutzer gewählt. Abgebrochen.", ephemeral=True)
+            return
+        target_user_ids = [int(user_id) for user_id in multi_view.value]
+
+    amount = await _select_number(
+        interaction,
+        "Wähle die Menge Infinitydust:",
+        DUST_MENU_AMOUNTS,
+    )
+    if not amount:
+        await interaction.followup.send("⏰ Keine Menge gewählt. Abgebrochen.", ephemeral=True)
+        return
+
+    results: list[tuple[int, int]] = []
+    for user_id in target_user_ids:
+        if remove:
+            applied_amount = await remove_infinitydust(user_id, int(amount))
+        else:
+            await add_infinitydust(user_id, int(amount))
+            applied_amount = int(amount)
+        results.append((user_id, int(applied_amount)))
+
+    result_sent = await _post_dust_result_message(
+        interaction,
+        mode=mode_value,
+        remove=remove,
+        amount=int(amount),
+        results=results,
+    )
+    if result_sent:
+        await interaction.followup.send("✅ Vorgang abgeschlossen. Die öffentliche Ergebnisnachricht wurde gesendet.", ephemeral=True)
+        return
+    await interaction.followup.send(
+        "✅ Vorgang abgeschlossen, aber ich konnte die öffentliche Ergebnisnachricht nicht senden.",
+        ephemeral=True,
+    )
 
 class CardSelectPagerView(RestrictedView):
     def __init__(self, requester_id: int, cards: list[dict]):
@@ -9432,7 +9953,7 @@ async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_na
         await _send_with_visibility(interaction, visibility_key, content=f"❌ {mention} hat noch keine Karten in seiner Sammlung.")
         return
     embed = discord.Embed(
-        title=f"🔍 Vault von {user_name}",
+        title=f"🔍 Vault von {escape_display_text(user_name, fallback=str(user_id))}",
         description=f"**{mention}** besitzt **{len(user_karten)}** verschiedene Karten:",
     )
     if infinitydust > 0:
@@ -9442,7 +9963,7 @@ async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_na
         karte = await get_karte_by_name(kartenname)
         if karte:
             embed.add_field(name=f"{karte['name']} (x{anzahl})", value=karte['beschreibung'][:100] + "...", inline=False)
-    embed.set_footer(text=f"Vault-Lookup durch {interaction.user.display_name}")
+    embed.set_footer(text=f"Vault-Lookup durch {safe_display_name(interaction.user, fallback=str(interaction.user.id))}")
     embed.color = 0xff6b6b
     logging.info("Vault look: actor=%s target=%s", interaction.user.id, user_id)
     await _send_with_visibility(interaction, visibility_key, embed=embed)
@@ -9475,7 +9996,7 @@ async def send_test_report(interaction: discord.Interaction, visibility_key: str
         ),
         inline=False,
     )
-    embed.set_footer(text=f"Angefordert von {interaction.user.display_name} | {time.strftime('%d.%m.%Y %H:%M:%S')}")
+    embed.set_footer(text=f"Angefordert von {safe_display_name(interaction.user, fallback=str(interaction.user.id))} | {time.strftime('%d.%m.%Y %H:%M:%S')}")
     logging.info("Test report requested by %s", interaction.user.id)
     await _send_with_visibility(interaction, visibility_key, embed=embed)
 
@@ -10095,6 +10616,19 @@ class StatusUserPickerView(RestrictedView):
         if choice == "__loading__":
             await interaction.response.send_message("Liste wird noch geladen...", ephemeral=True)
             return
+        if choice == "search":
+            modal = UserSearchModal(
+                self.guild,
+                interaction.user,
+                parent_view=self,
+                include_bot_option=self.include_bot_option,
+                exclude_user_id=self.exclude_user_id,
+            )
+            await interaction.response.send_modal(modal)
+            return
+        if choice == "none":
+            await interaction.response.send_message("❌ Keine Nutzer gefunden.", ephemeral=True)
+            return
 
         # Auswahl übernehmen und View schließen
         self.value = choice
@@ -10149,7 +10683,7 @@ class StatusUserPickerView(RestrictedView):
         members_sorted = sorted(members, key=sort_key)
 
         # Optionen aufbauen
-        opts: list[SelectOption] = []
+        opts: list[SelectOption] = [SelectOption(label="🔍 Nach Name suchen", value="search")]
         if self.include_bot_option:
             # Bot-Option unverändert wie in /kampf
             opts.append(SelectOption(label="🤖 Bot", value="bot"))
@@ -10160,15 +10694,14 @@ class StatusUserPickerView(RestrictedView):
         for m in members_sorted[:max_user_opts]:
             color = _presence_to_color(m)
             circle = STATUS_CIRCLE_MAP.get(color, "⚫")
-            label = f"{circle} {m.display_name}"
-            try:
-                # Beschreibungen optional; Konsistenz mit /kampf gewünscht -> weglassen
-                opts.append(SelectOption(label=label, value=str(m.id)))
-            except Exception:
-                # Fallback ohne Sonderzeichen
-                opts.append(SelectOption(label=m.display_name, value=str(m.id)))
+            opts.append(
+                SelectOption(
+                    label=safe_user_option_label(m, prefix=f"{circle} "),
+                    value=str(m.id),
+                )
+            )
 
-        if not opts:
+        if len(opts) == 1 or (self.include_bot_option and len(opts) == 2):
             opts.append(SelectOption(label="Keine Nutzer gefunden", value="none"))
 
         return opts

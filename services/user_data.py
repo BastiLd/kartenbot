@@ -48,6 +48,23 @@ async def spend_infinitydust(user_id, amount):
         return True
 
 
+async def remove_infinitydust(user_id, amount):
+    if amount <= 0:
+        return 0
+    async with db_context() as db:
+        cursor = await db.execute("SELECT amount FROM user_infinitydust WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        current_dust = row[0] if row and row[0] else 0
+        removed = min(int(current_dust), int(amount))
+        new_amount = max(0, int(current_dust) - removed)
+        if row:
+            await db.execute("UPDATE user_infinitydust SET amount = ? WHERE user_id = ?", (new_amount, user_id))
+        else:
+            await db.execute("INSERT INTO user_infinitydust (user_id, amount) VALUES (?, 0)", (user_id,))
+        await db.commit()
+        return removed
+
+
 async def add_card_buff(user_id, card_name, buff_type, attack_number, buff_amount):
     async with db_context() as db:
         await db.execute(
