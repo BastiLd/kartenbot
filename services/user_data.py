@@ -125,7 +125,85 @@ async def add_card_buff(user_id, card_name, buff_type, attack_number, buff_amoun
         await db.commit()
 
 
+def _card_data_by_name(card_name: str) -> dict | None:
+    card_name_normalized = str(card_name or "").strip()
+    if not card_name_normalized:
+        return None
+    for card in karten:
+        if str(card.get("name") or "").strip() == card_name_normalized:
+            return card
+    return None
+
+
+def _attack_allows_damage_buff(attack: dict) -> bool:
+    heal_data = attack.get("heal")
+    if isinstance(heal_data, list) and len(heal_data) == 2:
+        if int(heal_data[1] or 0) > 0:
+            return False
+    elif isinstance(heal_data, (int, float)) and int(heal_data) > 0:
+        return False
+    if float(attack.get("lifesteal_ratio", 0.0) or 0.0) > 0:
+        return False
+    if attack.get("effects"):
+        return False
+    if int(attack.get("self_damage", 0) or 0) > 0:
+        return False
+    max_damage = 0
+    raw_damage = attack.get("damage", [0, 0])
+    if isinstance(raw_damage, list) and len(raw_damage) == 2:
+        max_damage = max(max_damage, int(raw_damage[1] or 0))
+    elif isinstance(raw_damage, (int, float)):
+        max_damage = max(max_damage, int(raw_damage))
+    multi_hit = attack.get("multi_hit")
+    if isinstance(multi_hit, dict):
+        per_hit_damage = multi_hit.get("per_hit_damage")
+        if isinstance(per_hit_damage, list) and len(per_hit_damage) == 2:
+            max_damage = max(max_damage, int(per_hit_damage[1] or 0))
+    return max_damage > 0
+
+
+async def remove_invalid_damage_card_buffs(*, user_id: int | None = None, card_name: str | None = None) -> int:
+    query = (
+        "SELECT user_id, card_name, attack_number "
+        "FROM user_card_buffs WHERE buff_type = 'damage'"
+    )
+    params: list[object] = []
+    if user_id is not None:
+        query += " AND user_id = ?"
+        params.append(int(user_id))
+    if card_name is not None:
+        query += " AND card_name = ?"
+        params.append(str(card_name))
+
+    async with db_context() as db:
+        cursor = await db.execute(query, tuple(params))
+        rows = await cursor.fetchall()
+        invalid_rows: list[tuple[int, str, int]] = []
+        for row in rows:
+            current_card_name = str(row["card_name"] or "")
+            attack_number = int(row["attack_number"] or 0)
+            card_data = _card_data_by_name(current_card_name)
+            attacks = list(card_data.get("attacks", [])) if isinstance(card_data, dict) else []
+            attack_index = attack_number - 1
+            if attack_index < 0 or attack_index >= len(attacks):
+                invalid_rows.append((int(row["user_id"] or 0), current_card_name, attack_number))
+                continue
+            if not _attack_allows_damage_buff(attacks[attack_index]):
+                invalid_rows.append((int(row["user_id"] or 0), current_card_name, attack_number))
+        if invalid_rows:
+            await db.executemany(
+                """
+                DELETE FROM user_card_buffs
+                WHERE user_id = ? AND card_name = ? AND buff_type = 'damage' AND attack_number = ?
+                """,
+                invalid_rows,
+            )
+            await db.commit()
+        return len(invalid_rows)
+
+
 async def get_card_buffs(user_id: int, card_name: str) -> list[tuple[str, int, int]]:
+    await remove_invalid_damage_card_buffs(user_id=user_id, card_name=card_name)
     async with db_context() as db:
         cursor = await db.execute(
             """

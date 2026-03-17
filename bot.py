@@ -113,6 +113,7 @@ from services.user_data import (
     get_user_karten,
     increment_mission_count,
     log_admin_dust_action,
+    remove_invalid_damage_card_buffs,
     remove_infinitydust,
     remove_karte_amount,
     set_team,
@@ -590,6 +591,7 @@ OWNER_ROLE_ROLE_ID = 1272827906032402464
 BUG_REPORT_TALLY_URL = os.getenv("BUG_REPORT_TALLY_URL", "https://tally.so/r/7RNo8z")
 BOT_STATUS_KEY = "presence_status"
 RESET_BUFFS_MIGRATION_KEY = "migration_reset_buffs_2026_02_21"
+INVALID_DAMAGE_BUFFS_MIGRATION_KEY = "migration_remove_invalid_damage_buffs_2026_03_17"
 MAX_ATTACK_DAMAGE_PER_HIT = 50
 BOT_STATUS_MAP: dict[str, discord.Status] = {
     "online": discord.Status.online,
@@ -688,19 +690,38 @@ async def restore_bot_presence_status() -> None:
 
 
 async def run_one_time_migrations() -> None:
+    reset_applied = False
+    cleanup_pending = False
     async with db_context() as db:
         cursor = await db.execute("SELECT value FROM bot_settings WHERE key = ?", (RESET_BUFFS_MIGRATION_KEY,))
         row = await cursor.fetchone()
-        if row:
-            return
-        await db.execute("DELETE FROM user_card_buffs")
-        await db.execute(
-            "INSERT INTO bot_settings (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (RESET_BUFFS_MIGRATION_KEY, str(int(time.time()))),
-        )
+        if not row:
+            await db.execute("DELETE FROM user_card_buffs")
+            await db.execute(
+                "INSERT INTO bot_settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (RESET_BUFFS_MIGRATION_KEY, str(int(time.time()))),
+            )
+            reset_applied = True
+        cursor = await db.execute("SELECT value FROM bot_settings WHERE key = ?", (INVALID_DAMAGE_BUFFS_MIGRATION_KEY,))
+        row = await cursor.fetchone()
+        if not row:
+            await db.execute(
+                "INSERT INTO bot_settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (INVALID_DAMAGE_BUFFS_MIGRATION_KEY, str(int(time.time()))),
+            )
+            cleanup_pending = True
         await db.commit()
-    logging.info("Applied migration: reset user_card_buffs and stored %s", RESET_BUFFS_MIGRATION_KEY)
+    if reset_applied:
+        logging.info("Applied migration: reset user_card_buffs and stored %s", RESET_BUFFS_MIGRATION_KEY)
+    if cleanup_pending:
+        removed_count = await remove_invalid_damage_card_buffs()
+        logging.info(
+            "Applied migration: removed %s invalid damage buffs and stored %s",
+            removed_count,
+            INVALID_DAMAGE_BUFFS_MIGRATION_KEY,
+        )
 
 
 def build_anfang_intro_text() -> str:
@@ -959,6 +980,16 @@ def _resolve_dynamic_cooldown_from_burning(attack: dict, applied_burning_duratio
 
 async def _safe_defer_interaction(interaction: discord.Interaction) -> bool:
     return await defer_interaction(interaction)
+
+
+async def _safe_send_interaction_ephemeral(interaction: discord.Interaction, content: str) -> object | None:
+    if interaction.response.is_done() and not hasattr(interaction, "followup"):
+        try:
+            return await interaction.response.send_message(content, ephemeral=True)
+        except Exception:
+            logging.exception("Failed to send deferred interaction message without followup")
+            return None
+    return await send_interaction_response(interaction, content=content, ephemeral=True)
 
 
 def _boosted_damage_effect_text(boosted_damage: int, attack_multiplier: float, flat_bonus: int) -> str | None:
@@ -2735,13 +2766,13 @@ class BattleView(DurableView):
 
         # COOLDOWN-SYSTEM: Prüfe ob Attacke auf Cooldown ist
         if not is_forced_landing and self.is_attack_on_cooldown(self.current_turn, attack_index):
-            await interaction.response.send_message("Diese Attacke ist noch auf Cooldown!", ephemeral=True)
+            await _safe_send_interaction_ephemeral(interaction, "Diese Attacke ist noch auf Cooldown!")
             return
 
         if not is_forced_landing and self.special_lock_next_turn.get(self.current_turn, False) and attack_index != 0:
-            await interaction.response.send_message(
+            await _safe_send_interaction_ephemeral(
+                interaction,
                 "Diese Runde sind nur Standard-Angriffe erlaubt (Attacke 1).",
-                ephemeral=True,
             )
             return
 
@@ -2792,7 +2823,7 @@ class BattleView(DurableView):
         current_card = self.player1_card if self.current_turn == self.player1_id else self.player2_card
         attacks = current_card.get("attacks", [{"name": "Punch", "damage": [15, 25]}])
         if (not is_forced_landing) and attack_index >= len(attacks):
-            await interaction.response.send_message("Ungültiger Angriff!", ephemeral=True)
+            await _safe_send_interaction_ephemeral(interaction, "Ungültiger Angriff!")
             return
         # Vor DB/weiterer Logik früh defern, damit Interaction nicht abläuft.
         await _safe_defer_interaction(interaction)
@@ -7779,17 +7810,17 @@ class MissionBattleView(DurableView):
 
         # Hole Angriff
         if attack_index >= len(self.attacks):
-            await interaction.response.send_message("Ungültiger Angriff!", ephemeral=True)
+            await _safe_send_interaction_ephemeral(interaction, "Ungültiger Angriff!")
             return
 
         # COOLDOWN prüfen (Spieler)
         if (not is_forced_landing) and self.is_attack_on_cooldown_user(attack_index):
-            await interaction.response.send_message("Diese Attacke ist noch auf Cooldown!", ephemeral=True)
+            await _safe_send_interaction_ephemeral(interaction, "Diese Attacke ist noch auf Cooldown!")
             return
         if (not is_forced_landing) and self.special_lock_next_turn.get(self.user_id, False) and attack_index != 0:
-            await interaction.response.send_message(
+            await _safe_send_interaction_ephemeral(
+                interaction,
                 "Diese Runde sind nur Standard-Angriffe erlaubt (Attacke 1).",
-                ephemeral=True,
             )
             return
 

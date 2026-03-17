@@ -1,12 +1,14 @@
 import unittest
 import asyncio
 import copy
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import bot as bot_module
 from bot import BattleView, EFFECT_TYPES_WITH_EFFECT_LOGS, FightFeedbackView, MAX_ATTACK_DAMAGE_PER_HIT, MissionBattleView
 from karten import karten
+from services import user_data as user_data_module
 from services.battle import (
     apply_outgoing_attack_modifier,
     build_battle_log_entry,
@@ -32,7 +34,7 @@ def _find_attack(card: dict, attack_name: str) -> dict:
     raise AssertionError(f"Attack not found: {card.get('name')} / {attack_name}")
 
 
-class CardSpecTests(unittest.TestCase):
+class CardSpecTests(unittest.IsolatedAsyncioTestCase):
     def test_all_attacks_have_info(self) -> None:
         for card in karten:
             for attack in card.get("attacks", []):
@@ -159,7 +161,7 @@ class CardSpecTests(unittest.TestCase):
         self.assertFalse(missing, f"Missing effect-log coverage for: {sorted(missing)}")
 
 
-class BattleUtilityTests(unittest.TestCase):
+class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
     def test_sort_user_cards_like_karten_order(self) -> None:
         ordered_names = [str(card.get("name") or "") for card in karten if card.get("name")]
         self.assertGreaterEqual(len(ordered_names), 4)
@@ -210,6 +212,71 @@ class BattleUtilityTests(unittest.TestCase):
             )
         )
         self.assertFalse(bot_module._attack_is_damage_upgradeable({"name": "Recoil", "damage": [10, 20], "self_damage": 5}))
+
+    def test_user_data_damage_buff_rule_matches_only_pure_damage(self) -> None:
+        self.assertTrue(user_data_module._attack_allows_damage_buff({"name": "Treffer", "damage": [10, 20]}))
+        self.assertFalse(user_data_module._attack_allows_damage_buff({"name": "Heal", "damage": [0, 0], "heal": [10, 20]}))
+        self.assertFalse(
+            user_data_module._attack_allows_damage_buff(
+                {"name": "BuffHit", "damage": [10, 20], "effects": [{"type": "stun"}]}
+            )
+        )
+        self.assertFalse(user_data_module._attack_allows_damage_buff({"name": "SelfHit", "damage": [10, 20], "self_damage": 3}))
+
+    async def test_get_card_buffs_removes_invalid_damage_buffs(self) -> None:
+        rows = [
+            {"user_id": 7, "card_name": "Testkarte", "attack_number": 1},
+            {"user_id": 7, "card_name": "Testkarte", "attack_number": 2},
+        ]
+        buff_rows = [
+            ("damage", 2, 5),
+            ("health", 0, 10),
+        ]
+
+        class _FakeCursor:
+            def __init__(self, payload):
+                self.payload = payload
+
+            async def fetchall(self):
+                return self.payload
+
+        class _FakeDb:
+            def __init__(self):
+                self.deleted_rows = []
+
+            async def execute(self, query, params=()):
+                if "FROM user_card_buffs WHERE buff_type = 'damage'" in query:
+                    return _FakeCursor(rows)
+                if "SELECT buff_type, attack_number, buff_amount" in query:
+                    return _FakeCursor(buff_rows)
+                raise AssertionError(f"Unexpected query: {query}")
+
+            async def executemany(self, query, params):
+                self.deleted_rows.extend(list(params))
+
+            async def commit(self):
+                return None
+
+        fake_db = _FakeDb()
+
+        @asynccontextmanager
+        async def _fake_db_context():
+            yield fake_db
+
+        fake_cards = [
+            {
+                "name": "Testkarte",
+                "attacks": [
+                    {"name": "BuffHit", "damage": [10, 20], "effects": [{"type": "stun"}]},
+                    {"name": "Treffer", "damage": [10, 20]},
+                ],
+            }
+        ]
+        with patch.object(user_data_module, "db_context", _fake_db_context), patch.object(user_data_module, "karten", fake_cards):
+            result = await user_data_module.get_card_buffs(7, "Testkarte")
+
+        self.assertEqual(fake_db.deleted_rows, [(7, "Testkarte", 1)])
+        self.assertEqual(result, buff_rows)
 
     def test_multi_hit_force_max(self) -> None:
         cfg = {"hits": 3, "hit_chance": 0.45, "per_hit_damage": [1, 10]}
@@ -863,6 +930,15 @@ class _DummyResponse:
         self.edits.append({"content": content, **kwargs})
 
 
+class _DummyFollowup:
+    def __init__(self):
+        self.sent_messages = []
+
+    async def send(self, content=None, **kwargs):
+        self.sent_messages.append({"content": content, **kwargs})
+        return None
+
+
 class _DummyChannel:
     def __init__(self):
         self.sent = []
@@ -879,6 +955,7 @@ class _DummyInteraction:
         self.message = message
         self.channel = _DummyChannel()
         self.response = _DummyResponse()
+        self.followup = _DummyFollowup()
 
 
 class ShowAllMembersPagerTests(unittest.IsolatedAsyncioTestCase):
@@ -1081,6 +1158,29 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(damage, MAX_ATTACK_DAMAGE_PER_HIT)
         self.assertEqual(damage, MAX_ATTACK_DAMAGE_PER_HIT)
         self.assertEqual(max_damage, MAX_ATTACK_DAMAGE_PER_HIT)
+
+    async def test_battle_execute_attack_uses_followup_after_defer_for_cooldown(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        defender_card = {
+            "name": "DefenderCard",
+            "hp": 100,
+            "bild": "https://example.com/defender.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, defender_card, 1, 2, None)
+        view.current_turn = 1
+        view.attack_cooldowns[1][0] = 1
+        interaction = _DummyInteraction(1, _DummyMessage())
+        with patch.object(view, "_sync_runtime_flags_from_session", new=AsyncMock()):
+            await view.execute_attack(interaction, 0)
+        self.assertEqual(interaction.response.sent_messages, [])
+        self.assertEqual(len(interaction.followup.sent_messages), 1)
+        self.assertEqual(interaction.followup.sent_messages[0]["content"], "Diese Attacke ist noch auf Cooldown!")
 
     async def test_roll_attack_damage_caps_multi_hit_total_to_50(self) -> None:
         player_card = {
@@ -1927,6 +2027,28 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(dmg, MAX_ATTACK_DAMAGE_PER_HIT)
         self.assertEqual(max_dmg, MAX_ATTACK_DAMAGE_PER_HIT)
+
+    async def test_mission_execute_attack_uses_followup_after_defer_for_cooldown(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = MissionBattleView(player_card, bot_card, 1, 1, 1)
+        view.current_turn = 1
+        view.user_attack_cooldowns[0] = 1
+        interaction = _DummyInteraction(1, _DummyMessage())
+        await view.execute_attack(interaction, 0)
+        self.assertEqual(interaction.response.sent_messages, [])
+        self.assertEqual(len(interaction.followup.sent_messages), 1)
+        self.assertEqual(interaction.followup.sent_messages[0]["content"], "Diese Attacke ist noch auf Cooldown!")
 
     async def test_mission_low_hp_defender_no_heal_with_outgoing_flat_reduction(self) -> None:
         player_card = {
