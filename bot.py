@@ -931,17 +931,85 @@ def _resolve_attack_button_style(attack: dict, default_style: discord.ButtonStyl
     return _ATTACK_BUTTON_STYLE_MAP.get(key, default_style)
 
 
+def _attack_effect_icons(attack: dict) -> list[str]:
+    effect_icons: list[str] = []
+    for eff in attack.get("effects", []):
+        eff_type = str(eff.get("type") or "").strip().lower()
+        if eff_type == "burning":
+            if "🔥" not in effect_icons:
+                effect_icons.append("🔥")
+        elif eff_type == "confusion":
+            if "🌀" not in effect_icons:
+                effect_icons.append("🌀")
+        elif eff_type == "stealth":
+            if "🥷" not in effect_icons:
+                effect_icons.append("🥷")
+        elif eff_type == "stun":
+            if "🛑" not in effect_icons:
+                effect_icons.append("🛑")
+        elif eff_type in {
+            "damage_reduction",
+            "damage_reduction_flat",
+            "enemy_next_attack_reduction_percent",
+            "enemy_next_attack_reduction_flat",
+            "reflect",
+            "absorb_store",
+            "cap_damage",
+            "delayed_defense_after_next_attack",
+        }:
+            if "🛡️" not in effect_icons:
+                effect_icons.append("🛡️")
+        elif eff_type == "airborne_two_phase":
+            if "✈️" not in effect_icons:
+                effect_icons.append("✈️")
+        elif eff_type in {"damage_boost", "damage_multiplier"}:
+            if "⚡" not in effect_icons:
+                effect_icons.append("⚡")
+        elif eff_type in {"force_max", "mix_heal_or_max", "guaranteed_hit"}:
+            if "🎯" not in effect_icons:
+                effect_icons.append("🎯")
+        elif eff_type in {"heal", "regen"}:
+            if "❤️" not in effect_icons:
+                effect_icons.append("❤️")
+    heal_label = _heal_label_for_attack(attack)
+    if heal_label and "❤️" not in effect_icons:
+        effect_icons.append("❤️")
+    return effect_icons
+
+
+def _attack_display_parts(attack: dict, *, max_only_bonus: int = 0) -> tuple[str, discord.ButtonStyle, str]:
+    attack_name = str(attack.get("name") or "Attacke")
+    effect_icons = _attack_effect_icons(attack)
+    effects_label = f" {' '.join(effect_icons)}" if effect_icons else ""
+    heal_label = _heal_label_for_attack(attack)
+    if heal_label is not None:
+        label = f"{attack_name} (+{heal_label}){effects_label}"
+        style = _resolve_attack_button_style(attack, discord.ButtonStyle.success)
+        summary = f"{attack_name} — +{heal_label} Heilung{effects_label}"
+        return label, style, summary
+    min_dmg, max_dmg = _damage_range_with_max_bonus(
+        attack.get("damage", [0, 0]),
+        max_only_bonus=max_only_bonus,
+        flat_bonus=0,
+    )
+    damage_text = f"{min_dmg}-{max_dmg}"
+    buff_text = f" (+{max_only_bonus} max)" if max_only_bonus > 0 else ""
+    label = f"{attack_name} ({damage_text}{buff_text}){effects_label}"
+    style = _resolve_attack_button_style(attack, discord.ButtonStyle.danger)
+    summary = f"{attack_name} — {damage_text} Schaden{buff_text}{effects_label}"
+    return label, style, summary
+
+
 def _build_attack_info_lines(card: dict, *, max_attacks: int = 4) -> list[str]:
     lines: list[str] = []
     attacks = card.get("attacks", [])
     for attack in attacks[:max_attacks]:
-        attack_name = str(attack.get("name", "Attacke"))
-        damage_text = _damage_text_for_attack(attack)
+        _label, _style, attack_summary = _attack_display_parts(attack)
         info_text = str(attack.get("info") or "").strip()
         if info_text:
-            lines.append(f"• {attack_name} ({damage_text}): {info_text}")
+            lines.append(f"• {attack_summary}: {info_text}")
         else:
-            lines.append(f"• {attack_name} ({damage_text})")
+            lines.append(f"• {attack_summary}")
     return lines
 
 
@@ -5232,9 +5300,9 @@ class AdminCloseView(DurableView):
     )
     async def close_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not await is_admin(interaction):
-            await interaction.response.send_message(CLOSE_PERMISSION_DENIED, ephemeral=True)
+            await interaction.response.send_message(CLOSE_PERMISSION_DENIED, ephemeral=False)
             return
-        await interaction.response.send_message(THREAD_CLOSING, ephemeral=True)
+        await interaction.response.send_message(THREAD_CLOSING, ephemeral=False)
         self.stop()
         try:
             await update_managed_thread_status(self.thread.id, "deleted")
@@ -5404,14 +5472,14 @@ class FightFeedbackView(DurableView):
     @ui.button(label="Es gab einen Bug", style=discord.ButtonStyle.success, custom_id="fight_feedback:bug")
     async def yes_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._is_allowed(interaction):
-            await interaction.response.send_message(PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=True)
+            await interaction.response.send_message(PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=False)
             return
         if interaction.user.id in self._bug_reported_by:
-            await interaction.response.send_message("Du hast bereits gemeldet, dass es einen Bug gab.", ephemeral=True)
+            await interaction.response.send_message("Du hast bereits gemeldet, dass es einen Bug gab.", ephemeral=False)
             return
         self._bug_reported_by.add(interaction.user.id)
         if not BUG_REPORT_TALLY_URL or "REPLACE_ME" in BUG_REPORT_TALLY_URL:
-            await interaction.response.send_message(BUG_FORM_NOT_CONFIGURED, ephemeral=True)
+            await interaction.response.send_message(BUG_FORM_NOT_CONFIGURED, ephemeral=False)
             return
 
         await _send_basti_log_dm(
@@ -5427,7 +5495,7 @@ class FightFeedbackView(DurableView):
         await interaction.response.send_message(
             content="🐞 Danke! Bitte fülle dieses Formular aus:",
             view=BugReportLinkView(),
-            ephemeral=True,
+            ephemeral=False,
         )
         if self.keep_open_after_bug and self._auto_close_task and not self._auto_close_task.done():
             self._auto_close_task.cancel()
@@ -5436,17 +5504,17 @@ class FightFeedbackView(DurableView):
     @ui.button(label="Kampf-Log per DM", style=discord.ButtonStyle.primary, custom_id="fight_feedback:log")
     async def log_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._is_allowed(interaction):
-            await interaction.response.send_message(PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=True)
+            await interaction.response.send_message(PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=False)
             return
         if interaction.user.id in self._log_sent_to:
-            await interaction.response.send_message("Ich habe dir den Kampf-Log bereits per DM geschickt.", ephemeral=True)
+            await interaction.response.send_message("Ich habe dir den Kampf-Log bereits per DM geschickt.", ephemeral=False)
             return
         if not self.battle_log_text:
-            await interaction.response.send_message("Für diesen Kampf ist kein Log verfügbar.", ephemeral=True)
+            await interaction.response.send_message("Für diesen Kampf ist kein Log verfügbar.", ephemeral=False)
             return
         chunks = self._split_log_for_dm(self.battle_log_text)
         if not chunks:
-            await interaction.response.send_message("Für diesen Kampf ist kein Log verfügbar.", ephemeral=True)
+            await interaction.response.send_message("Für diesen Kampf ist kein Log verfügbar.", ephemeral=False)
             return
         try:
             for idx, chunk in enumerate(chunks, start=1):
@@ -5454,22 +5522,22 @@ class FightFeedbackView(DurableView):
                 dm_embed = discord.Embed(title=title, description=chunk, color=0x2F3136)
                 await interaction.user.send(embed=dm_embed)
         except discord.Forbidden:
-            await interaction.response.send_message(DM_DISABLED, ephemeral=True)
+            await interaction.response.send_message(DM_DISABLED, ephemeral=False)
             return
         except Exception:
             logging.exception("Unexpected error")
-            await interaction.response.send_message(DM_LOG_SEND_FAILED, ephemeral=True)
+            await interaction.response.send_message(DM_LOG_SEND_FAILED, ephemeral=False)
             return
         self._log_sent_to.add(interaction.user.id)
-        await interaction.response.send_message("📩 Vollständiger Kampf-Log wurde dir per DM gesendet.", ephemeral=True)
+        await interaction.response.send_message("📩 Vollständiger Kampf-Log wurde dir per DM gesendet.", ephemeral=False)
 
     @ui.button(label="Es gab keinen Bug", style=discord.ButtonStyle.danger, row=2, custom_id="fight_feedback:no_bug")
     async def no_bug_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._is_allowed(interaction):
-            await interaction.response.send_message(PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=True)
+            await interaction.response.send_message(PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=False)
             return
         if interaction.user.id in self._opted_out_by:
-            await interaction.response.send_message("Du hast bereits geantwortet.", ephemeral=True)
+            await interaction.response.send_message("Du hast bereits geantwortet.", ephemeral=False)
             return
         self._opted_out_by.add(interaction.user.id)
         if self.close_after_no_bug and isinstance(self.channel, discord.Thread) and not self._auto_close_blocked():
@@ -5479,7 +5547,7 @@ class FightFeedbackView(DurableView):
             if self.auto_close_delay and not self.auto_close_started_at:
                 self.auto_close_started_at = int(time.time())
             self._ensure_auto_close_task()
-        await interaction.response.send_message("\u2705 Danke f\u00fcr dein Feedback!", ephemeral=True)
+        await interaction.response.send_message("\u2705 Danke f\u00fcr dein Feedback!", ephemeral=False)
 
     @ui.button(
         label="Thread schließen (Admin/Owner)",
@@ -5488,12 +5556,12 @@ class FightFeedbackView(DurableView):
     )
     async def close_thread_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not isinstance(self.channel, discord.Thread):
-            await interaction.response.send_message("Dieser Button ist nur in Threads verfügbar.", ephemeral=True)
+            await interaction.response.send_message("Dieser Button ist nur in Threads verfügbar.", ephemeral=False)
             return
         if not await is_admin(interaction):
-            await interaction.response.send_message(CLOSE_PERMISSION_DENIED, ephemeral=True)
+            await interaction.response.send_message(CLOSE_PERMISSION_DENIED, ephemeral=False)
             return
-        await interaction.response.send_message(THREAD_CLOSING, ephemeral=True)
+        await interaction.response.send_message(THREAD_CLOSING, ephemeral=False)
         self.stop()
         try:
             await update_managed_thread_status(self.channel.id, "deleted")
@@ -6326,27 +6394,23 @@ class VaultView(RestrictedView):
                 if attacks:
                     lines = []
                     for idx, atk in enumerate(attacks, start=1):
-                        dmg = atk.get("damage")
                         buff = damage_buff_map.get(idx, 0)
-                        min_b, max_b = _damage_range_with_max_bonus(dmg, max_only_bonus=buff, flat_bonus=0)
-                        dmg_text = f"{min_b}-{max_b}"
+                        _button_label, _button_style, attack_summary = _attack_display_parts(atk, max_only_bonus=buff)
                         info_text = str(atk.get("info") or "").strip()
                         if info_text:
-                            lines.append(f"• {atk.get('name', f'Attacke {idx}')} — {dmg_text} Schaden\n  ↳ {info_text}")
+                            lines.append(f"• {attack_summary}\n  ↳ {info_text}")
                         else:
-                            lines.append(f"• {atk.get('name', f'Attacke {idx}')} — {dmg_text} Schaden")
+                            lines.append(f"• {attack_summary}")
                     embed.add_field(name="Attacken", value="\n".join(lines), inline=False)
                 
                 # Buttons für Attacken anzeigen, aber deaktiviert (kein Effekt beim Klicken)
                 view_buttons = RestrictedView(timeout=60)
                 for i, atk in enumerate(attacks[:4]):
-                    dmg = atk.get("damage")
                     buff = damage_buff_map.get(i + 1, 0)
-                    min_b, max_b = _damage_range_with_max_bonus(dmg, max_only_bonus=buff, flat_bonus=0)
-                    dmg_text = f"{min_b}-{max_b}"
+                    button_label, button_style, _attack_summary = _attack_display_parts(atk, max_only_bonus=buff)
                     btn = ui.Button(
-                        label=f"{atk.get('name', f'Attacke {i+1}')} ({dmg_text})",
-                        style=discord.ButtonStyle.danger,
+                        label=button_label,
+                        style=button_style,
                         disabled=True,
                         row=0 if i < 2 else 1
                     )
@@ -6393,27 +6457,23 @@ class VaultView(RestrictedView):
                     if attacks:
                         lines = []
                         for idx, atk in enumerate(attacks, start=1):
-                            dmg = atk.get("damage")
                             buff = damage_buff_map.get(idx, 0)
-                            min_b, max_b = _damage_range_with_max_bonus(dmg, max_only_bonus=buff, flat_bonus=0)
-                            dmg_text = f"{min_b}-{max_b}"
+                            _button_label, _button_style, attack_summary = _attack_display_parts(atk, max_only_bonus=buff)
                             info_text = str(atk.get("info") or "").strip()
                             if info_text:
-                                lines.append(f"• {atk.get('name', f'Attacke {idx}')} — {dmg_text} Schaden\n  ↳ {info_text}")
+                                lines.append(f"• {attack_summary}\n  ↳ {info_text}")
                             else:
-                                lines.append(f"• {atk.get('name', f'Attacke {idx}')} — {dmg_text} Schaden")
+                                lines.append(f"• {attack_summary}")
                         embed.add_field(name="Attacken", value="\n".join(lines), inline=False)
                     
                     # Buttons für Attacken anzeigen, aber deaktiviert (kein Effekt beim Klicken)
                     view_buttons = RestrictedView(timeout=60)
                     for i, atk in enumerate(attacks[:4]):
-                        dmg = atk.get("damage")
                         buff = damage_buff_map.get(i + 1, 0)
-                        min_b, max_b = _damage_range_with_max_bonus(dmg, max_only_bonus=buff, flat_bonus=0)
-                        dmg_text = f"{min_b}-{max_b}"
+                        button_label, button_style, _attack_summary = _attack_display_parts(atk, max_only_bonus=buff)
                         btn = ui.Button(
-                            label=f"{atk.get('name', f'Attacke {i+1}')} ({dmg_text})",
-                            style=discord.ButtonStyle.danger,
+                            label=button_label,
+                            style=button_style,
                             disabled=True,
                             row=0 if i < 2 else 1
                         )

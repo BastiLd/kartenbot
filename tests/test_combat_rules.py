@@ -223,6 +223,25 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(user_data_module._attack_allows_damage_buff({"name": "SelfHit", "damage": [10, 20], "self_damage": 3}))
 
+    def test_attack_display_parts_show_heal_and_success_style(self) -> None:
+        attack = {"name": "Heal", "damage": [0, 0], "heal": [10, 20]}
+        label, style, summary = bot_module._attack_display_parts(attack)
+        self.assertEqual(label, "Heal (+10-20) ❤️")
+        self.assertEqual(style, bot_module.discord.ButtonStyle.success)
+        self.assertEqual(summary, "Heal — +10-20 Heilung ❤️")
+
+    def test_build_attack_info_lines_show_heal_amounts(self) -> None:
+        card = {
+            "name": "Testkarte",
+            "attacks": [
+                {"name": "Heal", "damage": [0, 0], "heal": [10, 20], "info": "Heilt dich."},
+                {"name": "Hit", "damage": [10, 20], "info": "Schaden."},
+            ],
+        }
+        lines = bot_module._build_attack_info_lines(card)
+        self.assertIn("• Heal — +10-20 Heilung ❤️: Heilt dich.", lines)
+        self.assertIn("• Hit — 10-20 Schaden: Schaden.", lines)
+
     async def test_get_card_buffs_removes_invalid_damage_buffs(self) -> None:
         rows = [
             {"user_id": 7, "card_name": "Testkarte", "attack_number": 1},
@@ -840,7 +859,7 @@ class FightFeedbackAutoCloseTests(unittest.IsolatedAsyncioTestCase):
         create_task_mock.assert_called_once()
         self.assertTrue(view.close_on_idle)
         self.assertIsNotNone(view.auto_close_started_at)
-        interaction.response.send_message.assert_awaited_once_with("\u2705 Danke f\u00fcr dein Feedback!", ephemeral=True)
+        interaction.response.send_message.assert_awaited_once_with("\u2705 Danke f\u00fcr dein Feedback!", ephemeral=False)
 
 
 class CapDamageRuleTests(unittest.IsolatedAsyncioTestCase):
@@ -2440,6 +2459,10 @@ class PersistentFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(bot_module, "_send_basti_log_dm", new=AsyncMock()) as dm_mock:
                 await bug_button.callback(interaction)
             dm_mock.assert_awaited_once()
-            response.send_message.assert_awaited_once()
+            response.send_message.assert_awaited_once_with(
+                content="🐞 Danke! Bitte fülle dieses Formular aus:",
+                view=unittest.mock.ANY,
+                ephemeral=False,
+            )
         finally:
             view.stop()
