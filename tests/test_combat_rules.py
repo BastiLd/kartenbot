@@ -185,11 +185,12 @@ class BattleUtilityTests(unittest.TestCase):
         self.assertEqual(bot_module._damage_range_with_max_bonus([10, 20], max_only_bonus=5, flat_bonus=0), (10, 25))
         self.assertEqual(bot_module._damage_range_with_max_bonus(10, max_only_bonus=5, flat_bonus=0), (10, 15))
 
-    def test_buff_select_hides_healing_attacks_for_damage_upgrade(self) -> None:
+    def test_buff_select_hides_non_pure_damage_attacks_for_damage_upgrade(self) -> None:
         karte = {
             "name": "Testkarte",
             "attacks": [
                 {"name": "Heilung", "damage": [0, 0], "heal": [10, 20]},
+                {"name": "Mit Effekt", "damage": [10, 20], "effects": [{"type": "damage_boost", "target": "self", "amount": 5}]},
                 {"name": "Treffer", "damage": [10, 20]},
             ],
         }
@@ -197,7 +198,18 @@ class BattleUtilityTests(unittest.TestCase):
         option_values = {str(opt.value) for opt in select.options}
         self.assertIn("health_0", option_values)
         self.assertNotIn("damage_1", option_values)
-        self.assertIn("damage_2", option_values)
+        self.assertNotIn("damage_2", option_values)
+        self.assertIn("damage_3", option_values)
+
+    def test_attack_is_damage_upgradeable_only_for_pure_damage(self) -> None:
+        self.assertTrue(bot_module._attack_is_damage_upgradeable({"name": "Treffer", "damage": [10, 20]}))
+        self.assertFalse(bot_module._attack_is_damage_upgradeable({"name": "Heal", "damage": [0, 0], "heal": [10, 20]}))
+        self.assertFalse(
+            bot_module._attack_is_damage_upgradeable(
+                {"name": "BuffHit", "damage": [10, 20], "effects": [{"type": "damage_boost", "target": "self", "amount": 5}]}
+            )
+        )
+        self.assertFalse(bot_module._attack_is_damage_upgradeable({"name": "Recoil", "damage": [10, 20], "self_damage": 5}))
 
     def test_multi_hit_force_max(self) -> None:
         cfg = {"hits": 3, "hit_chance": 0.45, "per_hit_damage": [1, 10]}

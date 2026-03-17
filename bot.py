@@ -814,6 +814,28 @@ def _attack_has_heal_component(attack: dict) -> bool:
     return False
 
 
+def _attack_is_damage_upgradeable(attack: dict) -> bool:
+    if _attack_has_heal_component(attack):
+        return False
+    if attack.get("effects"):
+        return False
+    if int(attack.get("self_damage", 0) or 0) > 0:
+        return False
+    max_damage = 0
+    multi_hit = attack.get("multi_hit")
+    if isinstance(multi_hit, dict):
+        per_hit = multi_hit.get("per_hit_damage")
+        if isinstance(per_hit, list) and len(per_hit) == 2:
+            max_damage = max(max_damage, int(_maybe_int(per_hit[1]) or 0))
+    _base_min_damage, base_max_damage = _damage_range_with_max_bonus(
+        attack.get("damage", [0, 0]),
+        max_only_bonus=0,
+        flat_bonus=0,
+    )
+    max_damage = max(max_damage, int(base_max_damage))
+    return max_damage > 0
+
+
 def _damage_range_with_max_bonus(base_damage, *, max_only_bonus: int = 0, flat_bonus: int = 0) -> tuple[int, int]:
     if isinstance(base_damage, list) and len(base_damage) == 2:
         base_min = _maybe_int(base_damage[0]) or 0
@@ -5812,7 +5834,7 @@ class BuffTypeSelect(ui.Select):
 
         attacks = karte_data.get("attacks", [])
         for i, attack in enumerate(attacks[:4]):
-            if _attack_has_heal_component(attack):
+            if not _attack_is_damage_upgradeable(attack):
                 continue
             attack_name = str(attack.get("name") or f"Attacke {i + 1}")
             attack_damage = attack.get("damage", [0, 0])
@@ -5851,9 +5873,9 @@ class BuffTypeSelect(ui.Select):
                 await interaction.response.send_message("❌ Ungültige Attacke.", ephemeral=True)
                 return
             selected_attack = attacks[attack_number - 1]
-            if _attack_has_heal_component(selected_attack):
+            if not _attack_is_damage_upgradeable(selected_attack):
                 await interaction.response.send_message(
-                    "❌ Heilungs-Attacken können aktuell nicht verbessert werden.",
+                    "❌ Nur reine Schadens-Attacken ohne Zusatzeffekte können aktuell verbessert werden.",
                     ephemeral=True,
                 )
                 return
