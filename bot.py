@@ -165,7 +165,12 @@ CANCELLED_THREAD_AUTO_CLOSE_POLICY: ThreadAutoClosePolicy = {
     "close_after_no_bug": True,
     "keep_open_after_bug": True,
 }
-MISSION_THREAD_AUTO_CLOSE_POLICY: ThreadAutoClosePolicy = dict(DEFAULT_THREAD_AUTO_CLOSE_POLICY)
+MISSION_THREAD_AUTO_CLOSE_POLICY: ThreadAutoClosePolicy = {
+    "delay": DEFAULT_THREAD_AUTO_CLOSE_POLICY["delay"],
+    "close_on_idle": DEFAULT_THREAD_AUTO_CLOSE_POLICY["close_on_idle"],
+    "close_after_no_bug": DEFAULT_THREAD_AUTO_CLOSE_POLICY["close_after_no_bug"],
+    "keep_open_after_bug": DEFAULT_THREAD_AUTO_CLOSE_POLICY["keep_open_after_bug"],
+}
 
 
 def _copy_thread_auto_close_policy(policy: ThreadAutoClosePolicy | None) -> ThreadAutoClosePolicy | None:
@@ -190,7 +195,7 @@ def _thread_auto_close_hint(policy: ThreadAutoClosePolicy | None) -> str:
     delay = _thread_auto_close_delay(policy)
     if not delay:
         return ""
-    return f"Der Thread schlie?t automatisch in {int(delay)} Sekunden, wenn kein Bug gemeldet wird."
+    return f"Der Thread schlie\u00dft automatisch in {int(delay)} Sekunden, wenn kein Bug gemeldet wird."
 
 
 class SendableChannel(Protocol):
@@ -1544,12 +1549,14 @@ class BattleView(DurableView):
         loser_mention: str | None = None,
         loser_card: str | None = None,
     ) -> discord.Embed:
-        description = f"{winner_mention} hat mit {winner_card} gewonnen."
+        result_sections = [
+            f"\U0001f3c6 **Gewinner**\n{winner_mention} hat mit {winner_card} gewonnen.",
+        ]
         if loser_mention and loser_card:
-            description += f"\n\n{loser_mention} hat mit {loser_card} verloren."
+            result_sections.append(f"\U0001f4a5 **Verlierer**\n{loser_mention} hat mit {loser_card} verloren.")
         embed = discord.Embed(
-            title="🏆 Sieger!",
-            description=description,
+            title="\u2694\ufe0f Kampfergebnis",
+            description="\n\n".join(result_sections),
         )
         stats_lines = [
             f"Runden: {self.round_counter}",

@@ -27,7 +27,7 @@ karten = [
     },
     {
         "name": "Iron-Man",
-        "beschreibung": "Hightech-Avenger im gepanzerten Kampfanzug.",
+        "beschreibung": "Tony-Stark im Mark 46. Er ist bereit zu Kämpfen.",
         "bild": "https://i.imgur.com/HxcQOw5.png",
         "seltenheit": "Gewöhnlich",
         "hp": 140,
@@ -53,7 +53,7 @@ karten = [
     },
     {
         "name": "Captain America",
-        "beschreibung": "Der erste Avenger mit Schild und Taktik.",
+        "beschreibung": "Der erste Avenger mit Schild und Taktik Er ist über 110 jahre alt.",
         "bild": "https://i.imgur.com/T1pX1QU.png",
         "seltenheit": "Gewöhnlich",
         "hp": 140,
@@ -103,7 +103,7 @@ karten = [
     },
     {
         "name": "Hawkeye",
-        "beschreibung": "Präziser Fernkämpfer mit Spezialpfeilen.",
+        "beschreibung": "Präziser Fernkämpfer mit Spezialpfeilen. ",
         "bild": "https://i.imgur.com/tpRd9by.png",
         "seltenheit": "Gewöhnlich",
         "hp": 140,
@@ -213,7 +213,7 @@ karten = [
             {"name": "Element-Blaster", "damage": [12, 18], "info": "Zuverlässiger Blasterangriff."},
             {
                 "name": "Schwerkraft-Mine",
-                "damage": [10, 20],
+                "damage": [5, 15],
                 "cooldown_turns": 3,
                 "effects": [{"type": "enemy_next_attack_reduction_flat", "target": "enemy", "amount": 10, "turns": 1, "chance": 1.0}],
                 "info": "Nächster gegnerischer Angriff macht 10 weniger Schaden (mit Überlauf-Rückstoß).",
@@ -239,7 +239,7 @@ karten = [
     },
     {
         "name": "Groot",
-        "beschreibung": "Massiver Baumkrieger mit starker Regeneration.",
+        "beschreibung": "Ich Bin Groot mit starker Regeneration.",
         "bild": "https://i.imgur.com/YhjJ7KV.png",
         "seltenheit": "Gewöhnlich",
         "hp": 140,
@@ -274,9 +274,9 @@ karten = [
             {
                 "name": "Das dicke Ding",
                 "damage": [40, 55],
-                "self_damage": 10,
+                "self_damage": [10, 20],
                 "cooldown_turns": 5,
-                "info": "Extrem starker Schuss, aber 10 Rückstoßschaden.",
+                "info": "Extrem starker Schuss, aber 10-20 Rückstoßschaden.",
             },
             {
                 "name": "Kleines Ziel",
@@ -289,7 +289,7 @@ karten = [
     },
     {
         "name": "Moon Knight",
-        "beschreibung": "Avatar von Khonshu mit chaotischem Stil.",
+        "beschreibung": "Avatar von Khonshu mit chaotischem Style.",
         "bild": "https://i.imgur.com/pYzJYPw.png",
         "seltenheit": "Gewöhnlich",
         "hp": 140,
