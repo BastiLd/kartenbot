@@ -207,6 +207,41 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
             attack = _find_attack(_find_card(card_name), attack_name)
             self.assertEqual(int(attack.get("cooldown_turns", 0) or 0), expected_cooldown, f"{card_name} / {attack_name}")
 
+    def test_damage_scaled_cooldown_specs_are_present_for_word_special_cases(self) -> None:
+        captain_marvel = next(
+            attack
+            for attack in _find_card("Captain Marvel").get("attacks", [])
+            if attack.get("cooldown_overrides_by_final_damage") == [{"threshold": 27, "turns": 6}]
+        )
+        thor = next(
+            attack
+            for attack in _find_card("Thor").get("attacks", [])
+            if attack.get("cooldown_overrides_by_final_damage") == [{"threshold": 55, "turns": 8}]
+        )
+        mr_fantastic = next(
+            attack
+            for attack in _find_card("Mr. Fantastic").get("attacks", [])
+            if attack.get("cooldown_overrides_by_final_damage") == [{"threshold": 40, "turns": 7}, {"threshold": 55, "turns": 8}]
+        )
+
+        self.assertEqual(captain_marvel.get("cooldown_overrides_by_final_damage"), [{"threshold": 27, "turns": 6}])
+        self.assertEqual(thor.get("cooldown_overrides_by_final_damage"), [{"threshold": 55, "turns": 8}])
+        self.assertEqual(
+            mr_fantastic.get("cooldown_overrides_by_final_damage"),
+            [{"threshold": 40, "turns": 7}, {"threshold": 55, "turns": 8}],
+        )
+        return
+        captain_marvel = _find_attack(_find_card("Captain Marvel"), "BinÃ¤r-Schlag")
+        thor = _find_attack(_find_card("Thor"), "Der GÃ¶tterschlag")
+        mr_fantastic = _find_attack(_find_card("Mr. Fantastic"), "Hyper-Intelligenz-Schlag")
+
+        self.assertEqual(captain_marvel.get("cooldown_overrides_by_final_damage"), [{"threshold": 27, "turns": 6}])
+        self.assertEqual(thor.get("cooldown_overrides_by_final_damage"), [{"threshold": 55, "turns": 8}])
+        self.assertEqual(
+            mr_fantastic.get("cooldown_overrides_by_final_damage"),
+            [{"threshold": 40, "turns": 7}, {"threshold": 55, "turns": 8}],
+        )
+
 
 class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
     def test_sort_user_cards_like_karten_order(self) -> None:
@@ -583,6 +618,29 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
         attack = {"name": "Fliegen", "cooldown_turns": 3}
         self.assertEqual(bot_module._format_cooldown_label(attack, 2), "Cooldown: 2/3")
         self.assertEqual(bot_module._format_cooldown_label(attack, 1), "Cooldown: 1/3")
+
+    def test_damage_scaled_cooldown_falls_back_to_base_value(self) -> None:
+        attack = {
+            "name": "Testschlag",
+            "cooldown_turns": 6,
+            "cooldown_overrides_by_final_damage": [
+                {"threshold": 40, "turns": 7},
+                {"threshold": 55, "turns": 8},
+            ],
+        }
+        self.assertEqual(bot_module._resolve_final_damage_cooldown_turns(attack, 39), 6)
+
+    def test_damage_scaled_cooldown_uses_highest_matching_threshold(self) -> None:
+        attack = {
+            "name": "Testschlag",
+            "cooldown_turns": 6,
+            "cooldown_overrides_by_final_damage": [
+                {"threshold": 40, "turns": 7},
+                {"threshold": 55, "turns": 8},
+            ],
+        }
+        self.assertEqual(bot_module._resolve_final_damage_cooldown_turns(attack, 40), 7)
+        self.assertEqual(bot_module._resolve_final_damage_cooldown_turns(attack, 55), 8)
 
 
 class BattleBotChoiceTests(unittest.IsolatedAsyncioTestCase):

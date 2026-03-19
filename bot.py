@@ -12,7 +12,7 @@ from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from typing import Any, Awaitable, Callable, Protocol, TypedDict, cast
+from typing import Any, Awaitable, Callable, Iterable, Protocol, TypedDict, cast
 
 import discord
 from discord import app_commands, ui, SelectOption
@@ -1159,6 +1159,36 @@ def _resolve_dynamic_cooldown_from_burning(attack: dict, applied_burning_duratio
     if duration <= 0:
         return 0
     return duration + bonus
+
+
+def _resolve_final_damage_cooldown_turns(attack: dict, actual_damage: int) -> int:
+    try:
+        cooldown_turns = max(0, int(attack.get("cooldown_turns", 0) or 0))
+    except Exception:
+        return 0
+    if cooldown_turns <= 0:
+        return 0
+    try:
+        dealt_damage = max(0, int(actual_damage or 0))
+    except Exception:
+        dealt_damage = 0
+    overrides = attack.get("cooldown_overrides_by_final_damage", [])
+    if not isinstance(overrides, list):
+        return cooldown_turns
+    resolved_turns = cooldown_turns
+    highest_matching_threshold = -1
+    for entry in overrides:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            threshold = int(entry.get("threshold", 0) or 0)
+            turns = int(entry.get("turns", 0) or 0)
+        except Exception:
+            continue
+        if threshold <= dealt_damage and turns > 0 and threshold >= highest_matching_threshold:
+            highest_matching_threshold = threshold
+            resolved_turns = turns
+    return max(0, resolved_turns)
 
 
 async def _safe_defer_interaction(interaction: discord.Interaction) -> bool:
@@ -3649,7 +3679,7 @@ class BattleView(DurableView):
                 attack,
                 burning_duration_for_dynamic_cooldown,
             )
-            custom_cooldown_turns = attack.get("cooldown_turns")
+            custom_cooldown_turns = _resolve_final_damage_cooldown_turns(attack, actual_damage)
             starts_after_landing = _starts_cooldown_after_landing(attack)
             if dynamic_cooldown_turns > 0:
                 previous_turn = self.current_turn
@@ -3660,7 +3690,7 @@ class BattleView(DurableView):
                     effect_events,
                     f"Gammastrahl-Abklingzeit: {dynamic_cooldown_turns} (Effektdauer {burning_duration_for_dynamic_cooldown} + {bonus_for_dynamic_cd}).",
                 )
-            elif (not starts_after_landing) and isinstance(custom_cooldown_turns, int) and custom_cooldown_turns > 0:
+            elif (not starts_after_landing) and custom_cooldown_turns > 0:
                 previous_turn = self.current_turn
                 current_cd = self.attack_cooldowns[previous_turn].get(attack_index, 0)
                 self.attack_cooldowns[previous_turn][attack_index] = max(current_cd, custom_cooldown_turns)
@@ -4380,7 +4410,7 @@ class BattleView(DurableView):
                 attack,
                 burning_duration_for_dynamic_cooldown,
             )
-            custom_cooldown_turns = attack.get("cooldown_turns")
+            custom_cooldown_turns = _resolve_final_damage_cooldown_turns(attack, actual_damage)
             starts_after_landing = _starts_cooldown_after_landing(attack)
             if dynamic_cooldown_turns > 0:
                 current_cd = self.attack_cooldowns[0].get(attack_index, 0)
@@ -4390,7 +4420,7 @@ class BattleView(DurableView):
                     effect_events,
                     f"Gammastrahl-Abklingzeit: {dynamic_cooldown_turns} (Effektdauer {burning_duration_for_dynamic_cooldown} + {bonus_for_dynamic_cd}).",
                 )
-            elif (not starts_after_landing) and isinstance(custom_cooldown_turns, int) and custom_cooldown_turns > 0:
+            elif (not starts_after_landing) and custom_cooldown_turns > 0:
                 current_cd = self.attack_cooldowns[0].get(attack_index, 0)
                 self.attack_cooldowns[0][attack_index] = max(current_cd, custom_cooldown_turns)
             elif self.is_strong_attack(base_damage, damage_buff):
@@ -8909,7 +8939,7 @@ class MissionBattleView(DurableView):
                 attack,
                 burning_duration_for_dynamic_cooldown,
             )
-            custom_cooldown_turns = attack.get("cooldown_turns")
+            custom_cooldown_turns = _resolve_final_damage_cooldown_turns(attack, actual_damage)
             starts_after_landing = _starts_cooldown_after_landing(attack)
             if dynamic_cooldown_turns > 0:
                 current_cd = self.user_attack_cooldowns.get(attack_index, 0)
@@ -8919,7 +8949,7 @@ class MissionBattleView(DurableView):
                     effect_events,
                     f"Gammastrahl-Abklingzeit: {dynamic_cooldown_turns} (Effektdauer {burning_duration_for_dynamic_cooldown} + {bonus_for_dynamic_cd}).",
                 )
-            elif (not starts_after_landing) and isinstance(custom_cooldown_turns, int) and custom_cooldown_turns > 0:
+            elif (not starts_after_landing) and custom_cooldown_turns > 0:
                 current_cd = self.user_attack_cooldowns.get(attack_index, 0)
                 self.user_attack_cooldowns[attack_index] = max(current_cd, custom_cooldown_turns)
             elif self.mission_is_strong_attack(damage, dmg_buff):
@@ -9540,7 +9570,7 @@ class MissionBattleView(DurableView):
                         attack,
                         bot_burning_duration_for_dynamic_cooldown,
                     )
-                    custom_cooldown_turns = attack.get("cooldown_turns")
+                    custom_cooldown_turns = _resolve_final_damage_cooldown_turns(attack, actual_damage)
                     starts_after_landing = _starts_cooldown_after_landing(attack)
                     if dynamic_cooldown_turns > 0:
                         current_cd = self.bot_attack_cooldowns.get(best_index, 0)
@@ -9551,7 +9581,7 @@ class MissionBattleView(DurableView):
                             f"Gammastrahl-Abklingzeit: {dynamic_cooldown_turns} (Effektdauer {bot_burning_duration_for_dynamic_cooldown} + {bonus_for_dynamic_cd}).",
                         )
                         self.reduce_cooldowns_bot()
-                    elif (not starts_after_landing) and isinstance(custom_cooldown_turns, int) and custom_cooldown_turns > 0:
+                    elif (not starts_after_landing) and custom_cooldown_turns > 0:
                         current_cd = self.bot_attack_cooldowns.get(best_index, 0)
                         self.bot_attack_cooldowns[best_index] = max(current_cd, custom_cooldown_turns)
                         self.reduce_cooldowns_bot()
@@ -10517,10 +10547,10 @@ async def run_dust_command_flow(
     )
 
 class CardSelectPagerView(RestrictedView):
-    def __init__(self, requester_id: int, cards: list[dict]):
+    def __init__(self, requester_id: int, cards: Iterable[CardData]):
         super().__init__(timeout=120)
         self.requester_id = requester_id
-        self.cards = list(cards)
+        self.cards: list[CardData] = list(cards)
         self.page = 0
         self.value = None
         self.select = ui.Select(placeholder="Wähle eine Karte...", min_values=1, max_values=1, options=[])
