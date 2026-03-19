@@ -2631,6 +2631,27 @@ class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PersistentFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_restore_durable_views_keeps_registry_entries_when_startup_fetch_is_rate_limited(self) -> None:
+        row = {
+            "guild_id": 123,
+            "channel_id": 321,
+            "message_id": 654,
+            "view_kind": "fight_feedback",
+            "payload": "{}",
+        }
+        with (
+            patch.object(bot_module, "list_durable_views", new=AsyncMock(return_value=[row])),
+            patch.object(bot_module.bot, "get_channel", return_value=None),
+            patch.object(
+                bot_module,
+                "_fetch_channel_safe",
+                new=AsyncMock(side_effect=bot_module.StartupRestoreRateLimited("proxy")),
+            ),
+            patch.object(bot_module, "delete_durable_view", new=AsyncMock()) as delete_mock,
+        ):
+            await bot_module._restore_durable_views()
+        delete_mock.assert_not_awaited()
+
     async def test_resend_pending_requests_rebinds_existing_mission_message(self) -> None:
         fake_channel = SimpleNamespace(
             id=321,
@@ -2664,6 +2685,36 @@ class PersistentFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
         fake_channel.send.assert_not_awaited()
         register_mock.assert_awaited_once()
         add_view_mock.assert_called_once()
+
+    async def test_resend_pending_requests_stops_without_mutation_when_startup_fetch_is_rate_limited(self) -> None:
+        row = {
+            "id": 99,
+            "guild_id": 123,
+            "origin_channel_id": 321,
+            "message_channel_id": None,
+            "thread_id": None,
+            "thread_created": 0,
+            "challenger_id": 1,
+            "challenged_id": 2,
+            "challenger_card": "Iron-Man",
+            "created_at": 0,
+            "status": "pending",
+            "message_id": None,
+        }
+        fake_guild = SimpleNamespace(id=123, get_channel=lambda channel_id: None)
+        with (
+            patch.object(bot_module, "ALPHA_PHASE_ENABLED", True),
+            patch.object(bot_module, "get_pending_fight_requests", new=AsyncMock(return_value=[row])),
+            patch.object(
+                bot_module,
+                "_fetch_channel_safe",
+                new=AsyncMock(side_effect=bot_module.StartupRestoreRateLimited("proxy")),
+            ),
+            patch.object(bot_module.bot, "get_guild", return_value=fake_guild),
+            patch.object(bot_module, "update_fight_request_message", new=AsyncMock()) as update_mock,
+        ):
+            await bot_module.resend_pending_requests()
+        update_mock.assert_not_awaited()
 
     async def test_on_message_skips_intro_for_managed_thread(self) -> None:
         class FakeThread:

@@ -676,6 +676,16 @@ BOT_STATUS_LABELS: dict[str, str] = {
     "invisible": "Unsichtbar",
 }
 
+_startup_restore_fetch_lock = asyncio.Lock()
+_startup_restore_fetch_last_ts = 0.0
+_startup_restore_fetch_backoff_until = 0.0
+_STARTUP_RESTORE_FETCH_MIN_INTERVAL_SEC = 0.35
+_STARTUP_RESTORE_FETCH_BACKOFF_SEC = 5.0
+
+
+class StartupRestoreRateLimited(RuntimeError):
+    pass
+
 
 class EffectBestMoment(TypedDict):
     tag: str
@@ -9757,14 +9767,35 @@ async def _safe_send_channel(
 async def _fetch_channel_safe(channel_id: int | None):
     if not channel_id:
         return None
+    global _startup_restore_fetch_last_ts, _startup_restore_fetch_backoff_until
+    now = time.monotonic()
+    if now < _startup_restore_fetch_backoff_until:
+        raise StartupRestoreRateLimited("startup channel fetch backoff is active")
     try:
-        return await bot.fetch_channel(channel_id)
+        async with _startup_restore_fetch_lock:
+            now = time.monotonic()
+            if now < _startup_restore_fetch_backoff_until:
+                raise StartupRestoreRateLimited("startup channel fetch backoff is active")
+            wait_time = _STARTUP_RESTORE_FETCH_MIN_INTERVAL_SEC - (now - _startup_restore_fetch_last_ts)
+            if wait_time > 0:
+                await asyncio.sleep(wait_time)
+            channel = await bot.fetch_channel(channel_id)
+            _startup_restore_fetch_last_ts = time.monotonic()
+            return channel
     except discord.NotFound:
         return None
     except discord.Forbidden:
         logging.warning("Missing access while fetching channel %s", channel_id)
         return None
-    except discord.HTTPException:
+    except discord.HTTPException as exc:
+        if int(getattr(exc, "status", 0) or 0) == 429:
+            _startup_restore_fetch_backoff_until = time.monotonic() + _STARTUP_RESTORE_FETCH_BACKOFF_SEC
+            logging.warning(
+                "Startup restore hit rate limit while fetching channel %s. Pausing remote restore fetches for %.1fs.",
+                channel_id,
+                _STARTUP_RESTORE_FETCH_BACKOFF_SEC,
+            )
+            raise StartupRestoreRateLimited("startup channel fetch was rate-limited") from exc
         logging.exception("Failed to fetch channel %s", channel_id)
         return None
 
@@ -9772,15 +9803,36 @@ async def _fetch_channel_safe(channel_id: int | None):
 async def _fetch_message_safe(channel: object, message_id: int | None) -> discord.Message | None:
     if not message_id or channel is None or not hasattr(channel, "fetch_message"):
         return None
+    global _startup_restore_fetch_last_ts, _startup_restore_fetch_backoff_until
+    now = time.monotonic()
+    if now < _startup_restore_fetch_backoff_until:
+        raise StartupRestoreRateLimited("startup message fetch backoff is active")
     try:
-        fetch_message = getattr(channel, "fetch_message")
-        return await fetch_message(int(message_id))
+        async with _startup_restore_fetch_lock:
+            now = time.monotonic()
+            if now < _startup_restore_fetch_backoff_until:
+                raise StartupRestoreRateLimited("startup message fetch backoff is active")
+            wait_time = _STARTUP_RESTORE_FETCH_MIN_INTERVAL_SEC - (now - _startup_restore_fetch_last_ts)
+            if wait_time > 0:
+                await asyncio.sleep(wait_time)
+            fetch_message = getattr(channel, "fetch_message")
+            message = await fetch_message(int(message_id))
+            _startup_restore_fetch_last_ts = time.monotonic()
+            return message
     except discord.NotFound:
         return None
     except discord.Forbidden:
         logging.warning("Missing access while fetching message %s", message_id)
         return None
-    except discord.HTTPException:
+    except discord.HTTPException as exc:
+        if int(getattr(exc, "status", 0) or 0) == 429:
+            _startup_restore_fetch_backoff_until = time.monotonic() + _STARTUP_RESTORE_FETCH_BACKOFF_SEC
+            logging.warning(
+                "Startup restore hit rate limit while fetching message %s. Pausing remote restore fetches for %.1fs.",
+                message_id,
+                _STARTUP_RESTORE_FETCH_BACKOFF_SEC,
+            )
+            raise StartupRestoreRateLimited("startup message fetch was rate-limited") from exc
         logging.exception("Failed to fetch message %s", message_id)
         return None
 
@@ -10049,21 +10101,33 @@ async def _restore_durable_views() -> None:
     for row in rows:
         guild_id = int(row.get("guild_id", 0) or 0)
         channel_id = int(row.get("channel_id", 0) or 0)
-        channel = bot.get_channel(channel_id) or await _fetch_channel_safe(channel_id)
+        try:
+            channel = bot.get_channel(channel_id) or await _fetch_channel_safe(channel_id)
+        except StartupRestoreRateLimited:
+            logging.warning("Startup durable-view restore paused due to proxy rate limit.")
+            return
         if channel is None:
             await delete_durable_view(guild_id=guild_id, channel_id=channel_id)
             continue
-        message = await _fetch_message_safe(channel, int(row.get("message_id", 0) or 0))
+        try:
+            message = await _fetch_message_safe(channel, int(row.get("message_id", 0) or 0))
+        except StartupRestoreRateLimited:
+            logging.warning("Startup durable-view restore paused due to proxy rate limit.")
+            return
         if message is None:
             await delete_durable_view(guild_id=guild_id, channel_id=channel_id)
             continue
         payload = _dict_str_any(row.get("payload"))
-        view = await _restore_durable_view_instance(
-            guild_id=guild_id,
-            channel=channel,
-            view_kind=str(row.get("view_kind") or ""),
-            payload=payload,
-        )
+        try:
+            view = await _restore_durable_view_instance(
+                guild_id=guild_id,
+                channel=channel,
+                view_kind=str(row.get("view_kind") or ""),
+                payload=payload,
+            )
+        except StartupRestoreRateLimited:
+            logging.warning("Startup durable-view restore paused due to proxy rate limit.")
+            return
         if view is None:
             await delete_durable_view(guild_id=guild_id, channel_id=channel_id)
             continue
@@ -10117,6 +10181,9 @@ async def resend_pending_requests() -> None:
                 allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
             )
             await update_fight_request_message(int(row["id"]), msg.id, msg.channel.id)
+        except StartupRestoreRateLimited:
+            logging.warning("Startup pending-fight restore paused due to proxy rate limit.")
+            return
         except Exception:
             logging.exception("Failed to resend fight request")
 
@@ -10164,6 +10231,9 @@ async def resend_pending_requests() -> None:
                 continue
             msg = await sendable_channel.send(embed=embed, view=view)
             await update_mission_request_message(int(row["id"]), msg.id, msg.channel.id)
+        except StartupRestoreRateLimited:
+            logging.warning("Startup pending-mission restore paused due to proxy rate limit.")
+            return
         except Exception:
             logging.exception("Failed to resend mission request")
 
