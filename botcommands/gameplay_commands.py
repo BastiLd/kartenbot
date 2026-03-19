@@ -27,14 +27,17 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
             if mission_count >= 2:
                 await module._send_ephemeral(
                     interaction,
-                    content="? Du hast heute bereits deine 2 Missionen aufgebraucht! Komme morgen wieder.",
+                    content=(
+                        "\u274c Du hast heute bereits deine 2 Missionen "
+                        "aufgebraucht! Komme morgen wieder."
+                    ),
                 )
                 return
 
         waves = random.randint(2, 6)
         reward_card = module.random_gameplay_card(module.karten, alpha_enabled=module.ALPHA_PHASE_ENABLED)
         mission_title = f"Mission {mission_count + 1}/2" if not is_admin_user else "Mission (Admin)"
-        mission_description = "Hier kommt sp?ter die Story. Hier kommt sp?ter die Story."
+        mission_description = "Hier kommt sp\u00e4ter die Story. Hier kommt sp\u00e4ter die Story."
 
         mission_data = {
             "waves": waves,
@@ -69,7 +72,10 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
             await module.update_mission_request_message(request_id, message.id, message.channel.id)
             await interaction.followup.send(f"Mission-Thread erstellt: {mission_thread.mention}", ephemeral=True)
         else:
-            await interaction.followup.send("? Missions-Anfrage konnte nicht gesendet werden.", ephemeral=True)
+            await interaction.followup.send(
+                "\u274c Missions-Anfrage konnte nicht gesendet werden.",
+                ephemeral=True,
+            )
 
     @bot.tree.command(name="geschichte", description="Starte eine interaktive Story")
     async def story(interaction: discord.Interaction):
@@ -87,20 +93,23 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
         ephemeral = visibility != module.VISIBILITY_PUBLIC
         view = module.StorySelectView(interaction.user.id)
         embed = discord.Embed(
-            title="?? Story ausw?hlen",
-            description="W?hle eine Story aus der Liste. Aktuell verf?gbar: **text**",
+            title="\U0001F4D6 Story ausw\u00e4hlen",
+            description="W\u00e4hle eine Story aus der Liste. Aktuell verf\u00fcgbar: **text**",
         )
         await module._send_with_visibility(interaction, visibility_key, embed=embed, view=view)
         await view.wait()
         if not view.value:
-            await interaction.followup.send("? Keine Story gew?hlt. Abgebrochen.", ephemeral=ephemeral)
+            await interaction.followup.send(
+                "\u23f0 Keine Story gew\u00e4hlt. Abgebrochen.",
+                ephemeral=ephemeral,
+            )
             return
 
         story_view = module.StoryPlayerView(interaction.user.id, view.value)
         start_embed = story_view.render_step_embed()
         await interaction.followup.send(embed=start_embed, view=story_view, ephemeral=ephemeral)
 
-    @bot.tree.command(name="kampf", description="K?mpfe gegen einen anderen Spieler im 1v1!")
+    @bot.tree.command(name="kampf", description="K\u00e4mpfe gegen einen anderen Spieler im 1v1!")
     async def fight(interaction: discord.Interaction):
         if not await module.is_channel_allowed(interaction):
             return
@@ -117,28 +126,41 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
 
         user_karten = await module.get_user_karten(interaction.user.id)
         if not user_karten:
-            await interaction.followup.send("Du brauchst mindestens 1 Karte f?r den Kampf!", ephemeral=True)
+            await interaction.followup.send(
+                "Du brauchst mindestens 1 Karte f\u00fcr den Kampf!",
+                ephemeral=True,
+            )
             return
 
         card_select_view = module.CardSelectView(interaction.user.id, user_karten, 1)
         await interaction.followup.send(
-            "W?hle deine Karte f?r den 1v1-Kampf:",
+            "W\u00e4hle deine Karte f\u00fcr den 1v1-Kampf:",
             view=card_select_view,
             ephemeral=True,
         )
         await card_select_view.wait()
         if not card_select_view.value:
-            await interaction.followup.send("? Keine Karte gew?hlt. Kampf abgebrochen.", ephemeral=True)
+            await interaction.followup.send(
+                "\u23f0 Keine Karte gew\u00e4hlt. Kampf abgebrochen.",
+                ephemeral=True,
+            )
             return
 
         selected_names = card_select_view.value
         selected_cards = [await module.get_karte_by_name(name) for name in selected_names]
 
         view = module.OpponentSelectView(interaction.user, interaction.guild)
-        await interaction.followup.send("W?hle einen Gegner (User oder Bot):", view=view, ephemeral=True)
+        await interaction.followup.send(
+            "W\u00e4hle einen Gegner (User oder Bot):",
+            view=view,
+            ephemeral=True,
+        )
         await view.wait()
         if not view.value:
-            await interaction.followup.send("? Kein Gegner gew?hlt. Kampf abgebrochen.", ephemeral=True)
+            await interaction.followup.send(
+                "\u23f0 Kein Gegner gew\u00e4hlt. Kampf abgebrochen.",
+                ephemeral=True,
+            )
             return
 
         opponent_id = view.value
@@ -198,7 +220,7 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
             return
         challenged = guild.get_member(int(opponent_id))
         if not challenged:
-            await interaction.followup.send("? Gegner nicht gefunden!", ephemeral=True)
+            await interaction.followup.send("\u274c Gegner nicht gefunden!", ephemeral=True)
             return
         fight_thread = await module._create_required_private_fight_thread(interaction, challenged=challenged)
         if fight_thread is None:

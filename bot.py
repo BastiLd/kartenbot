@@ -5267,7 +5267,9 @@ async def _maybe_delete_fight_thread(thread_id: int | None, thread_created: bool
             delay = _thread_auto_close_delay(CANCELLED_THREAD_AUTO_CLOSE_POLICY)
             if delay:
                 try:
-                    await channel.send(f"?? Dieser Thread wird in {int(delay)} Sekunden geschlossen.")
+                    await channel.send(
+                        f"\u2139\ufe0f Dieser Thread wird in {int(delay)} Sekunden geschlossen."
+                    )
                 except Exception:
                     logging.exception("Failed to send delayed-close notice for thread %s", channel.id)
                 asyncio.create_task(_delete_managed_thread_after_delay(channel, int(delay)))
@@ -10039,13 +10041,16 @@ async def _safe_send_channel(
     try:
         await _send_ephemeral(
             interaction,
-            content="? Mir fehlen Rechte in diesem Kanal/Thread (View/Send/Thread-Rechte). Bitte gib mir Zugriff.",
+            content=(
+                "\u274c Mir fehlen Rechte in diesem Kanal/Thread "
+                "(View/Send/Thread-Rechte). Bitte gib mir Zugriff."
+            ),
         )
     except Exception:
         try:
             await _send_ephemeral(
                 interaction,
-                content="? Nachricht konnte in diesem Kanal/Thread gerade nicht gesendet werden.",
+                content="\u274c Nachricht konnte in diesem Kanal/Thread gerade nicht gesendet werden.",
             )
         except Exception:
             return None
@@ -10775,7 +10780,10 @@ async def run_dust_command_flow(
 
     mode_value = str(mode or "").strip().lower()
     if mode_value not in {"single", "multi"}:
-        await interaction.followup.send("? Ung?ltiger Modus. Nutze `single` oder `multi`.", ephemeral=True)
+        await interaction.followup.send(
+            "\u274c Ung\u00fcltiger Modus. Nutze `single` oder `multi`.",
+            ephemeral=True,
+        )
         return
 
     action_phrase = "entfernen" if remove else "geben"
@@ -10784,13 +10792,16 @@ async def run_dust_command_flow(
     if mode_value == "single":
         user_select_view = AdminUserSelectView(interaction.user.id, interaction.guild)
         await interaction.followup.send(
-            content=f"W?hle den Nutzer, dem du Infinitydust {action_phrase} m?chtest:",
+            content=f"W\u00e4hle den Nutzer, dem du Infinitydust {action_phrase} m\u00f6chtest:",
             view=user_select_view,
             ephemeral=True,
         )
         await user_select_view.wait()
         if not user_select_view.value:
-            await interaction.followup.send("? Keine Auswahl getroffen. Abgebrochen.", ephemeral=True)
+            await interaction.followup.send(
+                "\u23f0 Keine Auswahl getroffen. Abgebrochen.",
+                ephemeral=True,
+            )
             return
         target_user_ids = [int(user_select_view.value)]
     else:
@@ -10805,17 +10816,23 @@ async def run_dust_command_flow(
         multi_view.bind_message(multi_message)
         await multi_view.wait()
         if not multi_view.value:
-            await interaction.followup.send("? Keine Nutzer gew?hlt. Abgebrochen.", ephemeral=True)
+            await interaction.followup.send(
+                "\u23f0 Keine Nutzer gew\u00e4hlt. Abgebrochen.",
+                ephemeral=True,
+            )
             return
         target_user_ids = [int(user_id) for user_id in multi_view.value]
 
     amount = await _select_number(
         interaction,
-        "W?hle die Menge Infinitydust:",
+        "W\u00e4hle die Menge Infinitydust:",
         DUST_MENU_AMOUNTS,
     )
     if not amount:
-        await interaction.followup.send("? Keine Menge gew?hlt. Abgebrochen.", ephemeral=True)
+        await interaction.followup.send(
+            "\u23f0 Keine Menge gew\u00e4hlt. Abgebrochen.",
+            ephemeral=True,
+        )
         return
 
     channel_id = int(getattr(interaction.channel, "id", 0) or 0)

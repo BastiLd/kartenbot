@@ -172,7 +172,7 @@ def register_admin_commands(bot, module: ModuleType) -> dict[str, object]:
                 content="\u2139\ufe0f Es sind noch keine Kan\u00e4le erlaubt. Nutze `/konfigurieren hinzufuegen` im gew\u00fcnschten Kanal.",
             )
             return
-        mentions = "\n".join(f"? <#{row[0]}>" for row in rows)
+        mentions = "\n".join(f"- <#{row[0]}>" for row in rows)
         await module._send_with_visibility(
             interaction,
             visibility_key,
@@ -464,7 +464,10 @@ def register_admin_commands(bot, module: ModuleType) -> dict[str, object]:
                 summary_lines.append(f"\u2705 `{card_name}` gegeben an {_target_summary(interaction.guild, added_user_ids)}.")
             if skipped_user_ids:
                 summary_lines.append(f"\u26a0\ufe0f Bereits vorhanden bei {_target_summary(interaction.guild, skipped_user_ids)}.")
-            await interaction.followup.send("\n".join(summary_lines) or "\u26a0\ufe0f Keine ?nderungen durchgef?hrt.", ephemeral=True)
+            await interaction.followup.send(
+                "\n".join(summary_lines) or "\u26a0\ufe0f Keine \u00c4nderungen durchgef\u00fchrt.",
+                ephemeral=True,
+            )
             return
 
         if action == "card_remove":
@@ -485,7 +488,10 @@ def register_admin_commands(bot, module: ModuleType) -> dict[str, object]:
                 remove_summary_lines.append(f"\u2705 `{card_name}` entfernt bei {_target_summary(interaction.guild, removed_user_ids)}.")
             if missing_user_ids:
                 remove_summary_lines.append(f"\u26a0\ufe0f Nicht vorhanden bei {_target_summary(interaction.guild, missing_user_ids)}.")
-            await interaction.followup.send("\n".join(remove_summary_lines) or "\u26a0\ufe0f Keine ?nderungen durchgef?hrt.", ephemeral=True)
+            await interaction.followup.send(
+                "\n".join(remove_summary_lines) or "\u26a0\ufe0f Keine \u00c4nderungen durchgef\u00fchrt.",
+                ephemeral=True,
+            )
             return
 
         if action in {"group_give", "group_remove"}:
@@ -500,12 +506,15 @@ def register_admin_commands(bot, module: ModuleType) -> dict[str, object]:
             await rarity_view.wait()
             rarity_key = rarity_view.value
             if not rarity_key:
-                await interaction.followup.send("\u23f0 Keine Gruppe gew?hlt. Abgebrochen.", ephemeral=True)
+                await interaction.followup.send(
+                    "\u23f0 Keine Gruppe gew\u00e4hlt. Abgebrochen.",
+                    ephemeral=True,
+                )
                 return
             cards_for_group = grouped_cards.get(rarity_key, [])
             if not cards_for_group:
                 await interaction.followup.send(
-                    "\u274c F?r diese Gruppe wurden keine Karten gefunden.",
+                    "\u274c F\u00fcr diese Gruppe wurden keine Karten gefunden.",
                     ephemeral=True,
                 )
                 return
@@ -559,7 +568,10 @@ def register_admin_commands(bot, module: ModuleType) -> dict[str, object]:
             await role_select_view.wait()
             selected_role_id = role_select_view.value
             if not selected_role_id:
-                await interaction.followup.send("\u23f0 Keine Rolle gew?hlt. Abgebrochen.", ephemeral=True)
+                await interaction.followup.send(
+                    "\u23f0 Keine Rolle gew\u00e4hlt. Abgebrochen.",
+                    ephemeral=True,
+                )
                 return
             role_obj = interaction.guild.get_role(selected_role_id)
             role_name = role_obj.mention if role_obj else f"`{selected_role_id}`"
