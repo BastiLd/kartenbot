@@ -109,7 +109,7 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
         start_embed = story_view.render_step_embed()
         await interaction.followup.send(embed=start_embed, view=story_view, ephemeral=ephemeral)
 
-    @bot.tree.command(name="kampf", description="K\u00e4mpfe gegen einen anderen Spieler im 1v1!")
+    @bot.tree.command(name="kampf", description="Fordere einen anderen Spieler im 1v1 heraus!")
     async def fight(interaction: discord.Interaction):
         if not await module.is_channel_allowed(interaction):
             return
