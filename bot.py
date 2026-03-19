@@ -1225,6 +1225,19 @@ class DurableView(RestrictedView):
         self._durable_channel_id = channel_id
         self._durable_message_id = message_id
 
+    async def clear_durable_registration(self) -> None:
+        guild_id = self._durable_guild_id
+        channel_id = self._durable_channel_id
+        self.bind_durable_message(guild_id=None, channel_id=None, message_id=None)
+        if not isinstance(guild_id, int) or guild_id <= 0:
+            return
+        if not isinstance(channel_id, int) or channel_id <= 0:
+            return
+        try:
+            await delete_durable_view(guild_id=guild_id, channel_id=channel_id)
+        except Exception:
+            logging.exception("Failed to clear durable view registry for channel %s", channel_id)
+
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: ui.Item[Any]) -> None:
         logging.exception("Durable view callback failed (%s)", self.durable_context_label(), exc_info=error)
         await _handle_durable_view_error(
@@ -5307,6 +5320,9 @@ class AdminCloseView(DurableView):
         try:
             await update_managed_thread_status(self.thread.id, "deleted")
             await self.thread.delete()
+            await self.clear_durable_registration()
+        except discord.NotFound:
+            await self.clear_durable_registration()
         except Exception:
             logging.exception("Unexpected error")
 
@@ -5427,7 +5443,9 @@ class FightFeedbackView(DurableView):
         try:
             await update_managed_thread_status(self.channel.id, "deleted")
             await self.channel.delete()
+            await self.clear_durable_registration()
         except discord.NotFound:
+            await self.clear_durable_registration()
             return
         except Exception:
             logging.exception("Failed to auto-close thread %s", self.channel.id)
@@ -5566,6 +5584,9 @@ class FightFeedbackView(DurableView):
         try:
             await update_managed_thread_status(self.channel.id, "deleted")
             await self.channel.delete()
+            await self.clear_durable_registration()
+        except discord.NotFound:
+            await self.clear_durable_registration()
         except Exception:
             logging.exception("Unexpected error")
 
@@ -9104,6 +9125,9 @@ async def _send_channel_message(
         sent_message = await sendable_channel.send(content=content, embed=embed, view=view)
         await _maybe_register_durable_message(sent_message, view)
         return sent_message
+    except discord.NotFound:
+        logging.warning("Channel %s no longer exists for send", channel_id)
+        return None
     except discord.Forbidden:
         logging.warning("Missing send permissions in channel %s", channel_id)
         return None
@@ -9184,6 +9208,25 @@ async def _fetch_message_safe(channel: object, message_id: int | None) -> discor
         return None
 
 
+def _is_unknown_channel_error(error: Exception) -> bool:
+    return isinstance(error, discord.NotFound) and int(getattr(error, "code", 0) or 0) == 10003
+
+
+async def _cleanup_unavailable_durable_view(view: DurableView) -> None:
+    await view.clear_durable_registration()
+    stale_thread_id = None
+    for candidate in (getattr(view, "channel", None), getattr(view, "thread", None)):
+        if isinstance(candidate, discord.Thread):
+            stale_thread_id = candidate.id
+            break
+    if stale_thread_id:
+        try:
+            await update_managed_thread_status(stale_thread_id, "deleted")
+        except Exception:
+            logging.exception("Failed to mark stale thread %s as deleted", stale_thread_id)
+    view.stop()
+
+
 def _split_text_chunks(text: str, chunk_size: int = 3800) -> list[str]:
     raw = str(text or "").strip()
     if not raw:
@@ -9234,6 +9277,9 @@ async def _handle_durable_view_error(
     battle_log_text: str,
 ) -> None:
     channel = interaction.channel
+    missing_channel = _is_unknown_channel_error(error)
+    if missing_channel:
+        await _cleanup_unavailable_durable_view(view)
     guild_name = interaction.guild.name if interaction.guild else "DM"
     channel_text = _channel_mention_or_fallback(channel)
     user_text = getattr(interaction.user, "mention", None) or f"<@{interaction.user.id}>"
@@ -9256,15 +9302,15 @@ async def _handle_durable_view_error(
         )
     except Exception:
         logging.exception("Failed to send durable-view error response")
+    if missing_channel:
+        return
     try:
         if channel is not None:
-            sendable_channel = _coerce_sendable_channel(channel)
-            if sendable_channel is not None:
-                await sendable_channel.send(
-                    content=f"{user_text} Es gab vermutlich einen Bug. Wenn du willst, nutze das Formular unten.",
-                    view=BugReportLinkView(),
-                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
-                )
+            await _send_channel_message(
+                channel,
+                content=f"{user_text} Es gab vermutlich einen Bug. Wenn du willst, nutze das Formular unten.",
+                view=BugReportLinkView(),
+            )
     except Exception:
         logging.exception("Failed to send durable-view error channel fallback")
 

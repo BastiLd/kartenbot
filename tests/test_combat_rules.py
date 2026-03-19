@@ -758,7 +758,10 @@ class FightFeedbackAutoCloseTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(bot_module.discord, "Thread", _FakeThread), patch(
             "bot.update_managed_thread_status",
             new=AsyncMock(),
-        ) as update_mock:
+        ) as update_mock, patch(
+            "bot.delete_durable_view",
+            new=AsyncMock(),
+        ) as delete_mock:
             thread = _FakeThread(321)
             view = FightFeedbackView(
                 channel=thread,
@@ -770,11 +773,13 @@ class FightFeedbackAutoCloseTests(unittest.IsolatedAsyncioTestCase):
                 close_on_idle=False,
             )
             try:
+                view.bind_durable_message(guild_id=123, channel_id=321, message_id=654)
                 await view._auto_close_loop()
             finally:
                 view.stop()
 
         update_mock.assert_awaited_once_with(321, "deleted")
+        delete_mock.assert_awaited_once_with(guild_id=123, channel_id=321)
         self.assertTrue(thread.deleted)
 
     async def test_feedback_view_bug_blocks_auto_close(self) -> None:
@@ -2466,3 +2471,56 @@ class PersistentFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             view.stop()
+
+    async def test_handle_durable_view_error_cleans_up_unknown_channel_feedback_thread(self) -> None:
+        class _FakeThread:
+            def __init__(self, thread_id: int):
+                self.id = thread_id
+                self.parent_id = None
+
+            async def delete(self) -> None:
+                return None
+
+        interaction = SimpleNamespace(
+            channel=None,
+            guild=SimpleNamespace(name="Guild"),
+            user=SimpleNamespace(id=1, mention="<@1>", display_name="Tester"),
+        )
+        response = SimpleNamespace(status=404, reason="Not Found")
+        error = bot_module.discord.NotFound(response, {"code": 10003, "message": "Unknown Channel"})
+
+        with patch.object(bot_module.discord, "Thread", _FakeThread), patch(
+            "bot._send_basti_log_dm",
+            new=AsyncMock(),
+        ), patch(
+            "bot.send_interaction_response",
+            new=AsyncMock(),
+        ) as response_mock, patch(
+            "bot._send_channel_message",
+            new=AsyncMock(),
+        ) as fallback_mock, patch(
+            "bot.delete_durable_view",
+            new=AsyncMock(),
+        ) as delete_mock, patch(
+            "bot.update_managed_thread_status",
+            new=AsyncMock(),
+        ) as status_mock:
+            thread = _FakeThread(444)
+            interaction.channel = thread
+            view = FightFeedbackView(channel=thread, guild=None, allowed_user_ids={1}, battle_log_text="Log", close_on_idle=False)
+            try:
+                view.bind_durable_message(guild_id=123, channel_id=444, message_id=777)
+                await bot_module._handle_durable_view_error(
+                    interaction,
+                    error,
+                    view=view,
+                    view_label=view.durable_context_label(),
+                    battle_log_text=view.durable_log_text(),
+                )
+            finally:
+                view.stop()
+
+        response_mock.assert_awaited_once()
+        fallback_mock.assert_not_awaited()
+        delete_mock.assert_awaited_once_with(guild_id=123, channel_id=444)
+        status_mock.assert_awaited_once_with(444, "deleted")
