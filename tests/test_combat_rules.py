@@ -2808,27 +2808,6 @@ class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PersistentFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_restore_durable_views_keeps_registry_entries_when_startup_fetch_is_rate_limited(self) -> None:
-        row = {
-            "guild_id": 123,
-            "channel_id": 321,
-            "message_id": 654,
-            "view_kind": "fight_feedback",
-            "payload": "{}",
-        }
-        with (
-            patch.object(bot_module, "list_durable_views", new=AsyncMock(return_value=[row])),
-            patch.object(bot_module.bot, "get_channel", return_value=None),
-            patch.object(
-                bot_module,
-                "_fetch_channel_safe",
-                new=AsyncMock(side_effect=bot_module.StartupRestoreRateLimited("proxy")),
-            ),
-            patch.object(bot_module, "delete_durable_view", new=AsyncMock()) as delete_mock,
-        ):
-            await bot_module._restore_durable_views()
-        delete_mock.assert_not_awaited()
-
     async def test_resend_pending_requests_rebinds_existing_mission_message(self) -> None:
         fake_channel = SimpleNamespace(
             id=321,
@@ -2863,35 +2842,47 @@ class PersistentFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
         register_mock.assert_awaited_once()
         add_view_mock.assert_called_once()
 
-    async def test_resend_pending_requests_stops_without_mutation_when_startup_fetch_is_rate_limited(self) -> None:
-        row = {
-            "id": 99,
-            "guild_id": 123,
-            "origin_channel_id": 321,
-            "message_channel_id": None,
-            "thread_id": None,
-            "thread_created": 0,
-            "challenger_id": 1,
-            "challenged_id": 2,
-            "challenger_card": "Iron-Man",
-            "created_at": 0,
-            "status": "pending",
-            "message_id": None,
-        }
-        fake_guild = SimpleNamespace(id=123, get_channel=lambda channel_id: None)
+    async def test_challenge_accept_recreates_missing_private_thread(self) -> None:
+        class _FakeThread:
+            def __init__(self, thread_id: int) -> None:
+                self.id = thread_id
+                self.parent_id = 123
+                self.add_user = AsyncMock()
+
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=2),
+            channel=SimpleNamespace(id=999, parent_id=None),
+            guild=SimpleNamespace(get_member=lambda user_id: SimpleNamespace(id=user_id)),
+            response=SimpleNamespace(defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        replacement_thread = _FakeThread(555)
+        view = bot_module.ChallengeResponseView(
+            1,
+            2,
+            "Iron-Man",
+            request_id=42,
+            origin_channel_id=777,
+            thread_id=444,
+            thread_created=True,
+        )
         with (
-            patch.object(bot_module, "ALPHA_PHASE_ENABLED", True),
-            patch.object(bot_module, "get_pending_fight_requests", new=AsyncMock(return_value=[row])),
-            patch.object(
-                bot_module,
-                "_fetch_channel_safe",
-                new=AsyncMock(side_effect=bot_module.StartupRestoreRateLimited("proxy")),
-            ),
-            patch.object(bot_module.bot, "get_guild", return_value=fake_guild),
-            patch.object(bot_module, "update_fight_request_message", new=AsyncMock()) as update_mock,
+            patch.object(bot_module.discord, "Thread", _FakeThread),
+            patch.object(bot_module, "claim_fight_request", new=AsyncMock(return_value=True)),
+            patch.object(bot_module.bot, "get_channel", return_value=None),
+            patch.object(bot_module, "_fetch_channel_safe", new=AsyncMock(return_value=None)),
+            patch.object(bot_module, "_create_required_private_fight_thread", new=AsyncMock(return_value=replacement_thread)) as create_thread_mock,
+            patch.object(bot_module, "_start_fight_card_selection_from_challenge", new=AsyncMock()) as start_mock,
         ):
-            await bot_module.resend_pending_requests()
-        update_mock.assert_not_awaited()
+            accept_button = next(child for child in view.children if getattr(child, "custom_id", "") == "fight_challenge:accept")
+            await accept_button.callback(interaction)
+
+        create_thread_mock.assert_awaited_once()
+        replacement_thread.add_user.assert_awaited_once_with(interaction.user)
+        self.assertEqual(view.thread_id, 555)
+        self.assertTrue(view.thread_created)
+        self.assertEqual(start_mock.await_args.kwargs["thread_id"], 555)
+        interaction.followup.send.assert_not_awaited()
 
     async def test_on_message_skips_intro_for_managed_thread(self) -> None:
         class FakeThread:

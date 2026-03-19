@@ -725,16 +725,6 @@ BOT_STATUS_LABELS: dict[str, str] = {
     "invisible": "Unsichtbar",
 }
 
-_startup_restore_fetch_lock = asyncio.Lock()
-_startup_restore_fetch_last_ts = 0.0
-_startup_restore_fetch_backoff_until = 0.0
-_STARTUP_RESTORE_FETCH_MIN_INTERVAL_SEC = 0.35
-_STARTUP_RESTORE_FETCH_BACKOFF_SEC = 5.0
-
-
-class StartupRestoreRateLimited(RuntimeError):
-    pass
-
 
 class EffectBestMoment(TypedDict):
     tag: str
@@ -5461,6 +5451,11 @@ async def _start_fight_card_selection_from_challenge(
     if interaction.guild is None:
         await interaction.followup.send(SERVER_ONLY, ephemeral=True)
         return
+    send_channel = await _resolve_thread_channel_or_fallback(thread_id, interaction.channel)
+    if thread_id and _thread_id_for_channel(send_channel) != thread_id:
+        await interaction.followup.send("❌ Der private Kampf-Thread ist nicht mehr verfügbar. Bitte erneut herausfordern.", ephemeral=True)
+        await _maybe_delete_fight_thread(thread_id, thread_created)
+        return
     challenger = await _get_member_safe(interaction.guild, challenger_id)
     challenged = await _get_member_safe(interaction.guild, challenged_id)
     if not challenger or not challenged:
@@ -5471,7 +5466,7 @@ async def _start_fight_card_selection_from_challenge(
     if not challenger_card:
         await _safe_send_channel(
             interaction,
-            interaction.channel,
+            send_channel,
             content=f"❌ Karte von {challenger.mention} nicht gefunden. Bitte erneut herausfordern.",
         )
         await _maybe_delete_fight_thread(thread_id, thread_created)
@@ -5482,7 +5477,7 @@ async def _start_fight_card_selection_from_challenge(
     if not gegner_karten_liste:
         await _safe_send_channel(
             interaction,
-            interaction.channel,
+            send_channel,
             content=f"❌ {challenged.mention} hat keine Karten! Kampf abgebrochen.",
         )
         await _maybe_delete_fight_thread(thread_id, thread_created)
@@ -5499,7 +5494,7 @@ async def _start_fight_card_selection_from_challenge(
     )
     if await _safe_send_channel(
         interaction,
-        interaction.channel,
+        send_channel,
         content=(
             f"{challenged.mention}, wähle deine Karte für den 1v1 Kampf:\n"
             f"Herausforderer-Karte: **{_fight_challenge_card_label(challenger_card_name)}**"
@@ -5522,12 +5517,21 @@ async def _start_fight_battle_from_card_selection(
 ) -> None:
     if interaction.guild is None:
         return
+    send_channel = await _resolve_thread_channel_or_fallback(thread_id, interaction.channel)
+    if thread_id and _thread_id_for_channel(send_channel) != thread_id:
+        await _safe_send_channel(
+            interaction,
+            interaction.channel,
+            content="❌ Der private Kampf-Thread ist nicht mehr verfügbar. Bitte erneut herausfordern.",
+        )
+        await _maybe_delete_fight_thread(thread_id, thread_created)
+        return
     challenger = await _get_member_safe(interaction.guild, challenger_id)
     challenged = await _get_member_safe(interaction.guild, challenged_id)
     if not challenger or not challenged:
         await _safe_send_channel(
             interaction,
-            interaction.channel,
+            send_channel,
             content="❌ Nutzer nicht gefunden. Bitte erneut herausfordern.",
         )
         await _maybe_delete_fight_thread(thread_id, thread_created)
@@ -5537,7 +5541,7 @@ async def _start_fight_battle_from_card_selection(
     if not challenger_card or not challenged_card:
         await _safe_send_channel(
             interaction,
-            interaction.channel,
+            send_channel,
             content="❌ Eine der ausgewählten Karten konnte nicht gefunden werden. Kampf abgebrochen.",
         )
         await _maybe_delete_fight_thread(thread_id, thread_created)
@@ -5553,7 +5557,7 @@ async def _start_fight_battle_from_card_selection(
     await battle_view.init_with_buffs()
     log_message = await _safe_send_channel(
         interaction,
-        interaction.channel,
+        send_channel,
         embed=create_battle_log_embed(),
     )
     if isinstance(log_message, discord.Message):
@@ -5571,9 +5575,9 @@ async def _start_fight_battle_from_card_selection(
         recent_log_lines=battle_view._recent_log_lines,
         highlight_tone=battle_view._last_highlight_tone,
     )
-    battle_message = await _safe_send_channel(interaction, interaction.channel, embed=embed, view=battle_view)
+    battle_message = await _safe_send_channel(interaction, send_channel, embed=embed, view=battle_view)
     if battle_message is not None:
-        await battle_view.persist_session(interaction.channel, status="active", battle_message=battle_message)
+        await battle_view.persist_session(send_channel, status="active", battle_message=battle_message)
 
 
 async def _send_mission_feedback_prompt(
@@ -5764,16 +5768,34 @@ class ChallengeResponseView(DurableView):
             await interaction.response.send_message("❌ Diese Kampf-Anfrage ist nicht mehr offen.", ephemeral=True)
             return
         await interaction.response.defer()
-        # Falls privater Thread genutzt wird, stelle sicher, dass der Herausgeforderte hinzugefügt ist
+        thread: discord.Thread | None = None
         try:
             if self.thread_id:
-                thread = bot.get_channel(self.thread_id)
-                if thread is None:
-                    thread = await bot.fetch_channel(self.thread_id)
-                if isinstance(thread, discord.Thread):
-                    await thread.add_user(interaction.user)
+                if isinstance(interaction.channel, discord.Thread) and interaction.channel.id == self.thread_id:
+                    thread = interaction.channel
+                else:
+                    cached_thread = bot.get_channel(self.thread_id)
+                    if isinstance(cached_thread, discord.Thread):
+                        thread = cached_thread
+                    else:
+                        fetched_thread = await _fetch_channel_safe(self.thread_id)
+                        if isinstance(fetched_thread, discord.Thread):
+                            thread = fetched_thread
         except Exception:
             logging.exception("Unexpected error")
+        if thread is None:
+            challenged_member = interaction.guild.get_member(self.challenged_id) if interaction.guild is not None else None
+            replacement_thread = await _create_required_private_fight_thread(interaction, challenged=challenged_member)
+            if replacement_thread is None:
+                await interaction.followup.send("❌ Der private Kampf-Thread konnte nicht wiederhergestellt werden. Bitte erneut herausfordern.", ephemeral=True)
+                return
+            thread = replacement_thread
+            self.thread_id = replacement_thread.id
+            self.thread_created = True
+        try:
+            await thread.add_user(interaction.user)
+        except Exception:
+            logging.exception("Failed to add challenged user to fight thread")
         await _start_fight_card_selection_from_challenge(
             interaction,
             challenger_id=self.challenger_id,
@@ -10032,35 +10054,14 @@ async def _safe_send_channel(
 async def _fetch_channel_safe(channel_id: int | None):
     if not channel_id:
         return None
-    global _startup_restore_fetch_last_ts, _startup_restore_fetch_backoff_until
-    now = time.monotonic()
-    if now < _startup_restore_fetch_backoff_until:
-        raise StartupRestoreRateLimited("startup channel fetch backoff is active")
     try:
-        async with _startup_restore_fetch_lock:
-            now = time.monotonic()
-            if now < _startup_restore_fetch_backoff_until:
-                raise StartupRestoreRateLimited("startup channel fetch backoff is active")
-            wait_time = _STARTUP_RESTORE_FETCH_MIN_INTERVAL_SEC - (now - _startup_restore_fetch_last_ts)
-            if wait_time > 0:
-                await asyncio.sleep(wait_time)
-            channel = await bot.fetch_channel(channel_id)
-            _startup_restore_fetch_last_ts = time.monotonic()
-            return channel
+        return await bot.fetch_channel(channel_id)
     except discord.NotFound:
         return None
     except discord.Forbidden:
         logging.warning("Missing access while fetching channel %s", channel_id)
         return None
-    except discord.HTTPException as exc:
-        if int(getattr(exc, "status", 0) or 0) == 429:
-            _startup_restore_fetch_backoff_until = time.monotonic() + _STARTUP_RESTORE_FETCH_BACKOFF_SEC
-            logging.warning(
-                "Startup restore hit rate limit while fetching channel %s. Pausing remote restore fetches for %.1fs.",
-                channel_id,
-                _STARTUP_RESTORE_FETCH_BACKOFF_SEC,
-            )
-            raise StartupRestoreRateLimited("startup channel fetch was rate-limited") from exc
+    except discord.HTTPException:
         logging.exception("Failed to fetch channel %s", channel_id)
         return None
 
@@ -10068,36 +10069,15 @@ async def _fetch_channel_safe(channel_id: int | None):
 async def _fetch_message_safe(channel: object, message_id: int | None) -> discord.Message | None:
     if not message_id or channel is None or not hasattr(channel, "fetch_message"):
         return None
-    global _startup_restore_fetch_last_ts, _startup_restore_fetch_backoff_until
-    now = time.monotonic()
-    if now < _startup_restore_fetch_backoff_until:
-        raise StartupRestoreRateLimited("startup message fetch backoff is active")
     try:
-        async with _startup_restore_fetch_lock:
-            now = time.monotonic()
-            if now < _startup_restore_fetch_backoff_until:
-                raise StartupRestoreRateLimited("startup message fetch backoff is active")
-            wait_time = _STARTUP_RESTORE_FETCH_MIN_INTERVAL_SEC - (now - _startup_restore_fetch_last_ts)
-            if wait_time > 0:
-                await asyncio.sleep(wait_time)
-            fetch_message = getattr(channel, "fetch_message")
-            message = await fetch_message(int(message_id))
-            _startup_restore_fetch_last_ts = time.monotonic()
-            return message
+        fetch_message = getattr(channel, "fetch_message")
+        return await fetch_message(int(message_id))
     except discord.NotFound:
         return None
     except discord.Forbidden:
         logging.warning("Missing access while fetching message %s", message_id)
         return None
-    except discord.HTTPException as exc:
-        if int(getattr(exc, "status", 0) or 0) == 429:
-            _startup_restore_fetch_backoff_until = time.monotonic() + _STARTUP_RESTORE_FETCH_BACKOFF_SEC
-            logging.warning(
-                "Startup restore hit rate limit while fetching message %s. Pausing remote restore fetches for %.1fs.",
-                message_id,
-                _STARTUP_RESTORE_FETCH_BACKOFF_SEC,
-            )
-            raise StartupRestoreRateLimited("startup message fetch was rate-limited") from exc
+    except discord.HTTPException:
         logging.exception("Failed to fetch message %s", message_id)
         return None
 
@@ -10160,6 +10140,16 @@ async def _send_basti_log_dm(log_text: str, *, context_lines: list[str]) -> None
             await user.send(embed=embed)
     except discord.HTTPException:
         logging.exception("Failed to DM Basti with battle log")
+
+
+async def _resolve_thread_channel_or_fallback(thread_id: int | None, fallback_channel: object) -> object:
+    if thread_id:
+        thread_channel = bot.get_channel(int(thread_id))
+        if thread_channel is None:
+            thread_channel = await _fetch_channel_safe(int(thread_id))
+        if _coerce_sendable_channel(thread_channel) is not None:
+            return thread_channel
+    return fallback_channel
 
 
 async def _handle_durable_view_error(
@@ -10369,33 +10359,21 @@ async def _restore_durable_views() -> None:
     for row in rows:
         guild_id = int(row.get("guild_id", 0) or 0)
         channel_id = int(row.get("channel_id", 0) or 0)
-        try:
-            channel = bot.get_channel(channel_id) or await _fetch_channel_safe(channel_id)
-        except StartupRestoreRateLimited:
-            logging.warning("Startup durable-view restore paused due to proxy rate limit.")
-            return
+        channel = bot.get_channel(channel_id) or await _fetch_channel_safe(channel_id)
         if channel is None:
             await delete_durable_view(guild_id=guild_id, channel_id=channel_id)
             continue
-        try:
-            message = await _fetch_message_safe(channel, int(row.get("message_id", 0) or 0))
-        except StartupRestoreRateLimited:
-            logging.warning("Startup durable-view restore paused due to proxy rate limit.")
-            return
+        message = await _fetch_message_safe(channel, int(row.get("message_id", 0) or 0))
         if message is None:
             await delete_durable_view(guild_id=guild_id, channel_id=channel_id)
             continue
         payload = _dict_str_any(row.get("payload"))
-        try:
-            view = await _restore_durable_view_instance(
-                guild_id=guild_id,
-                channel=channel,
-                view_kind=str(row.get("view_kind") or ""),
-                payload=payload,
-            )
-        except StartupRestoreRateLimited:
-            logging.warning("Startup durable-view restore paused due to proxy rate limit.")
-            return
+        view = await _restore_durable_view_instance(
+            guild_id=guild_id,
+            channel=channel,
+            view_kind=str(row.get("view_kind") or ""),
+            payload=payload,
+        )
         if view is None:
             await delete_durable_view(guild_id=guild_id, channel_id=channel_id)
             continue
@@ -10449,9 +10427,6 @@ async def resend_pending_requests() -> None:
                 allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
             )
             await update_fight_request_message(int(row["id"]), msg.id, msg.channel.id)
-        except StartupRestoreRateLimited:
-            logging.warning("Startup pending-fight restore paused due to proxy rate limit.")
-            return
         except Exception:
             logging.exception("Failed to resend fight request")
 
@@ -10499,9 +10474,6 @@ async def resend_pending_requests() -> None:
                 continue
             msg = await sendable_channel.send(embed=embed, view=view)
             await update_mission_request_message(int(row["id"]), msg.id, msg.channel.id)
-        except StartupRestoreRateLimited:
-            logging.warning("Startup pending-mission restore paused due to proxy rate limit.")
-            return
         except Exception:
             logging.exception("Failed to resend mission request")
 
