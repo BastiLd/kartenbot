@@ -2842,6 +2842,73 @@ class PersistentFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
         register_mock.assert_awaited_once()
         add_view_mock.assert_called_once()
 
+    async def test_resend_pending_fight_request_expires_when_message_missing(self) -> None:
+        fake_thread = SimpleNamespace(id=444, parent_id=321, send=AsyncMock())
+        fake_guild = SimpleNamespace(
+            id=123,
+            get_channel=lambda channel_id: fake_thread if channel_id == 444 else None,
+        )
+        row = {
+            "id": 77,
+            "guild_id": 123,
+            "origin_channel_id": 321,
+            "message_channel_id": 444,
+            "thread_id": 444,
+            "thread_created": 1,
+            "challenger_id": 1,
+            "challenged_id": 2,
+            "challenger_card": "Iron-Man",
+            "created_at": 0,
+            "status": "pending",
+            "message_id": 987,
+        }
+        with (
+            patch.object(bot_module, "ALPHA_PHASE_ENABLED", True),
+            patch.object(bot_module, "get_pending_fight_requests", new=AsyncMock(return_value=[row])),
+            patch.object(bot_module, "is_channel_allowed_ids", new=AsyncMock(return_value=True)),
+            patch.object(bot_module, "_fetch_message_safe", new=AsyncMock(return_value=None)),
+            patch.object(bot_module, "claim_fight_request", new=AsyncMock(return_value=True)) as claim_mock,
+            patch.object(bot_module.bot, "get_guild", return_value=fake_guild),
+            patch.object(bot_module.bot, "add_view") as add_view_mock,
+        ):
+            await bot_module.resend_pending_requests()
+
+        claim_mock.assert_awaited_once_with(77, "expired")
+        fake_thread.send.assert_not_awaited()
+        add_view_mock.assert_not_called()
+
+    async def test_resend_pending_fight_request_does_not_fallback_to_origin_channel(self) -> None:
+        origin_channel = SimpleNamespace(id=321, parent_id=None, send=AsyncMock())
+        fake_guild = SimpleNamespace(
+            id=123,
+            get_channel=lambda channel_id: origin_channel if channel_id == 321 else None,
+        )
+        row = {
+            "id": 78,
+            "guild_id": 123,
+            "origin_channel_id": 321,
+            "message_channel_id": 321,
+            "thread_id": 444,
+            "thread_created": 1,
+            "challenger_id": 1,
+            "challenged_id": 2,
+            "challenger_card": "Iron-Man",
+            "created_at": 0,
+            "status": "pending",
+            "message_id": None,
+        }
+        with (
+            patch.object(bot_module, "ALPHA_PHASE_ENABLED", True),
+            patch.object(bot_module, "get_pending_fight_requests", new=AsyncMock(return_value=[row])),
+            patch.object(bot_module, "_fetch_channel_safe", new=AsyncMock(return_value=None)),
+            patch.object(bot_module, "claim_fight_request", new=AsyncMock(return_value=True)) as claim_mock,
+            patch.object(bot_module.bot, "get_guild", return_value=fake_guild),
+        ):
+            await bot_module.resend_pending_requests()
+
+        claim_mock.assert_awaited_once_with(78, "expired")
+        origin_channel.send.assert_not_awaited()
+
     async def test_challenge_accept_recreates_missing_private_thread(self) -> None:
         class _FakeThread:
             def __init__(self, thread_id: int) -> None:

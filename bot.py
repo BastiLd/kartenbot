@@ -10393,6 +10393,7 @@ async def resend_pending_requests() -> None:
         fight_rows = []
     for row in fight_rows:
         try:
+            request_id = int(row["id"])
             guild_id = int(row["guild_id"]) if row["guild_id"] else 0
             guild = bot.get_guild(guild_id) if guild_id else None
             if guild is None:
@@ -10401,22 +10402,25 @@ async def resend_pending_requests() -> None:
             thread_id = row["thread_id"]
             if thread_id:
                 channel = guild.get_channel(int(thread_id)) or await _fetch_channel_safe(int(thread_id))
-            if channel is None and row["message_channel_id"]:
+            elif row["message_channel_id"]:
                 channel = guild.get_channel(int(row["message_channel_id"])) or await _fetch_channel_safe(int(row["message_channel_id"]))
-            if channel is None and row["origin_channel_id"]:
+            elif row["origin_channel_id"]:
                 channel = guild.get_channel(int(row["origin_channel_id"])) or await _fetch_channel_safe(int(row["origin_channel_id"]))
             if channel is None:
+                await claim_fight_request(request_id, "expired")
                 continue
             if not await is_channel_allowed_ids(guild.id, getattr(channel, "id", None), getattr(channel, "parent_id", None)):
+                await claim_fight_request(request_id, "expired")
                 continue
             sendable_channel = _coerce_sendable_channel(channel)
             if sendable_channel is None:
+                await claim_fight_request(request_id, "expired")
                 continue
             view = ChallengeResponseView(
                 int(row["challenger_id"]),
                 int(row["challenged_id"]),
                 row["challenger_card"],
-                request_id=int(row["id"]),
+                request_id=request_id,
                 origin_channel_id=int(row["origin_channel_id"]) if row["origin_channel_id"] else None,
                 thread_id=int(row["thread_id"]) if row["thread_id"] else None,
                 thread_created=bool(row["thread_created"]),
@@ -10426,12 +10430,7 @@ async def resend_pending_requests() -> None:
                 await _maybe_register_durable_message(existing_message, view)
                 bot.add_view(view, message_id=existing_message.id)
                 continue
-            msg = await sendable_channel.send(
-                content=_fight_challenge_prompt(f"<@{row['challenged_id']}>", str(row["challenger_card"] or "")),
-                view=view,
-                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
-            )
-            await update_fight_request_message(int(row["id"]), msg.id, msg.channel.id)
+            await claim_fight_request(request_id, "expired")
         except Exception:
             logging.exception("Failed to resend fight request")
 
