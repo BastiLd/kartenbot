@@ -25,7 +25,7 @@ class BattleStateTests(unittest.TestCase):
         self.assertEqual(runtime["pending_multiplier"], {7: 1.0, 0: 1.0})
 
     def test_status_icons_reflect_active_effects(self) -> None:
-        active_effects = {
+        active_effects: battle_state.BattleEffectsMap = {
             1: [
                 {"type": "burning"},
                 {"type": "confusion"},
@@ -49,8 +49,8 @@ class BattleStateTests(unittest.TestCase):
         self.assertNotIn(2, cooldowns)
 
     def test_resolve_incoming_modifier_applies_reflect_and_store(self) -> None:
-        incoming_modifiers = {1: []}
-        absorbed_damage = {1: 0}
+        incoming_modifiers: battle_state.BattleEffectsMap = {1: []}
+        absorbed_damage: battle_state.BattleIntMap = {1: 0}
         battle_state.queue_incoming_modifier(
             incoming_modifiers,
             1,
@@ -60,7 +60,7 @@ class BattleStateTests(unittest.TestCase):
             turns=1,
         )
 
-        damage, reflected, dodged, counter = battle_state.resolve_incoming_modifiers(
+        damage, reflected, dodged, counter, _modifier = battle_state.resolve_incoming_modifiers(
             incoming_modifiers,
             absorbed_damage,
             1,
@@ -71,9 +71,9 @@ class BattleStateTests(unittest.TestCase):
         self.assertEqual(absorbed_damage[1], 20)
 
     def test_airborne_two_phase_prepares_and_resolves_landing(self) -> None:
-        active_effects = {5: [], 0: []}
-        incoming_modifiers = {5: [], 0: []}
-        airborne_pending_landing = {5: None, 0: None}
+        active_effects: battle_state.BattleEffectsMap = {5: [], 0: []}
+        incoming_modifiers: battle_state.BattleEffectsMap = {5: [], 0: []}
+        airborne_pending_landing: battle_state.BattlePendingLandingMap = {5: None, 0: None}
         events: list[str] = []
 
         battle_state.start_airborne_two_phase(
@@ -98,6 +98,7 @@ class BattleStateTests(unittest.TestCase):
             events,
         )
 
+        assert landing is not None
         self.assertEqual(landing["damage"], [30, 50])
         self.assertEqual(landing["cooldown_attack_index"], 2)
         self.assertFalse(battle_state.has_effect(active_effects, 5, "airborne"))

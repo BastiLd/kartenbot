@@ -1,9 +1,11 @@
-import unittest
 import asyncio
 import copy
+import unittest
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
+
+# pyright: reportArgumentType=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalSubscript=false, reportAssignmentType=false
 
 import bot as bot_module
 from bot import BattleView, EFFECT_TYPES_WITH_EFFECT_LOGS, FightFeedbackView, MAX_ATTACK_DAMAGE_PER_HIT, MissionBattleView
@@ -76,6 +78,7 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         effects = overladung.get("effects", [])
         multiplier_effect = next((e for e in effects if e.get("type") == "damage_multiplier"), None)
         self.assertIsNotNone(multiplier_effect)
+        assert multiplier_effect is not None
         self.assertAlmostEqual(float(multiplier_effect.get("multiplier", 1.0)), 1.5)
         self.assertEqual(int(overladung.get("cooldown_turns", 0) or 0), 3)
 
@@ -91,6 +94,7 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         effects = gamma.get("effects", [])
         burn_effect = next((e for e in effects if e.get("type") == "burning"), None)
         self.assertIsNotNone(burn_effect)
+        assert burn_effect is not None
         self.assertEqual(burn_effect.get("duration"), [2, 7])
         self.assertEqual(int(burn_effect.get("damage", 0) or 0), 5)
 
@@ -117,6 +121,7 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         effects = kleines_ziel.get("effects", [])
         cap_effect = next((e for e in effects if e.get("type") == "cap_damage"), None)
         self.assertIsNotNone(cap_effect)
+        assert cap_effect is not None
         self.assertEqual(str(cap_effect.get("max_damage") or ""), "attack_min")
 
     def test_delayed_defense_and_airborne_specs(self) -> None:
@@ -326,13 +331,16 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
                 self.hp = 60
                 self.max_hp = 100
 
-            def _hp_for(self, _player_id: int) -> int:
+            def _hp_for(self, player_id: int) -> int:
+                _ = player_id
                 return self.hp
 
-            def _max_hp_for(self, _player_id: int) -> int:
+            def _max_hp_for(self, player_id: int) -> int:
+                _ = player_id
                 return self.max_hp
 
-            def heal_player(self, _player_id: int, amount: int) -> int:
+            def heal_player(self, player_id: int, amount: int) -> int:
+                _ = player_id
                 healed = min(amount, self.max_hp - self.hp)
                 self.hp += healed
                 return healed
@@ -355,13 +363,16 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
                 self.hp = 60
                 self.max_hp = 100
 
-            def _hp_for(self, _player_id: int) -> int:
+            def _hp_for(self, player_id: int) -> int:
+                _ = player_id
                 return self.hp
 
-            def _max_hp_for(self, _player_id: int) -> int:
+            def _max_hp_for(self, player_id: int) -> int:
+                _ = player_id
                 return self.max_hp
 
-            def heal_player(self, _player_id: int, amount: int) -> int:
+            def heal_player(self, player_id: int, amount: int) -> int:
+                _ = player_id
                 raise AssertionError(f"heal_player should not be called: {amount}")
 
             def _append_effect_event(self, events: list[str], text: str) -> None:
@@ -382,13 +393,16 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
                 self.hp = 100
                 self.max_hp = 100
 
-            def _hp_for(self, _player_id: int) -> int:
+            def _hp_for(self, player_id: int) -> int:
+                _ = player_id
                 return self.hp
 
-            def _max_hp_for(self, _player_id: int) -> int:
+            def _max_hp_for(self, player_id: int) -> int:
+                _ = player_id
                 return self.max_hp
 
-            def heal_player(self, _player_id: int, amount: int) -> int:
+            def heal_player(self, player_id: int, amount: int) -> int:
+                _ = player_id
                 raise AssertionError(f"heal_player should not be called: {amount}")
 
             def _append_effect_event(self, events: list[str], text: str) -> None:
@@ -2686,7 +2700,7 @@ class PersistentFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
             dm_mock.assert_awaited_once()
             response.send_message.assert_awaited_once_with(
                 content="🐞 Tester hat **Es gab einen Bug** gewählt. Bitte fülle dieses Formular aus:",
-                view=unittest.mock.ANY,
+                view=ANY,
                 ephemeral=False,
             )
         finally:

@@ -8,10 +8,14 @@ bot_token.txt
 token.txt
 .venv/
 venv/
+node_modules/
 .npm-cache/
 .patches/
 .git-repair-temp/
 .tmp/
+deploy/
+release/
+backups/
 .vscode/*
 !.vscode/settings.json
 *.db

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -70,7 +70,8 @@ def run_alpha_smoke_checks() -> list[AlphaSmokeResult]:
         )
     )
 
-    validation_issues = validate_cards(bot.karten)
+    validation_cards = bot.karten.all_cards() if hasattr(bot.karten, 'all_cards') else bot.karten
+    validation_issues = validate_cards(validation_cards)
     results.append(
         AlphaSmokeResult(
             name="karten-validierung",
@@ -79,3 +80,5 @@ def run_alpha_smoke_checks() -> list[AlphaSmokeResult]:
         )
     )
     return results
+
+
