@@ -6470,13 +6470,22 @@ class BuffTypeSelect(ui.Select):
             await interaction.response.send_message("❌ Nicht genug Infinitydust!", ephemeral=True)
             return
 
-        await add_card_buff(
-            interaction.user.id,
-            self.selected_card,
-            buff_type,
-            attack_number,
-            applied_buff_amount,
-        )
+        try:
+            await add_card_buff(
+                interaction.user.id,
+                self.selected_card,
+                buff_type,
+                attack_number,
+                applied_buff_amount,
+            )
+        except Exception:
+            logging.exception("Failed to apply card buff for %s", self.selected_card)
+            await add_infinitydust(interaction.user.id, self.dust_amount)
+            await interaction.response.send_message(
+                "❌ Die Verstärkung ist fehlgeschlagen. Dein Infinitydust wurde zurückerstattet.",
+                ephemeral=True,
+            )
+            return
         await _log_event_safe(
             "upgrade_applied",
             guild_id=interaction.guild_id,

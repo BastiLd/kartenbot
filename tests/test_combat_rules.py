@@ -310,6 +310,78 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(user_data_module._attack_allows_damage_buff({"name": "SelfHit", "damage": [10, 20], "self_damage": 3}))
 
+    def test_upgrade_damage_rules_match_for_all_configured_attacks(self) -> None:
+        for card in karten:
+            for attack in card.get("attacks", []):
+                bot_rule = bot_module._attack_is_damage_upgradeable(attack)
+                user_data_rule = user_data_module._attack_allows_damage_buff(attack)
+                self.assertEqual(
+                    bot_rule,
+                    user_data_rule,
+                    f"Mismatch for {card.get('name')} / {attack.get('name')}",
+                )
+
+    def test_buff_select_builds_valid_options_for_all_cards(self) -> None:
+        for card in karten:
+            select = bot_module.BuffTypeSelect(10, str(card.get("name") or ""), card)
+            option_values = {str(opt.value) for opt in select.options}
+            self.assertIn("health_0", option_values, f"Missing health option for {card.get('name')}")
+
+            expected_damage_options: set[str] = set()
+            for index, attack in enumerate(card.get("attacks", [])[:4], start=1):
+                if not bot_module._attack_is_damage_upgradeable(attack):
+                    continue
+                _min_dmg, max_dmg = bot_module._damage_range_with_max_bonus(
+                    attack.get("damage", [0, 0]),
+                    max_only_bonus=0,
+                    flat_bonus=0,
+                )
+                if max_dmg + bot_module.FUSE_DAMAGE_MAX_BONUS > MAX_ATTACK_DAMAGE_PER_HIT:
+                    continue
+                expected_damage_options.add(f"damage_{index}")
+
+            actual_damage_options = {value for value in option_values if value.startswith("damage_")}
+            self.assertEqual(actual_damage_options, expected_damage_options, f"Invalid buff options for {card.get('name')}")
+
+    async def test_buff_select_refunds_dust_when_upgrade_write_fails(self) -> None:
+        card = {"name": "Iron-Man", "hp": 70, "attacks": [{"name": "Repulsor", "damage": [10, 20]}]}
+        select = bot_module.BuffTypeSelect(10, "Iron-Man", card)
+        select._values = ["health_0"]
+
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=77),
+            guild_id=123,
+            channel_id=456,
+            channel=SimpleNamespace(id=456),
+            response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock()),
+        )
+
+        with patch("bot.get_karte_by_name", new=AsyncMock(return_value=card)), patch(
+            "bot.get_card_buffs",
+            new=AsyncMock(return_value=[]),
+        ), patch(
+            "bot.spend_infinitydust",
+            new=AsyncMock(return_value=True),
+        ), patch(
+            "bot.add_card_buff",
+            new=AsyncMock(side_effect=RuntimeError("write failed")),
+        ), patch(
+            "bot.add_infinitydust",
+            new=AsyncMock(),
+        ) as refund_mock, patch(
+            "bot._log_event_safe",
+            new=AsyncMock(),
+        ) as log_mock:
+            await select.callback(interaction)
+
+        refund_mock.assert_awaited_once_with(77, 10)
+        log_mock.assert_not_awaited()
+        interaction.response.send_message.assert_awaited_once_with(
+            "❌ Die Verstärkung ist fehlgeschlagen. Dein Infinitydust wurde zurückerstattet.",
+            ephemeral=True,
+        )
+        interaction.response.edit_message.assert_not_awaited()
+
     def test_attack_display_parts_show_heal_and_success_style(self) -> None:
         attack = {"name": "Heal", "damage": [0, 0], "heal": [10, 20]}
         label, style, summary = bot_module._attack_display_parts(attack)
