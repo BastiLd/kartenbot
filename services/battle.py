@@ -277,6 +277,47 @@ def _extract_heal_amount_from_effect_events(effect_events: list[str] | None) -> 
     return max(0, total_heal)
 
 
+def _extract_boost_breakdown(effect_events: list[str] | None) -> tuple[int, int, int]:
+    for event in effect_events or []:
+        text = str(event or "").strip()
+        match = re.search(
+            r"Normal:\s*(\d+)\s*\|\s*durch Verstärkung:\s*(\d+)\s*\(\+(\d+)\)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return int(match.group(1)), int(match.group(2)), int(match.group(3))
+    return 0, 0, 0
+
+
+def _damage_breakdown_lines(
+    *,
+    actual_damage: int,
+    pre_effect_damage: int,
+    effect_events: list[str] | None,
+) -> list[str]:
+    final_damage = max(0, int(actual_damage or 0))
+    effect_damage = max(0, int(pre_effect_damage or 0))
+    base_damage, boosted_damage, boost_bonus = _extract_boost_breakdown(effect_events)
+    direct_damage = final_damage
+    if boosted_damage == final_damage and boost_bonus > 0:
+        direct_damage = max(0, int(base_damage))
+    total_damage = max(0, direct_damage + boost_bonus + effect_damage)
+
+    lines: list[str] = []
+    if direct_damage > 0:
+        lines.append(f"Schaden: {direct_damage}")
+    if boost_bonus > 0:
+        lines.append(f"Verstärkung Schaden: {boost_bonus}")
+    if effect_damage > 0:
+        lines.append(f"Verbrennung Schaden: {effect_damage}")
+    if total_damage > 0 and (boost_bonus > 0 or effect_damage > 0):
+        lines.append(f"Zusammen Schaden: {total_damage}")
+    elif not lines and final_damage > 0:
+        lines.append(f"Schaden: {final_damage}")
+    return lines
+
+
 def build_battle_log_entry(
     attacker_name,
     defender_name,
@@ -315,8 +356,25 @@ def build_battle_log_entry(
     attack_display_name = _card_display_name(attack_name)
     if effect_events:
         lines = [str(event).strip() for event in effect_events if str(event).strip()]
+        lines = [
+            line
+            for line in lines
+            if not re.search(
+                r"Normal:\s*\d+\s*\|\s*durch Verstärkung:\s*\d+\s*\(\+\d+\)",
+                line,
+                flags=re.IGNORECASE,
+            )
+        ]
         if lines:
             effect_text = "\n" + "\n".join(f"- {line}" for line in lines[:8])
+    damage_breakdown = _damage_breakdown_lines(
+        actual_damage=int(actual_damage or 0),
+        pre_effect_damage=int(pre_effect_damage or 0),
+        effect_events=effect_events,
+    )
+    breakdown_text = ""
+    if damage_breakdown:
+        breakdown_text = "\n" + "\n".join(f"- {line}" for line in damage_breakdown)
 
     if int(actual_damage or 0) == 0 and heal_amount > 0:
         attack_line = (
@@ -338,6 +396,7 @@ def build_battle_log_entry(
         f"\n\n**Runde {round_number}:**\n"
         f"{critical_text}\n"
         f"{attack_line}"
+        f"{breakdown_text}"
         f"{effect_text}\n"
         f"\U0001f6e1\ufe0f {hp_display} hat jetzt noch **{hp_value} Leben**."
     )

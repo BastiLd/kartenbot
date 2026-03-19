@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo
 
 from db import db_context
 from karten import karten
+from services.analytics import log_event as log_analytics_event
+from services.card_pool import random_gameplay_card
 
 
 def _berlin_midnight_epoch() -> int:
@@ -123,6 +125,20 @@ async def add_card_buff(user_id, card_name, buff_type, attack_number, buff_amoun
             (user_id, card_name, buff_type, attack_number, buff_amount),
         )
         await db.commit()
+    await log_analytics_event(
+        "admin_dust_action",
+        guild_id=guild_id,
+        channel_id=channel_id,
+        actor_user_id=actor_id,
+        target_user_id=target_id,
+        command_name="lödust" if str(action or "") == "remove" else "dust",
+        payload={
+            "action": str(action or "give"),
+            "mode": str(mode or "single"),
+            "requested_amount": int(requested_amount or 0),
+            "applied_amount": int(applied_amount or 0),
+        },
+    )
 
 
 def _card_data_by_name(card_name: str) -> dict | None:
@@ -146,7 +162,11 @@ def _attack_allows_damage_buff(attack: dict) -> bool:
         return False
     if attack.get("effects"):
         return False
-    if int(attack.get("self_damage", 0) or 0) > 0:
+    self_damage = attack.get("self_damage", 0)
+    if isinstance(self_damage, list) and len(self_damage) == 2:
+        if max(int(self_damage[0] or 0), int(self_damage[1] or 0)) > 0:
+            return False
+    elif int(self_damage or 0) > 0:
         return False
     max_damage = 0
     raw_damage = attack.get("damage", [0, 0])
@@ -282,8 +302,8 @@ async def remove_karte_amount(user_id, karten_name, amount: int) -> int:
         return new_amount
 
 
-async def add_mission_reward(user_id):
-    karte = random.choice(karten)
+async def add_mission_reward(user_id, *, alpha_enabled: bool = True):
+    karte = random_gameplay_card(karten, alpha_enabled=alpha_enabled)
     is_new_card = await check_and_add_karte(user_id, karte)
     return karte, is_new_card
 

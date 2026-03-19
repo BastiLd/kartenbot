@@ -18,6 +18,7 @@ from services.battle import (
     resolve_multi_hit_damage,
     update_battle_log,
 )
+from services.card_pool import ALPHA_PLAYABLE_CARD_NAMES, alpha_playable_cards
 
 
 def _find_card(name: str) -> dict:
@@ -50,7 +51,7 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         hawkeye = _find_card("Hawkeye")
         flammen_pfeil = _find_attack(hawkeye, "Flammen Pfeil")
         breakdown = flammen_pfeil.get("damage_breakdown", {})
-        self.assertEqual(int(breakdown.get("start_damage", 0) or 0), 5)
+        self.assertEqual(int(breakdown.get("start_damage", 0) or 0), 10)
         self.assertEqual(int(breakdown.get("burn_damage_per_round", 0) or 0), 5)
         self.assertEqual(int(breakdown.get("burn_duration_rounds", 0) or 0), 3)
 
@@ -62,13 +63,12 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
 
         triple = _find_attack(hawkeye, "Triple Arrow")
         mh = triple.get("multi_hit", {})
-        self.assertEqual(int(triple.get("cooldown_turns", 0) or 0), 2)
+        self.assertEqual(int(triple.get("cooldown_turns", 0) or 0), 4)
         self.assertEqual(mh.get("hits"), 3)
-        self.assertAlmostEqual(float(mh.get("hit_chance")), 0.45)
-        self.assertEqual(mh.get("per_hit_damage"), [1, 10])
-        self.assertEqual(int(mh.get("guaranteed_min_per_hit", 0) or 0), 3)
-        self.assertIn("jeder Pfeil", str(triple.get("info") or ""))
-        self.assertIn("Maximalschaden", str(triple.get("info") or ""))
+        self.assertAlmostEqual(float(mh.get("hit_chance")), 1.0)
+        self.assertEqual(mh.get("per_hit_damage"), [5, 10])
+        self.assertEqual(int(mh.get("guaranteed_min_per_hit", 0) or 0), 5)
+        self.assertIn("3 Pfeile", str(triple.get("info") or ""))
 
     def test_ironman_overladung_specs(self) -> None:
         iron = _find_card("Iron-Man")
@@ -76,9 +76,8 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         effects = overladung.get("effects", [])
         multiplier_effect = next((e for e in effects if e.get("type") == "damage_multiplier"), None)
         self.assertIsNotNone(multiplier_effect)
-        self.assertAlmostEqual(float(multiplier_effect.get("multiplier", 1.0)), 1.65)
-        # Interne Cooldown-Logik reduziert am Rundenwechsel; 2 entspricht 1 voller eigener Runde Cooldown.
-        self.assertEqual(int(overladung.get("cooldown_turns", 0) or 0), 2)
+        self.assertAlmostEqual(float(multiplier_effect.get("multiplier", 1.0)), 1.5)
+        self.assertEqual(int(overladung.get("cooldown_turns", 0) or 0), 3)
 
     def test_captain_america_shield_throw_requires_collect(self) -> None:
         cap = _find_card("Captain America")
@@ -89,7 +88,11 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
     def test_hulk_gamma_dynamic_cooldown_spec(self) -> None:
         hulk = _find_card("Hulk")
         gamma = _find_attack(hulk, "Gammastrahl")
-        self.assertEqual(int(gamma.get("cooldown_from_burning_plus", 0) or 0), 3)
+        effects = gamma.get("effects", [])
+        burn_effect = next((e for e in effects if e.get("type") == "burning"), None)
+        self.assertIsNotNone(burn_effect)
+        self.assertEqual(burn_effect.get("duration"), [2, 7])
+        self.assertEqual(int(burn_effect.get("damage", 0) or 0), 5)
 
     def test_outgoing_reduction_cards(self) -> None:
         star_lord = _find_card("Star Lord")
@@ -160,6 +163,50 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         missing = configured_types.difference(EFFECT_TYPES_WITH_EFFECT_LOGS)
         self.assertFalse(missing, f"Missing effect-log coverage for: {sorted(missing)}")
 
+    def test_alpha_pool_contains_only_original_14_cards(self) -> None:
+        pool = alpha_playable_cards(karten)
+        self.assertEqual([card.get("name") for card in pool], list(ALPHA_PLAYABLE_CARD_NAMES))
+
+    def test_new_non_rare_cards_use_new_placeholder_image(self) -> None:
+        expected_names = {
+            "Venom",
+            "Captain Marvel",
+            "Ms Marvel",
+            "Ant-Man",
+            "Miles Morales",
+            "Namor",
+            "Nick Fury",
+            "Shang-Chi",
+            "She-Hulk",
+            "Sue Storm",
+            "Thor",
+            "Mr. Fantastic",
+            "The Thing",
+            "Human Torch",
+            "Cyclops",
+        }
+        placeholder = "https://i.imgur.com/4mxNv2c.png"
+        found_names = {card.get("name") for card in karten if card.get("bild") == placeholder}
+        self.assertEqual(found_names, expected_names)
+
+    def test_selected_cooldowns_follow_word_plus_one_rule(self) -> None:
+        expectations = {
+            ("Black Widow", "Taser"): 3,
+            ("Iron-Man", "Überladung"): 3,
+            ("Captain America", "Inspiration"): 5,
+            ("Hawkeye", "Triple Arrow"): 4,
+            ("Doctor Strange", "Strahlen der Vishanti"): 5,
+            ("Star Lord", "Awesome Mix"): 6,
+            ("Rocket", "Das dicke Ding"): 6,
+            ("Spider-Man", "Spinnensinn"): 5,
+            ("Captain Marvel", "Sternenflug"): 7,
+            ("Thor", "Der Götterschlag"): 7,
+            ("Cyclops", "Mega-Optic-Blast"): 7,
+        }
+        for (card_name, attack_name), expected_cooldown in expectations.items():
+            attack = _find_attack(_find_card(card_name), attack_name)
+            self.assertEqual(int(attack.get("cooldown_turns", 0) or 0), expected_cooldown, f"{card_name} / {attack_name}")
+
 
 class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
     def test_sort_user_cards_like_karten_order(self) -> None:
@@ -229,6 +276,95 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(label, "Heal (+10-20) ❤️")
         self.assertEqual(style, bot_module.discord.ButtonStyle.success)
         self.assertEqual(summary, "Heal — +10-20 Heilung ❤️")
+
+    def test_resolve_self_damage_value_supports_ranges(self) -> None:
+        with patch("bot.random.randint", return_value=13) as randint_mock:
+            self.assertEqual(bot_module._resolve_self_damage_value([10, 20]), 13)
+        randint_mock.assert_called_once_with(10, 20)
+        self.assertEqual(bot_module._resolve_self_damage_value(5), 5)
+        self.assertEqual(bot_module._resolve_self_damage_value(None), 0)
+
+    def test_apply_mix_heal_or_max_effect_heals_when_roll_is_below_half(self) -> None:
+        class _Owner:
+            def __init__(self) -> None:
+                self.force_max_next: dict[int, int] = {}
+                self.hp = 60
+                self.max_hp = 100
+
+            def _hp_for(self, _player_id: int) -> int:
+                return self.hp
+
+            def _max_hp_for(self, _player_id: int) -> int:
+                return self.max_hp
+
+            def heal_player(self, _player_id: int, amount: int) -> int:
+                healed = min(amount, self.max_hp - self.hp)
+                self.hp += healed
+                return healed
+
+            def _append_effect_event(self, events: list[str], text: str) -> None:
+                events.append(text)
+
+        owner = _Owner()
+        effect_events: list[str] = []
+        with patch("bot.random.random", return_value=0.2):
+            bot_module._apply_mix_heal_or_max_effect(owner, 1, {"heal": 15}, effect_events)
+        self.assertEqual(owner.hp, 75)
+        self.assertEqual(owner.force_max_next, {})
+        self.assertEqual(effect_events, ["Awesome Mix: +15 HP."])
+
+    def test_apply_mix_heal_or_max_effect_sets_force_max_when_roll_is_above_half(self) -> None:
+        class _Owner:
+            def __init__(self) -> None:
+                self.force_max_next: dict[int, int] = {}
+                self.hp = 60
+                self.max_hp = 100
+
+            def _hp_for(self, _player_id: int) -> int:
+                return self.hp
+
+            def _max_hp_for(self, _player_id: int) -> int:
+                return self.max_hp
+
+            def heal_player(self, _player_id: int, amount: int) -> int:
+                raise AssertionError(f"heal_player should not be called: {amount}")
+
+            def _append_effect_event(self, events: list[str], text: str) -> None:
+                events.append(text)
+
+        owner = _Owner()
+        effect_events: list[str] = []
+        with patch("bot.random.random", return_value=0.8):
+            bot_module._apply_mix_heal_or_max_effect(owner, 1, {"heal": 15}, effect_events)
+        self.assertEqual(owner.hp, 60)
+        self.assertEqual(owner.force_max_next, {1: 1})
+        self.assertEqual(effect_events, ["Awesome Mix: Nächster Angriff verursacht Maximalschaden."])
+
+    def test_apply_mix_heal_or_max_effect_uses_force_max_at_full_hp(self) -> None:
+        class _Owner:
+            def __init__(self) -> None:
+                self.force_max_next: dict[int, int] = {}
+                self.hp = 100
+                self.max_hp = 100
+
+            def _hp_for(self, _player_id: int) -> int:
+                return self.hp
+
+            def _max_hp_for(self, _player_id: int) -> int:
+                return self.max_hp
+
+            def heal_player(self, _player_id: int, amount: int) -> int:
+                raise AssertionError(f"heal_player should not be called: {amount}")
+
+            def _append_effect_event(self, events: list[str], text: str) -> None:
+                events.append(text)
+
+        owner = _Owner()
+        effect_events: list[str] = []
+        with patch("bot.random.random", return_value=0.2):
+            bot_module._apply_mix_heal_or_max_effect(owner, 1, {"heal": 15}, effect_events)
+        self.assertEqual(owner.force_max_next, {1: 1})
+        self.assertEqual(effect_events, ["Awesome Mix: Nächster Angriff verursacht Maximalschaden."])
 
     def test_build_attack_info_lines_show_heal_amounts(self) -> None:
         card = {
@@ -864,7 +1000,10 @@ class FightFeedbackAutoCloseTests(unittest.IsolatedAsyncioTestCase):
         create_task_mock.assert_called_once()
         self.assertTrue(view.close_on_idle)
         self.assertIsNotNone(view.auto_close_started_at)
-        interaction.response.send_message.assert_awaited_once_with("\u2705 Danke f\u00fcr dein Feedback!", ephemeral=False)
+        interaction.response.send_message.assert_awaited_once_with(
+            "\u2705 Unbekannt hat **Es gab keinen Bug** gewählt. Danke für das Feedback!",
+            ephemeral=False,
+        )
 
 
 class CapDamageRuleTests(unittest.IsolatedAsyncioTestCase):
@@ -1205,6 +1344,29 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(interaction.response.sent_messages, [])
         self.assertEqual(len(interaction.followup.sent_messages), 1)
         self.assertEqual(interaction.followup.sent_messages[0]["content"], "Diese Attacke ist noch auf Cooldown!")
+
+    async def test_battle_execute_attack_handles_self_damage_range(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Risk", "damage": [10, 10], "self_damage": [7, 7], "info": "test"}],
+        }
+        defender_card = {
+            "name": "DefenderCard",
+            "hp": 100,
+            "bild": "https://example.com/defender.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, defender_card, 1, 2, None)
+        view.current_turn = 1
+        interaction = _DummyInteraction(1, _DummyMessage())
+        with patch.object(view, "_sync_runtime_flags_from_session", new=AsyncMock()), patch(
+            "bot.get_card_buffs",
+            new=AsyncMock(return_value=[]),
+        ):
+            await view.execute_attack(interaction, 0)
+        self.assertEqual(view.player1_hp, 93)
 
     async def test_roll_attack_damage_caps_multi_hit_total_to_50(self) -> None:
         player_card = {
@@ -2465,7 +2627,7 @@ class PersistentFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
                 await bug_button.callback(interaction)
             dm_mock.assert_awaited_once()
             response.send_message.assert_awaited_once_with(
-                content="🐞 Danke! Bitte fülle dieses Formular aus:",
+                content="🐞 Tester hat **Es gab einen Bug** gewählt. Bitte fülle dieses Formular aus:",
                 view=unittest.mock.ANY,
                 ephemeral=False,
             )

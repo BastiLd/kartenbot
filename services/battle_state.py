@@ -22,7 +22,7 @@ class BattleRuntimeMaps(TypedDict):
     confused_next_turn: BattleBoolMap
     manual_reload_needed: BattleReloadMap
     stunned_next_turn: BattleBoolMap
-    special_lock_next_turn: BattleBoolMap
+    special_lock_next_turn: BattleIntMap
     blind_next_attack: BattleFloatMap
     pending_flat_bonus: BattleIntMap
     pending_flat_bonus_uses: BattleIntMap
@@ -45,7 +45,7 @@ def build_battle_runtime_maps(player_ids: tuple[int, int]) -> BattleRuntimeMaps:
         "confused_next_turn": {player_a: False, player_b: False},
         "manual_reload_needed": {player_a: {}, player_b: {}},
         "stunned_next_turn": {player_a: False, player_b: False},
-        "special_lock_next_turn": {player_a: False, player_b: False},
+        "special_lock_next_turn": {player_a: 0, player_b: 0},
         "blind_next_attack": {player_a: 0.0, player_b: 0.0},
         "pending_flat_bonus": {player_a: 0, player_b: 0},
         "pending_flat_bonus_uses": {player_a: 0, player_b: 0},
@@ -238,6 +238,7 @@ def queue_incoming_modifier(
     flat: int = 0,
     reflect: float = 0.0,
     store_ratio: float = 0.0,
+    max_store: int | None = None,
     cap: int | str | None = None,
     evade: bool = False,
     counter: int = 0,
@@ -253,6 +254,7 @@ def queue_incoming_modifier(
                 "flat": max(0, int(flat)),
                 "reflect": max(0.0, float(reflect)),
                 "store_ratio": max(0.0, float(store_ratio)),
+                "max_store": (max(0, int(max_store)) if max_store is not None else None),
                 "cap": ("attack_min" if str(cap).strip().lower() == "attack_min" else (int(cap) if cap is not None else None)),
                 "evade": bool(evade),
                 "counter": max(0, int(counter)),
@@ -305,6 +307,7 @@ def start_airborne_two_phase(
     landing_damage: DamageInput | object,
     effect_events: list[str],
     *,
+    landing_attack: BattleEntry | None = None,
     source_attack_index: int | None = None,
     cooldown_turns: int = 0,
 ) -> None:
@@ -316,11 +319,15 @@ def start_airborne_two_phase(
         max_damage = 40
     min_damage = max(0, min_damage)
     max_damage = max(min_damage, max_damage)
+    pending_attack: BattleEntry = dict(landing_attack or {})
+    pending_attack.setdefault("name", "Landungsschlag")
+    pending_attack["damage"] = [min_damage, max_damage]
+    pending_attack["cooldown_attack_index"] = int(source_attack_index) if source_attack_index is not None else None
+    pending_attack["cooldown_turns"] = max(0, int(cooldown_turns or 0))
+    pending_attack.setdefault("info", "Automatischer Folgetreffer aus der Flugphase.")
     airborne_pending_landing[player_id] = {
         "damage": [min_damage, max_damage],
-        "name": "Landungsschlag",
-        "cooldown_attack_index": int(source_attack_index) if source_attack_index is not None else None,
-        "cooldown_turns": max(0, int(cooldown_turns or 0)),
+        "attack": pending_attack,
     }
     queue_incoming_modifier(incoming_modifiers, player_id, evade=True, counter=0, turns=1, source="airborne")
     grant_unique_effect(active_effects, player_id, "airborne", player_id, duration=1)
@@ -344,17 +351,25 @@ def resolve_forced_landing_if_due(
     except Exception:
         logging.exception("Unexpected error")
     append_effect_event(effect_events, "Landungsschlag wurde automatisch ausgelöst.")
+    attack = pending.get("attack")
+    if isinstance(attack, dict):
+        damage = attack.get("damage", [20, 40])
+        if isinstance(damage, list) and len(damage) == 2:
+            attack["damage"] = [int(damage[0]), int(damage[1])]
+        else:
+            attack["damage"] = [20, 40]
+        attack.setdefault("name", "Landungsschlag")
+        attack.setdefault("info", "Automatischer Folgetreffer aus der Flugphase.")
+        return attack
     damage = pending.get("damage", [20, 40])
     if isinstance(damage, list) and len(damage) == 2:
         damage_data = [int(damage[0]), int(damage[1])]
     else:
         damage_data = [20, 40]
     return {
-        "name": str(pending.get("name") or "Landungsschlag"),
+        "name": "Landungsschlag",
         "damage": damage_data,
         "info": "Automatischer Folgetreffer aus der Flugphase.",
-        "cooldown_attack_index": pending.get("cooldown_attack_index"),
-        "cooldown_turns": int(pending.get("cooldown_turns", 0) or 0),
     }
 
 
@@ -522,10 +537,16 @@ def resolve_incoming_modifiers(
 
     reflect_ratio = float(modifier.get("reflect", 0.0) or 0.0)
     reflected = int(round(prevented * reflect_ratio)) if reflect_ratio > 0 else 0
+    if prevented > 0:
+        reflected += max(0, int(modifier.get("reflect_flat", 0) or 0))
 
     store_ratio = float(modifier.get("store_ratio", 0.0) or 0.0)
     if store_ratio > 0 and prevented > 0:
-        absorbed_damage[defender_id] += int(round(prevented * store_ratio))
+        stored_amount = int(round(prevented * store_ratio))
+        max_store = modifier.get("max_store")
+        if max_store is not None:
+            stored_amount = min(stored_amount, max(0, int(max_store)))
+        absorbed_damage[defender_id] += stored_amount
 
     return max(0, damage), max(0, reflected), False, 0, modifier
 

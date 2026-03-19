@@ -6,13 +6,17 @@ ALLOWED_EFFECT_TYPES = frozenset(
         "burning",
         "cap_damage",
         "damage_boost",
+        "damage_reduction",
+        "damage_reduction_flat",
         "damage_multiplier",
         "damage_reduction_sequence",
         "delayed_defense_after_next_attack",
         "enemy_next_attack_reduction_flat",
         "enemy_next_attack_reduction_percent",
         "evade",
+        "force_max",
         "guaranteed_hit",
+        "heal",
         "mix_heal_or_max",
         "reflect",
         "regen",
@@ -29,6 +33,7 @@ ALLOWED_CAP_DAMAGE_TOKENS = frozenset({"attack_min"})
 RARITY_ALIASES = {
     "common": "common",
     "normal": "common",
+    "gewöhnlich": "common",
     "gewoehnlich": "common",
     "gewohnlich": "common",
     "rare": "rare",
@@ -36,6 +41,7 @@ RARITY_ALIASES = {
     "epic": "epic",
     "episch": "epic",
     "legendary": "legendary",
+    "legendär": "legendary",
     "legendaer": "legendary",
     "legendar": "legendary",
 }
@@ -248,7 +254,7 @@ def _validate_attack(attack, path: str, issues: list[str], seen_attack_names: di
 
     self_damage = attack.get("self_damage")
     if self_damage is not None:
-        _validate_int(self_damage, path, "self_damage", issues, minimum=0)
+        _validate_amount_range(self_damage, path, "self_damage", issues, minimum=0)
 
     heal = attack.get("heal")
     if heal is not None:

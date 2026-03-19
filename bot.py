@@ -8,6 +8,7 @@ import re
 import time
 import os
 from collections import deque
+from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -57,6 +58,15 @@ from services.battle import (
 from services import battle_state
 from services.card_validation import summarize_validation_issues, validate_cards
 from services.battle_types import CardData
+from services.analytics import log_event as log_analytics_event
+from services.card_pool import (
+    ALPHA_PLAYABLE_CARD_NAMES,
+    card_is_alpha_playable,
+    canonical_card_name,
+    filter_owned_cards_for_gameplay,
+    gameplay_cards,
+    random_gameplay_card,
+)
 from services.guild_settings import (
     add_give_op_role,
     add_give_op_user,
@@ -97,6 +107,7 @@ from services.runtime_store import (
     update_session_status,
     upsert_durable_view,
 )
+from services.stats_export import build_stats_workbook
 from services.user_data import (
     add_card_buff,
     add_infinitydust,
@@ -129,7 +140,31 @@ DUST_MENU_AMOUNTS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 70, 100]
 FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
-karten: list[CardData] = cast(list[CardData], RAW_KARTEN)
+
+
+class CardCatalog:
+    def __init__(self, cards: list[CardData]) -> None:
+        self._all_cards = list(cards)
+
+    def _gameplay_view(self) -> list[CardData]:
+        return gameplay_cards(self._all_cards, alpha_enabled=ALPHA_PHASE_ENABLED)
+
+    def __iter__(self):
+        return iter(self._all_cards)
+
+    def __len__(self) -> int:
+        return len(self._gameplay_view())
+
+    def __getitem__(self, item):
+        if isinstance(item, slice):
+            return self._all_cards[item]
+        return self._gameplay_view()[item]
+
+    def all_cards(self) -> list[CardData]:
+        return list(self._all_cards)
+
+
+karten = CardCatalog(cast(list[CardData], RAW_KARTEN))
 
 VIEW_KIND_INTRO_PROMPT = "intro_prompt"
 VIEW_KIND_FIGHT_CHALLENGE = "fight_challenge"
@@ -221,6 +256,27 @@ def _channel_mention_or_fallback(channel: object) -> str:
     if isinstance(channel_id, int):
         return f"<#{channel_id}>"
     return "dieser Kanal"
+
+
+def _thread_id_for_channel(channel: object) -> int:
+    if isinstance(channel, discord.Thread):
+        return int(channel.id)
+    return 0
+
+
+def current_gameplay_cards() -> list[CardData]:
+    return gameplay_cards(karten, alpha_enabled=ALPHA_PHASE_ENABLED)
+
+
+def _filter_owned_cards_for_current_mode(user_cards: list[tuple[str, int]]) -> list[tuple[str, int]]:
+    return filter_owned_cards_for_gameplay(user_cards, alpha_enabled=ALPHA_PHASE_ENABLED)
+
+
+async def _log_event_safe(event_type: str, **kwargs: Any) -> None:
+    try:
+        await log_analytics_event(event_type, **kwargs)
+    except Exception:
+        logging.exception("Failed to write analytics event: %s", event_type)
 
 
 def _effect_source_name(source: object) -> str:
@@ -535,6 +591,19 @@ class KatabumpCommandTree(app_commands.CommandTree):
                 await send_interaction_response(interaction, content=message, ephemeral=True)
             return False
         _interaction_timestamps.append(now)
+        if command_name:
+            await _log_event_safe(
+                "command_used",
+                guild_id=guild_id,
+                channel_id=interaction.channel_id,
+                thread_id=_thread_id_for_channel(interaction.channel),
+                actor_user_id=getattr(interaction.user, "id", 0),
+                command_name=command_name,
+                payload={
+                    "channel_parent_id": int(getattr(interaction.channel, "parent_id", 0) or 0),
+                    "alpha_phase": bool(ALPHA_PHASE_ENABLED),
+                },
+            )
         return True
 
 
@@ -549,6 +618,7 @@ ADMIN_SLASH_COMMANDS = {
     "sammlung-ansehen",
     "test-bericht",
     "karte-geben",
+    "stats_e",
     "op-verwaltung",
     "bot-status",
     "kanal-freigeben",
@@ -623,6 +693,8 @@ EFFECT_TYPES_WITH_EFFECT_LOGS = frozenset(
         "burning",
         "cap_damage",
         "damage_boost",
+        "damage_reduction",
+        "damage_reduction_flat",
         "damage_multiplier",
         "damage_reduction_sequence",
         "delayed_defense_after_next_attack",
@@ -685,6 +757,11 @@ async def restore_bot_presence_status() -> None:
     try:
         await bot.change_presence(status=status)
         logging.info("Bot status restored from DB: %s", status_key)
+        await _log_event_safe(
+            "lifecycle_presence_restored",
+            command_name="bot_status",
+            payload={"status": status_key},
+        )
     except Exception:
         logging.exception("Failed to restore bot status from DB")
 
@@ -840,7 +917,7 @@ def _attack_is_damage_upgradeable(attack: dict) -> bool:
         return False
     if attack.get("effects"):
         return False
-    if int(attack.get("self_damage", 0) or 0) > 0:
+    if _resolve_self_damage_value(attack.get("self_damage", 0)) > 0:
         return False
     max_damage = 0
     multi_hit = attack.get("multi_hit")
@@ -876,6 +953,44 @@ def _apply_max_only_damage_bonus(base_damage, max_only_bonus: int):
         return base_damage
     min_dmg, max_dmg = _damage_range_with_max_bonus(base_damage, max_only_bonus=bonus, flat_bonus=0)
     return [min_dmg, max_dmg]
+
+
+def _resolve_self_damage_value(raw_value: object) -> int:
+    if isinstance(raw_value, list) and len(raw_value) == 2:
+        min_damage = max(0, int(_maybe_int(raw_value[0]) or 0))
+        max_damage = max(min_damage, int(_maybe_int(raw_value[1]) or 0))
+        if max_damage <= min_damage:
+            return min_damage
+        return random.randint(min_damage, max_damage)
+    return max(0, int(_maybe_int(raw_value) or 0))
+
+
+class _SupportsMixHealOrMax(Protocol):
+    force_max_next: dict[int, int]
+
+    def _hp_for(self, player_id: int) -> int: ...
+
+    def _max_hp_for(self, player_id: int) -> int: ...
+
+    def heal_player(self, player_id: int, amount: int) -> int: ...
+
+    def _append_effect_event(self, events: list[str], text: str) -> None: ...
+
+
+def _apply_mix_heal_or_max_effect(
+    owner: _SupportsMixHealOrMax,
+    target_id: int,
+    effect: dict,
+    effect_events: list[str],
+) -> None:
+    heal_amount = _random_int_from_range(effect.get("heal", 0))
+    can_heal = heal_amount > 0 and owner._hp_for(target_id) < owner._max_hp_for(target_id)
+    if can_heal and random.random() < 0.5:
+        healed_mix = owner.heal_player(target_id, heal_amount)
+        owner._append_effect_event(effect_events, f"Awesome Mix: +{healed_mix} HP.")
+        return
+    owner.force_max_next[target_id] = max(owner.force_max_next.get(target_id, 0), 1)
+    owner._append_effect_event(effect_events, "Awesome Mix: Nächster Angriff verursacht Maximalschaden.")
 
 
 def _damage_text_for_attack(attack: dict) -> str:
@@ -1077,6 +1192,48 @@ def _boosted_damage_effect_text(boosted_damage: int, attack_multiplier: float, f
         return None
     return f"Normal: {normal_damage} | durch Verstärkung: {boosted} (+{bonus})"
 
+
+def _extract_boost_breakdown(effect_events: list[str] | None) -> dict[str, int]:
+    for entry in effect_events or []:
+        text = str(entry or "").strip()
+        match = re.search(
+            r"Normal:\s*(\d+)\s*\|\s*durch Verstärkung:\s*(\d+)\s*\(\+(\d+)\)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return {
+                "base_damage": int(match.group(1)),
+                "boosted_damage": int(match.group(2)),
+                "boost_bonus": int(match.group(3)),
+            }
+    return {"base_damage": 0, "boosted_damage": 0, "boost_bonus": 0}
+
+
+def _damage_breakdown_payload(
+    *,
+    actual_damage: int,
+    pre_effect_damage: int,
+    effect_events: list[str] | None,
+    self_hit_damage: int = 0,
+) -> dict[str, int]:
+    boost = _extract_boost_breakdown(effect_events)
+    final_damage = max(0, int(actual_damage or 0))
+    burn_damage = max(0, int(pre_effect_damage or 0))
+    boost_bonus = 0
+    direct_damage = final_damage
+    if boost["boosted_damage"] == final_damage and boost["boost_bonus"] > 0:
+        direct_damage = max(0, int(boost["base_damage"]))
+        boost_bonus = max(0, int(boost["boost_bonus"]))
+    return {
+        "direct_damage": direct_damage,
+        "boost_bonus": boost_bonus,
+        "pre_effect_damage": burn_damage,
+        "final_damage": final_damage,
+        "total_damage_to_defender": max(0, direct_damage + boost_bonus + burn_damage),
+        "self_hit_damage": max(0, int(self_hit_damage or 0)),
+    }
+
 # Volltreffer-System Funktionen
 @bot.event
 async def on_ready():
@@ -1088,6 +1245,15 @@ async def on_ready():
     await run_one_time_migrations()
     await restore_bot_presence_status()
     logging.info("Bot ist online als %s", bot.user)
+    await _log_event_safe(
+        "lifecycle_ready",
+        command_name="startup",
+        payload={
+            "alpha_phase": bool(ALPHA_PHASE_ENABLED),
+            "guild_count": len(bot.guilds),
+            "user": str(bot.user or ""),
+        },
+    )
     prune_alpha_slash_commands()
     try:
         synced = await bot.tree.sync()
@@ -1111,6 +1277,16 @@ async def on_ready():
         await resend_pending_requests()
     except Exception:
         logging.exception("Failed to resend pending requests on startup")
+
+
+@bot.event
+async def on_disconnect():
+    await _log_event_safe("lifecycle_disconnect", command_name="gateway")
+
+
+@bot.event
+async def on_resumed():
+    await _log_event_safe("lifecycle_resumed", command_name="gateway")
 
 # Event: On Message – bei erster Nachricht im Kanal Intro zeigen (ephemeral)
 @bot.event
@@ -1264,9 +1440,10 @@ def _build_mission_embed(mission_data: dict) -> discord.Embed:
 
 # Hilfsfunktion: Karte nach Namen finden
 async def get_karte_by_name(name: str) -> dict[str, Any] | None:
+    wanted_name = canonical_card_name(name)
     for karte in karten:
-        card_name = str(karte.get("name") or "").lower()
-        if card_name == name.lower():
+        card_name = canonical_card_name(karte.get("name"))
+        if card_name == wanted_name:
             return karte
     return None
 
@@ -1303,7 +1480,7 @@ class ZieheKarteView(RestrictedView):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Das ist nicht dein Button!", ephemeral=True)
             return
-        karte = random.choice(karten)
+        karte = random_gameplay_card(karten, alpha_enabled=ALPHA_PHASE_ENABLED)
         await add_karte(interaction.user.id, karte["name"])
         embed = discord.Embed(
             title=karte["name"],
@@ -1381,6 +1558,8 @@ class BattleView(DurableView):
         public_result_channel_id: int | None = None,
     ):
         super().__init__(timeout=None)
+        if ALPHA_PHASE_ENABLED and player2_id == 0 and not card_is_alpha_playable(player2_card.get("name")):
+            player2_card = cast(CardData, random_gameplay_card(karten, alpha_enabled=True))
         self.player1_card = player1_card
         self.player2_card = player2_card
         self.player1_id = player1_id
@@ -1388,6 +1567,7 @@ class BattleView(DurableView):
         self.current_turn = player1_id
         self.public_result_channel_id = int(public_result_channel_id) if public_result_channel_id else None
         self.session_id: int | None = None
+        self.session_kind = "fight_pvp" if player2_id != 0 else "fight_bot"
 
         base_hp1 = player1_card.get("hp", 100)
         base_hp2 = player2_card.get("hp", 100)
@@ -1675,6 +1855,35 @@ class BattleView(DurableView):
         )
         if self.battle_log_message and not self.ui_needs_resend:
             await self._safe_edit_battle_log(self._full_battle_log_embed)
+        attacker_id = int(getattr(attacker_user, "id", 0) or 0)
+        defender_id = int(getattr(defender_user, "id", 0) or 0)
+        await _log_event_safe(
+            "attack_used",
+            guild_id=self._durable_guild_id,
+            channel_id=self._durable_channel_id,
+            thread_id=self._durable_channel_id if self.session_kind in {"fight_pvp", "fight_bot", "mission"} else 0,
+            session_id=self.session_id,
+            session_kind=self.session_kind,
+            actor_user_id=attacker_id,
+            target_user_id=defender_id,
+            hero_name=attacker_name,
+            attack_name=attack_name,
+            payload={
+                "round": int(round_number),
+                "is_critical": bool(effective_critical),
+                "damage": _damage_breakdown_payload(
+                    actual_damage=int(actual_damage),
+                    pre_effect_damage=int(pre_effect_damage),
+                    effect_events=effect_events,
+                    self_hit_damage=int(self_hit_damage),
+                ),
+                "defender_remaining_hp": int(defender_remaining_hp or 0),
+                "attacker_remaining_hp": int(attacker_remaining_hp or 0) if attacker_remaining_hp is not None else None,
+                "effect_events": [str(item) for item in effect_events or []],
+                "attacker_status_icons": attacker_status_icons,
+                "defender_status_icons": defender_status_icons,
+            },
+        )
 
     def _winner_embed(
         self,
@@ -1791,7 +2000,7 @@ class BattleView(DurableView):
             for key, value in _nested_int_keyed_dict(payload.get("manual_reload_needed")).items()
         }
         self.stunned_next_turn = _int_keyed_bool_dict(payload.get("stunned_next_turn"))
-        self.special_lock_next_turn = _int_keyed_bool_dict(payload.get("special_lock_next_turn"))
+        self.special_lock_next_turn = _int_keyed_int_dict(payload.get("special_lock_next_turn"))
         self.blind_next_attack = _int_keyed_float_dict(payload.get("blind_next_attack"))
         self.pending_flat_bonus = _int_keyed_int_dict(payload.get("pending_flat_bonus"))
         self.pending_flat_bonus_uses = _int_keyed_int_dict(payload.get("pending_flat_bonus_uses"))
@@ -1841,11 +2050,12 @@ class BattleView(DurableView):
         channel_id = getattr(channel, "id", None)
         if not isinstance(guild, discord.Guild) or not isinstance(channel_id, int):
             return
+        was_new_session = self.session_id is None
         if battle_message is not None:
             self.bind_durable_message(guild_id=guild.id, channel_id=channel_id, message_id=battle_message.id)
         self.session_id = await save_active_session(
             session_id=self.session_id,
-            kind="fight_pvp" if self.player2_id != 0 else "fight_bot",
+            kind=self.session_kind,
             guild_id=guild.id,
             channel_id=channel_id,
             thread_id=channel_id if isinstance(channel, discord.Thread) else None,
@@ -1861,6 +2071,45 @@ class BattleView(DurableView):
                 message_id=self._durable_message_id,
                 view_kind=self.durable_view_kind,
                 payload=self.durable_payload(),
+            )
+        if was_new_session and status == "active":
+            await _log_event_safe(
+                "fight_started",
+                guild_id=guild.id,
+                channel_id=channel_id,
+                thread_id=_thread_id_for_channel(channel),
+                session_id=self.session_id,
+                session_kind=self.session_kind,
+                actor_user_id=self.player1_id,
+                target_user_id=self.player2_id,
+                payload={
+                    "player_hero": self.player1_card.get("name"),
+                    "enemy_hero": self.player2_card.get("name"),
+                },
+            )
+            await _log_event_safe(
+                "hero_selected",
+                guild_id=guild.id,
+                channel_id=channel_id,
+                thread_id=_thread_id_for_channel(channel),
+                session_id=self.session_id,
+                session_kind=self.session_kind,
+                actor_user_id=self.player1_id,
+                target_user_id=self.player2_id,
+                hero_name=self.player1_card.get("name"),
+                payload={"side": "player1"},
+            )
+            await _log_event_safe(
+                "hero_selected",
+                guild_id=guild.id,
+                channel_id=channel_id,
+                thread_id=_thread_id_for_channel(channel),
+                session_id=self.session_id,
+                session_kind=self.session_kind,
+                actor_user_id=self.player2_id,
+                target_user_id=self.player1_id,
+                hero_name=self.player2_card.get("name"),
+                payload={"side": "player2" if self.player2_id != 0 else "bot"},
             )
 
     async def _repost_battle_ui_if_needed(
@@ -2094,6 +2343,7 @@ class BattleView(DurableView):
         landing_damage,
         effect_events: list[str],
         *,
+        landing_attack: dict[str, object] | None = None,
         source_attack_index: int | None = None,
         cooldown_turns: int = 0,
     ) -> None:
@@ -2104,6 +2354,7 @@ class BattleView(DurableView):
             player_id,
             landing_damage,
             effect_events,
+            landing_attack=landing_attack,
             source_attack_index=source_attack_index,
             cooldown_turns=cooldown_turns,
         )
@@ -2165,6 +2416,7 @@ class BattleView(DurableView):
         flat: int = 0,
         reflect: float = 0.0,
         store_ratio: float = 0.0,
+        max_store: int | None = None,
         cap: int | str | None = None,
         evade: bool = False,
         counter: int = 0,
@@ -2178,6 +2430,7 @@ class BattleView(DurableView):
             flat=flat,
             reflect=reflect,
             store_ratio=store_ratio,
+            max_store=max_store,
             cap=cap,
             evade=evade,
             counter=counter,
@@ -2499,7 +2752,7 @@ class BattleView(DurableView):
             for idx, other in enumerate(attacks[:4]):
                 if idx == attack_index:
                     continue
-                if self.special_lock_next_turn.get(0, False) and idx != 0:
+                if self.special_lock_next_turn.get(0, 0) > 0 and idx != 0:
                     continue
                 if self.is_attack_on_cooldown(0, idx):
                     continue
@@ -2543,14 +2796,14 @@ class BattleView(DurableView):
 
         candidate_indices: list[int] = []
         for i, attack in enumerate(attacks[:4]):
-            if self.special_lock_next_turn.get(0, False) and i != 0:
+            if self.special_lock_next_turn.get(0, 0) > 0 and i != 0:
                 continue
             if not self.is_attack_on_cooldown(0, i):
                 candidate_indices.append(i)
 
         if not candidate_indices:
             for i, _attack in enumerate(attacks[:4]):
-                if self.special_lock_next_turn.get(0, False) and i != 0:
+                if self.special_lock_next_turn.get(0, 0) > 0 and i != 0:
                     continue
                 candidate_indices.append(i)
 
@@ -2850,7 +3103,7 @@ class BattleView(DurableView):
             await _safe_send_interaction_ephemeral(interaction, "Diese Attacke ist noch auf Cooldown!")
             return
 
-        if not is_forced_landing and self.special_lock_next_turn.get(self.current_turn, False) and attack_index != 0:
+        if (not is_forced_landing) and self.special_lock_next_turn.get(self.current_turn, 0) > 0 and attack_index != 0:
             await _safe_send_interaction_ephemeral(
                 interaction,
                 "Diese Runde sind nur Standard-Angriffe erlaubt (Attacke 1).",
@@ -3151,7 +3404,7 @@ class BattleView(DurableView):
             if not attack_hits_enemy or int(actual_damage or 0) <= 0:
                 is_critical = False
 
-        self_damage_value = int(attack.get("self_damage", 0) or 0)
+        self_damage_value = _resolve_self_damage_value(attack.get("self_damage", 0))
         if self_damage_value > 0:
             self._apply_non_heal_damage_with_event(
                 effect_events,
@@ -3163,10 +3416,12 @@ class BattleView(DurableView):
 
         heal_data = attack.get("heal")
         if heal_data is not None:
-            heal_amount = _random_int_from_range(heal_data)
-            healed_now = self.heal_player(self.current_turn, heal_amount)
-            if healed_now > 0:
-                self._append_effect_event(effect_events, f"Heilung: +{healed_now} HP.")
+            heal_chance = float(attack.get("heal_chance", 1.0) or 1.0)
+            if random.random() <= heal_chance:
+                heal_amount = _random_int_from_range(heal_data)
+                healed_now = self.heal_player(self.current_turn, heal_amount)
+                if healed_now > 0:
+                    self._append_effect_event(effect_events, f"Heilung: +{healed_now} HP.")
 
         lifesteal_ratio = float(attack.get("lifesteal_ratio", 0.0) or 0.0)
         if lifesteal_ratio > 0 and attack_hits_enemy and actual_damage > 0:
@@ -3292,19 +3547,38 @@ class BattleView(DurableView):
             elif eff_type == "reflect":
                 reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
                 reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
-                self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1, source=attack_name)
+                reflect_flat = int(effect.get("flat", 0) or 0)
+                self.queue_incoming_modifier(
+                    target_id,
+                    percent=reduce_percent,
+                    reflect=reflect_ratio,
+                    flat=0,
+                    turns=1,
+                    source=attack_name,
+                )
+                if self.incoming_modifiers.get(target_id):
+                    self.incoming_modifiers[target_id][-1]["reflect_flat"] = reflect_flat
                 reduce_pct = int(round(max(0.0, reduce_percent) * 100))
                 reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
+                flat_text = f" und {reflect_flat} fixer Rückschaden ausgelöst werden" if reflect_flat > 0 else ""
                 self._append_effect_event(
                     effect_events,
                     _effect_source_text(
                         attack_name,
-                        f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert und {reflect_pct}% des verhinderten Schadens werden zurückgeworfen.",
+                        f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert, {reflect_pct}% des verhinderten Schadens werden zurückgeworfen{flat_text}.",
                     ),
                 )
             elif eff_type == "absorb_store":
                 percent = float(effect.get("percent", 0.0) or 0.0)
-                self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1, source=attack_name)
+                max_store = effect.get("max_store")
+                self.queue_incoming_modifier(
+                    target_id,
+                    percent=percent,
+                    store_ratio=1.0,
+                    max_store=(int(max_store) if max_store is not None else None),
+                    turns=1,
+                    source=attack_name,
+                )
                 self._append_effect_event(effect_events, _effect_source_text(attack_name, "Absorption aktiv: Verhinderter Schaden wird gespeichert."))
             elif eff_type == "cap_damage":
                 cap_setting = effect.get("max_damage", 0)
@@ -3326,8 +3600,9 @@ class BattleView(DurableView):
                 self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1, source=attack_name)
                 self._append_effect_event(effect_events, _effect_source_text(attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
             elif eff_type == "special_lock":
-                self.special_lock_next_turn[target_id] = True
-                self._append_effect_event(effect_events, "Spezialfähigkeiten des Gegners sind nächste Runde gesperrt.")
+                turns = max(1, int(effect.get("turns", 1) or 1))
+                self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), turns)
+                self._append_effect_event(effect_events, f"Spezialfähigkeiten des Gegners sind für {turns} Runde(n) gesperrt.")
             elif eff_type == "blind":
                 miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
                 self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
@@ -3344,14 +3619,7 @@ class BattleView(DurableView):
                 if healed_effect > 0:
                     self._append_effect_event(effect_events, f"Heileffekt: +{healed_effect} HP.")
             elif eff_type == "mix_heal_or_max":
-                heal_amount = int(effect.get("heal", 0) or 0)
-                if random.random() < 0.5:
-                    healed_mix = self.heal_player(target_id, heal_amount)
-                    if healed_mix > 0:
-                        self._append_effect_event(effect_events, f"Awesome Mix: +{healed_mix} HP.")
-                else:
-                    self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), 1)
-                    self._append_effect_event(effect_events, "Awesome Mix: Nächster Angriff verursacht Maximalschaden.")
+                _apply_mix_heal_or_max_effect(self, target_id, effect, effect_events)
             elif eff_type == "delayed_defense_after_next_attack":
                 defense_mode = str(effect.get("defense", "")).strip().lower()
                 counter = int(effect.get("counter", 0) or 0)
@@ -3362,14 +3630,15 @@ class BattleView(DurableView):
                     target_id,
                     effect.get("landing_damage", [20, 40]),
                     effect_events,
+                    landing_attack=(effect.get("landing_attack") if isinstance(effect.get("landing_attack"), dict) else None),
                     source_attack_index=attack_index if not is_forced_landing else None,
                     cooldown_turns=int(attack.get("cooldown_turns", 0) or 0),
                 )
 
             # Kein separater Log-Eintrag mehr – Effekt wird in der Angriffszeile signalisiert
 
-        if self.special_lock_next_turn.get(self.current_turn, False):
-            self.special_lock_next_turn[self.current_turn] = False
+        if self.special_lock_next_turn.get(self.current_turn, 0) > 0:
+            self.special_lock_next_turn[self.current_turn] = max(0, self.special_lock_next_turn.get(self.current_turn, 0) - 1)
 
         if not is_forced_landing:
             if not is_reload_action and attack.get("requires_reload"):
@@ -3456,6 +3725,24 @@ class BattleView(DurableView):
             else:
                 loser_mention = "Bot" if loser_id == 0 else f"<@{loser_id}>"
             winner_embed = self._winner_embed(winner_mention, winner_card, loser_mention, loser_card)
+            await _log_event_safe(
+                "fight_result",
+                guild_id=self._durable_guild_id,
+                channel_id=self._durable_channel_id,
+                thread_id=self._durable_channel_id,
+                session_id=self.session_id,
+                session_kind=self.session_kind,
+                actor_user_id=winner_id,
+                target_user_id=loser_id,
+                hero_name=winner_card,
+                payload={
+                    "winner_id": int(winner_id or 0),
+                    "winner_hero": winner_card,
+                    "loser_id": int(loser_id or 0),
+                    "loser_hero": loser_card,
+                    "rounds": int(self.round_counter),
+                },
+            )
             final_battle_message = message
             if self.ui_needs_resend:
                 final_battle_message = await self._repost_battle_ui_if_needed(
@@ -3829,7 +4116,7 @@ class BattleView(DurableView):
             if not bot_hits_enemy or int(actual_damage or 0) <= 0:
                 is_critical = False
 
-        self_damage_value = int(attack.get("self_damage", 0) or 0)
+        self_damage_value = _resolve_self_damage_value(attack.get("self_damage", 0))
         if self_damage_value > 0:
             self._apply_non_heal_damage_with_event(
                 effect_events,
@@ -3841,10 +4128,12 @@ class BattleView(DurableView):
 
         heal_data = attack.get("heal")
         if heal_data is not None:
-            heal_amount = _random_int_from_range(heal_data)
-            healed_now = self.heal_player(0, heal_amount)
-            if healed_now > 0:
-                self._append_effect_event(effect_events, f"Heilung: +{healed_now} HP.")
+            heal_chance = float(attack.get("heal_chance", 1.0) or 1.0)
+            if random.random() <= heal_chance:
+                heal_amount = _random_int_from_range(heal_data)
+                healed_now = self.heal_player(0, heal_amount)
+                if healed_now > 0:
+                    self._append_effect_event(effect_events, f"Heilung: +{healed_now} HP.")
 
         lifesteal_ratio = float(attack.get("lifesteal_ratio", 0.0) or 0.0)
         if lifesteal_ratio > 0 and bot_hits_enemy and actual_damage > 0:
@@ -3969,19 +4258,38 @@ class BattleView(DurableView):
             elif eff_type == "reflect":
                 reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
                 reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
-                self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1, source=attack_name)
+                reflect_flat = int(effect.get("flat", 0) or 0)
+                self.queue_incoming_modifier(
+                    target_id,
+                    percent=reduce_percent,
+                    reflect=reflect_ratio,
+                    flat=0,
+                    turns=1,
+                    source=attack_name,
+                )
+                if self.incoming_modifiers.get(target_id):
+                    self.incoming_modifiers[target_id][-1]["reflect_flat"] = reflect_flat
                 reduce_pct = int(round(max(0.0, reduce_percent) * 100))
                 reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
+                flat_text = f" und {reflect_flat} fixer Rückschaden ausgelöst werden" if reflect_flat > 0 else ""
                 self._append_effect_event(
                     effect_events,
                     _effect_source_text(
                         attack_name,
-                        f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert und {reflect_pct}% des verhinderten Schadens werden zurückgeworfen.",
+                        f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert, {reflect_pct}% des verhinderten Schadens werden zurückgeworfen{flat_text}.",
                     ),
                 )
             elif eff_type == "absorb_store":
                 percent = float(effect.get("percent", 0.0) or 0.0)
-                self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1, source=attack_name)
+                max_store = effect.get("max_store")
+                self.queue_incoming_modifier(
+                    target_id,
+                    percent=percent,
+                    store_ratio=1.0,
+                    max_store=(int(max_store) if max_store is not None else None),
+                    turns=1,
+                    source=attack_name,
+                )
                 self._append_effect_event(effect_events, _effect_source_text(attack_name, "Absorption aktiv: Verhinderter Schaden wird gespeichert."))
             elif eff_type == "cap_damage":
                 cap_setting = effect.get("max_damage", 0)
@@ -4003,8 +4311,9 @@ class BattleView(DurableView):
                 self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1, source=attack_name)
                 self._append_effect_event(effect_events, _effect_source_text(attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
             elif eff_type == "special_lock":
-                self.special_lock_next_turn[target_id] = True
-                self._append_effect_event(effect_events, "Spezialfähigkeiten des Gegners sind nächste Runde gesperrt.")
+                turns = max(1, int(effect.get("turns", 1) or 1))
+                self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), turns)
+                self._append_effect_event(effect_events, f"Spezialfähigkeiten des Gegners sind für {turns} Runde(n) gesperrt.")
             elif eff_type == "blind":
                 miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
                 self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
@@ -4021,14 +4330,7 @@ class BattleView(DurableView):
                 if healed_effect > 0:
                     self._append_effect_event(effect_events, f"Heileffekt: +{healed_effect} HP.")
             elif eff_type == "mix_heal_or_max":
-                heal_amount = int(effect.get("heal", 0) or 0)
-                if random.random() < 0.5:
-                    healed_mix = self.heal_player(target_id, heal_amount)
-                    if healed_mix > 0:
-                        self._append_effect_event(effect_events, f"Awesome Mix: +{healed_mix} HP.")
-                else:
-                    self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), 1)
-                    self._append_effect_event(effect_events, "Awesome Mix: Nächster Angriff verursacht Maximalschaden.")
+                _apply_mix_heal_or_max_effect(self, target_id, effect, effect_events)
             elif eff_type == "delayed_defense_after_next_attack":
                 defense_mode = str(effect.get("defense", "")).strip().lower()
                 counter = int(effect.get("counter", 0) or 0)
@@ -4039,6 +4341,7 @@ class BattleView(DurableView):
                     target_id,
                     effect.get("landing_damage", [20, 40]),
                     effect_events,
+                    landing_attack=(effect.get("landing_attack") if isinstance(effect.get("landing_attack"), dict) else None),
                     source_attack_index=attack_index if not is_forced_landing else None,
                     cooldown_turns=int(attack.get("cooldown_turns", 0) or 0),
                 )
@@ -4068,8 +4371,8 @@ class BattleView(DurableView):
         if (not is_forced_landing) and (not is_reload_action) and attack.get("requires_reload"):
             self.set_reload_needed(0, attack_index, True)
 
-        if self.special_lock_next_turn.get(0, False):
-            self.special_lock_next_turn[0] = False
+        if self.special_lock_next_turn.get(0, 0) > 0:
+            self.special_lock_next_turn[0] = max(0, self.special_lock_next_turn.get(0, 0) - 1)
 
         if not is_forced_landing:
             # Cooldown für Bot-Attacke
@@ -4123,6 +4426,24 @@ class BattleView(DurableView):
             else:
                 loser_mention = "Bot" if loser_id == 0 else f"<@{loser_id}>"
             winner_embed = self._winner_embed(winner_mention, winner_card, loser_mention, loser_card)
+            await _log_event_safe(
+                "fight_result",
+                guild_id=self._durable_guild_id,
+                channel_id=self._durable_channel_id,
+                thread_id=self._durable_channel_id,
+                session_id=self.session_id,
+                session_kind=self.session_kind,
+                actor_user_id=winner_id,
+                target_user_id=loser_id,
+                hero_name=winner_card,
+                payload={
+                    "winner_id": int(winner_id or 0),
+                    "winner_hero": winner_card,
+                    "loser_id": int(loser_id or 0),
+                    "loser_hero": loser_card,
+                    "rounds": int(self.round_counter),
+                },
+            )
             final_battle_message = message
             if self.ui_needs_resend:
                 final_battle_message = await self._repost_battle_ui_if_needed(
@@ -4186,13 +4507,19 @@ class CardSelectView(RestrictedView):
         super().__init__(timeout=90)
         self.user_id = user_id
         self.value = None
-        options = [SelectOption(label=k[0], value=k[0]) for k in karten_liste]
+        filtered_cards = _filter_owned_cards_for_current_mode(list(karten_liste))
+        options = [SelectOption(label=k[0], value=k[0]) for k in filtered_cards]
+        if not options:
+            options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
         self.select = ui.Select(placeholder=f"Wähle {anzahl} Karte(n)...", min_values=anzahl, max_values=anzahl, options=options)
         self.select.callback = self.select_callback
         self.add_item(self.select)
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Nur der Herausforderer kann Karten wählen!", ephemeral=True)
+            return
+        if "__none__" in self.select.values:
+            await interaction.response.send_message("❌ Es sind aktuell keine nutzbaren Karten verfügbar.", ephemeral=True)
             return
         self.value = self.select.values
         self.stop()
@@ -4614,7 +4941,7 @@ class DustMultiUserSelectView(RestrictedView):
         names: list[str] = []
         for user_id in self.selected_user_ids:
             member = self.guild.get_member(user_id)
-            names.append(safe_display_name(member or str(user_id), fallback=str(user_id)))
+            names.append(safe_display_name(member or f"<@{user_id}>", fallback="Unbekannt"))
         return ", ".join(names)
 
     def _summary_embed(self) -> discord.Embed:
@@ -4677,7 +5004,7 @@ class DustMultiUserSelectView(RestrictedView):
             return
         await self._refresh_origin_message()
         await interaction.response.send_message(
-            f"✅ {safe_display_name(member, fallback=str(user_id))} hinzugefügt.",
+            f"✅ {safe_display_name(member, fallback=f'<@{user_id}>')} hinzugefügt.",
             ephemeral=True,
         )
 
@@ -4818,13 +5145,13 @@ async def _create_required_private_fight_thread(
         )
         return None
     try:
-        thread_name = safe_thread_name("Privater Kampf:", safe_display_name(interaction.user, fallback=str(interaction.user.id)))
+        thread_name = safe_thread_name("Privater Kampf:", safe_display_name(interaction.user, fallback="Nutzer"))
         if challenged is not None:
             thread_name = safe_thread_name(
                 "Privater Kampf:",
-                safe_display_name(interaction.user, fallback=str(interaction.user.id)),
+                safe_display_name(interaction.user, fallback="Nutzer"),
                 "vs",
-                safe_display_name(challenged, fallback=str(challenged.id)),
+                safe_display_name(challenged, fallback="Nutzer"),
             )
         fight_thread = await parent_text.create_thread(
             name=thread_name,
@@ -4914,7 +5241,7 @@ async def _create_required_private_mission_thread(interaction: discord.Interacti
         )
         return None
     try:
-        thread_name = safe_thread_name("Mission:", safe_display_name(interaction.user, fallback=str(interaction.user.id)))
+        thread_name = safe_thread_name("Mission:", safe_display_name(interaction.user, fallback="Nutzer"))
         mission_thread = await parent_text.create_thread(
             name=thread_name,
             type=discord.ChannelType.private_thread,
@@ -4974,7 +5301,9 @@ async def _start_fight_card_selection_from_challenge(
         )
         await _maybe_delete_fight_thread(thread_id, thread_created)
         return
-    gegner_karten_liste = _sort_user_cards_like_karten(await get_user_karten(challenged.id))
+    gegner_karten_liste = _sort_user_cards_like_karten(
+        _filter_owned_cards_for_current_mode(await get_user_karten(challenged.id))
+    )
     if not gegner_karten_liste:
         await _safe_send_channel(
             interaction,
@@ -5145,7 +5474,9 @@ async def _begin_mission_thread_flow(interaction: discord.Interaction, mission_d
         await interaction.followup.send(f"Mission-Thread erstellt: {thread.mention}", ephemeral=True)
     elif interaction.guild is not None:
         await save_managed_thread(thread_id=thread.id, guild_id=interaction.guild.id, kind=THREAD_KIND_MISSION)
-    user_karten = _sort_user_cards_like_karten(await get_user_karten(interaction.user.id))
+    user_karten = _sort_user_cards_like_karten(
+        _filter_owned_cards_for_current_mode(await get_user_karten(interaction.user.id))
+    )
     if not user_karten:
         await _safe_send_channel(
             interaction,
@@ -5187,7 +5518,7 @@ async def _start_mission_wave_in_thread(
         return None
     wave_num = max(1, int(mission_state.get("next_wave", 1) or 1))
     total_waves = max(wave_num, int(mission_state.get("total_waves", mission_data.get("waves", 1)) or 1))
-    bot_card = cast(CardData, random.choice(karten))
+    bot_card = cast(CardData, random_gameplay_card(karten, alpha_enabled=ALPHA_PHASE_ENABLED))
     mission_view = MissionBattleView(
         cast(CardData, player_card),
         bot_card,
@@ -5506,12 +5837,25 @@ class FightFeedbackView(DurableView):
                 "Bug-Button wurde geklickt.",
                 f"Guild: {self.guild.name if self.guild else 'Unbekannt'}",
                 f"Kanal/Thread: {_channel_mention_or_fallback(self.channel)}",
-                f"Gemeldet von: {safe_display_name(interaction.user, fallback=str(interaction.user.id))} ({interaction.user.id})",
+                f"Gemeldet von: {safe_display_name(interaction.user, fallback='Unbekannt')} ({interaction.user.id})",
                 f"View: {self.durable_context_label()}",
             ],
         )
+        actor_name = safe_display_name(interaction.user, fallback="Unbekannt")
+        await _log_event_safe(
+            "fight_feedback_bug",
+            guild_id=getattr(self.guild, "id", 0),
+            channel_id=getattr(self.channel, "id", 0),
+            thread_id=_thread_id_for_channel(self.channel),
+            actor_user_id=interaction.user.id,
+            payload={
+                "action": "bug",
+                "actor_name": actor_name,
+                "view_kind": self.durable_context_label(),
+            },
+        )
         await interaction.response.send_message(
-            content="🐞 Danke! Bitte fülle dieses Formular aus:",
+            content=f"🐞 {actor_name} hat **Es gab einen Bug** gewählt. Bitte fülle dieses Formular aus:",
             view=BugReportLinkView(),
             ephemeral=False,
         )
@@ -5547,7 +5891,23 @@ class FightFeedbackView(DurableView):
             await interaction.response.send_message(DM_LOG_SEND_FAILED, ephemeral=False)
             return
         self._log_sent_to.add(interaction.user.id)
-        await interaction.response.send_message("📩 Vollständiger Kampf-Log wurde dir per DM gesendet.", ephemeral=False)
+        actor_name = safe_display_name(interaction.user, fallback="Unbekannt")
+        await _log_event_safe(
+            "fight_feedback_log_dm",
+            guild_id=getattr(self.guild, "id", 0),
+            channel_id=getattr(self.channel, "id", 0),
+            thread_id=_thread_id_for_channel(self.channel),
+            actor_user_id=interaction.user.id,
+            payload={
+                "action": "log_dm",
+                "actor_name": actor_name,
+                "chunk_count": len(chunks),
+            },
+        )
+        await interaction.response.send_message(
+            f"📩 {actor_name} hat **Kampf-Log per DM** gewählt. Der vollständige Log wurde per DM gesendet.",
+            ephemeral=False,
+        )
 
     @ui.button(label="Es gab keinen Bug", style=discord.ButtonStyle.danger, row=2, custom_id="fight_feedback:no_bug")
     async def no_bug_btn(self, interaction: discord.Interaction, button: ui.Button):
@@ -5565,7 +5925,19 @@ class FightFeedbackView(DurableView):
             if self.auto_close_delay and not self.auto_close_started_at:
                 self.auto_close_started_at = int(time.time())
             self._ensure_auto_close_task()
-        await interaction.response.send_message("\u2705 Danke f\u00fcr dein Feedback!", ephemeral=False)
+        actor_name = safe_display_name(interaction.user, fallback="Unbekannt")
+        await _log_event_safe(
+            "fight_feedback_no_bug",
+            guild_id=getattr(self.guild, "id", 0),
+            channel_id=getattr(self.channel, "id", 0),
+            thread_id=_thread_id_for_channel(self.channel),
+            actor_user_id=interaction.user.id,
+            payload={"action": "no_bug", "actor_name": actor_name},
+        )
+        await interaction.response.send_message(
+            f"✅ {actor_name} hat **Es gab keinen Bug** gewählt. Danke für das Feedback!",
+            ephemeral=False,
+        )
 
     @ui.button(
         label="Thread schließen (Admin/Owner)",
@@ -5579,6 +5951,14 @@ class FightFeedbackView(DurableView):
         if not await is_admin(interaction):
             await interaction.response.send_message(CLOSE_PERMISSION_DENIED, ephemeral=False)
             return
+        await _log_event_safe(
+            "fight_feedback_thread_closed",
+            guild_id=getattr(self.guild, "id", 0),
+            channel_id=getattr(self.channel, "id", 0),
+            thread_id=_thread_id_for_channel(self.channel),
+            actor_user_id=interaction.user.id,
+            payload={"action": "close_thread"},
+        )
         await interaction.response.send_message(THREAD_CLOSING, ephemeral=False)
         self.stop()
         try:
@@ -6057,6 +6437,22 @@ class BuffTypeSelect(ui.Select):
             attack_number,
             applied_buff_amount,
         )
+        await _log_event_safe(
+            "upgrade_applied",
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+            thread_id=_thread_id_for_channel(interaction.channel),
+            actor_user_id=interaction.user.id,
+            hero_name=self.selected_card,
+            attack_name=(str(selected_attack.get("name") or "") if buff_type == "damage" else ""),
+            payload={
+                "upgrade_type": buff_type,
+                "upgrade_attack_number": int(attack_number),
+                "upgrade_attack_name": (str(selected_attack.get("name") or "") if buff_type == "damage" else ""),
+                "upgrade_amount": int(applied_buff_amount),
+                "dust_cost": int(self.dust_amount),
+            },
+        )
 
         embed = discord.Embed(
             title="✅ Verstärkung erfolgreich!",
@@ -6086,11 +6482,11 @@ class InviteUserSelect(ui.Select):
                 # Versuche User-Objekt zu bekommen (funktioniert nur wenn Bot den User sehen kann)
                 user = bot.get_user(user_id)
                 if user:
-                    primary_name = safe_display_name(user, fallback=f"User {user_id}")
-                    username = escape_display_text(getattr(user, "name", ""), fallback=str(user_id))
+                    primary_name = safe_display_name(user, fallback=f"<@{user_id}>")
+                    username = escape_display_text(getattr(user, "name", ""), fallback=primary_name)
                     display_name = f"{primary_name} ({username})"
                 else:
-                    display_name = f"User {user_id}"
+                    display_name = f"Unbekannt (<@{user_id}>)"
                 
                 options.append(SelectOption(
                     label=display_name[:100],  # Discord Limit
@@ -6101,7 +6497,7 @@ class InviteUserSelect(ui.Select):
             except:
                 # Fallback für unbekannte User
                 options.append(SelectOption(
-                    label=f"User {user_id}",
+                    label=f"Unbekannt (<@{user_id}>)"[:100],
                     value=str(user_id),
                     description="Beide erhalten 1x Infinitydust",
                     emoji="🎁"
@@ -6276,7 +6672,7 @@ class UserSelectView(RestrictedView):
         self.value = None
         self.members = sorted(
             [member for member in guild.members if not member.bot],
-            key=lambda m: safe_display_name(m, fallback=str(m.id)).lower(),
+            key=lambda m: safe_display_name(m, fallback="Unbekannt").lower(),
         )
         self.pages = [self.members[i:i + 24] for i in range(0, len(self.members), 24)] or [[]]
         self.page_index = 0
@@ -6864,7 +7260,9 @@ class MissionPauseView(DurableView):
         except Exception:
             logging.exception("Failed to clear mission pause view")
         if choice == "change":
-            user_karten = _sort_user_cards_like_karten(await get_user_karten(self.user_id))
+            user_karten = _sort_user_cards_like_karten(
+                _filter_owned_cards_for_current_mode(await get_user_karten(self.user_id))
+            )
             next_view = MissionNewCardSelectView(self.user_id, user_karten, mission_state=self.mission_state)
             await _safe_send_channel(interaction, interaction.channel, content="Wähle eine neue Karte:", view=next_view)
         else:
@@ -6948,6 +7346,7 @@ class MissionBattleView(DurableView):
         self.selected_card_name = selected_card_name or str(player_card.get("name") or "")
         self.result = None
         self.session_id: int | None = None
+        self.session_kind = "mission"
         base_player_hp = int(player_card.get("hp", 100) or 100)
         base_bot_hp = int(bot_card.get("hp", 100) or 100)
         self._hp_by_player = {self.user_id: base_player_hp, 0: base_bot_hp}
@@ -7074,7 +7473,7 @@ class MissionBattleView(DurableView):
             for key, value in _nested_int_keyed_dict(payload.get("manual_reload_needed")).items()
         }
         self.stunned_next_turn = _int_keyed_bool_dict(payload.get("stunned_next_turn"))
-        self.special_lock_next_turn = _int_keyed_bool_dict(payload.get("special_lock_next_turn"))
+        self.special_lock_next_turn = _int_keyed_int_dict(payload.get("special_lock_next_turn"))
         self.blind_next_attack = _int_keyed_float_dict(payload.get("blind_next_attack"))
         self.pending_flat_bonus = _int_keyed_int_dict(payload.get("pending_flat_bonus"))
         self.pending_flat_bonus_uses = _int_keyed_int_dict(payload.get("pending_flat_bonus_uses"))
@@ -7104,11 +7503,12 @@ class MissionBattleView(DurableView):
         channel_id = getattr(channel, "id", None)
         if not isinstance(guild, discord.Guild) or not isinstance(channel_id, int):
             return
+        was_new_session = self.session_id is None
         if battle_message is not None:
             self.bind_durable_message(guild_id=guild.id, channel_id=channel_id, message_id=battle_message.id)
         self.session_id = await save_active_session(
             session_id=self.session_id,
-            kind="mission",
+            kind=self.session_kind,
             guild_id=guild.id,
             channel_id=channel_id,
             thread_id=channel_id if isinstance(channel, discord.Thread) else None,
@@ -7124,6 +7524,45 @@ class MissionBattleView(DurableView):
                 message_id=self._durable_message_id,
                 view_kind=self.durable_view_kind,
                 payload=self.durable_payload(),
+            )
+        if was_new_session and status == "active":
+            await _log_event_safe(
+                "mission_wave_started",
+                guild_id=guild.id,
+                channel_id=channel_id,
+                thread_id=_thread_id_for_channel(channel),
+                session_id=self.session_id,
+                session_kind=self.session_kind,
+                actor_user_id=self.user_id,
+                hero_name=self.player_card.get("name"),
+                payload={
+                    "wave_num": int(self.wave_num),
+                    "total_waves": int(self.total_waves),
+                    "bot_hero": self.bot_card.get("name"),
+                },
+            )
+            await _log_event_safe(
+                "hero_selected",
+                guild_id=guild.id,
+                channel_id=channel_id,
+                thread_id=_thread_id_for_channel(channel),
+                session_id=self.session_id,
+                session_kind=self.session_kind,
+                actor_user_id=self.user_id,
+                hero_name=self.player_card.get("name"),
+                payload={"side": "mission_player"},
+            )
+            await _log_event_safe(
+                "hero_selected",
+                guild_id=guild.id,
+                channel_id=channel_id,
+                thread_id=_thread_id_for_channel(channel),
+                session_id=self.session_id,
+                session_kind=self.session_kind,
+                actor_user_id=0,
+                target_user_id=self.user_id,
+                hero_name=self.bot_card.get("name"),
+                payload={"side": "mission_bot"},
             )
 
     def create_current_embed(self, *, description: str | None = None) -> discord.Embed:
@@ -7141,6 +7580,50 @@ class MissionBattleView(DurableView):
             embed.set_thumbnail(url=str(self.bot_card["bild"]))
         _add_attack_info_field(embed, self.player_card)
         return embed
+
+    async def _log_mission_attack_event(
+        self,
+        *,
+        attacker_user_id: int,
+        defender_user_id: int,
+        attacker_name: str,
+        attack_name: str,
+        actual_damage: int,
+        is_critical: bool,
+        round_number: int,
+        defender_remaining_hp: int,
+        attacker_remaining_hp: int | None,
+        pre_effect_damage: int,
+        self_hit_damage: int,
+        effect_events: list[str],
+    ) -> None:
+        await _log_event_safe(
+            "attack_used",
+            guild_id=self._durable_guild_id,
+            channel_id=self._durable_channel_id,
+            thread_id=self._durable_channel_id,
+            session_id=self.session_id,
+            session_kind=self.session_kind,
+            actor_user_id=attacker_user_id,
+            target_user_id=defender_user_id,
+            hero_name=attacker_name,
+            attack_name=attack_name,
+            payload={
+                "round": int(round_number),
+                "is_critical": bool(is_critical),
+                "damage": _damage_breakdown_payload(
+                    actual_damage=int(actual_damage),
+                    pre_effect_damage=int(pre_effect_damage),
+                    effect_events=effect_events,
+                    self_hit_damage=int(self_hit_damage),
+                ),
+                "defender_remaining_hp": int(defender_remaining_hp or 0),
+                "attacker_remaining_hp": int(attacker_remaining_hp or 0) if attacker_remaining_hp is not None else None,
+                "effect_events": [str(item) for item in effect_events or []],
+                "wave_num": int(self.wave_num),
+                "total_waves": int(self.total_waves),
+            },
+        )
 
     async def _complete_wave(
         self,
@@ -7402,6 +7885,7 @@ class MissionBattleView(DurableView):
         landing_damage,
         effect_events: list[str],
         *,
+        landing_attack: dict[str, object] | None = None,
         source_attack_index: int | None = None,
         cooldown_turns: int = 0,
     ) -> None:
@@ -7412,6 +7896,7 @@ class MissionBattleView(DurableView):
             player_id,
             landing_damage,
             effect_events,
+            landing_attack=landing_attack,
             source_attack_index=source_attack_index,
             cooldown_turns=cooldown_turns,
         )
@@ -7473,6 +7958,7 @@ class MissionBattleView(DurableView):
         flat: int = 0,
         reflect: float = 0.0,
         store_ratio: float = 0.0,
+        max_store: int | None = None,
         cap: int | str | None = None,
         evade: bool = False,
         counter: int = 0,
@@ -7486,6 +7972,7 @@ class MissionBattleView(DurableView):
             flat=flat,
             reflect=reflect,
             store_ratio=store_ratio,
+            max_store=max_store,
             cap=cap,
             evade=evade,
             counter=counter,
@@ -7898,7 +8385,7 @@ class MissionBattleView(DurableView):
         if (not is_forced_landing) and self.is_attack_on_cooldown_user(attack_index):
             await _safe_send_interaction_ephemeral(interaction, "Diese Attacke ist noch auf Cooldown!")
             return
-        if (not is_forced_landing) and self.special_lock_next_turn.get(self.user_id, False) and attack_index != 0:
+        if (not is_forced_landing) and self.special_lock_next_turn.get(self.user_id, 0) > 0 and attack_index != 0:
             await _safe_send_interaction_ephemeral(
                 interaction,
                 "Diese Runde sind nur Standard-Angriffe erlaubt (Attacke 1).",
@@ -8142,7 +8629,7 @@ class MissionBattleView(DurableView):
             if not hits_enemy or int(actual_damage or 0) <= 0:
                 is_critical = False
 
-        self_damage_value = int(attack.get("self_damage", 0) or 0)
+        self_damage_value = _resolve_self_damage_value(attack.get("self_damage", 0))
         if self_damage_value > 0:
             self._apply_non_heal_damage_with_event(
                 effect_events,
@@ -8154,10 +8641,12 @@ class MissionBattleView(DurableView):
 
         heal_data = attack.get("heal")
         if heal_data is not None:
-            heal_amount = _random_int_from_range(heal_data)
-            healed_now = self.heal_player(self.user_id, heal_amount)
-            if healed_now > 0:
-                self._append_effect_event(effect_events, f"Heilung: +{healed_now} HP.")
+            heal_chance = float(attack.get("heal_chance", 1.0) or 1.0)
+            if random.random() <= heal_chance:
+                heal_amount = _random_int_from_range(heal_data)
+                healed_now = self.heal_player(self.user_id, heal_amount)
+                if healed_now > 0:
+                    self._append_effect_event(effect_events, f"Heilung: +{healed_now} HP.")
 
         lifesteal_ratio = float(attack.get("lifesteal_ratio", 0.0) or 0.0)
         if lifesteal_ratio > 0 and hits_enemy and actual_damage > 0:
@@ -8278,19 +8767,38 @@ class MissionBattleView(DurableView):
             elif eff_type == "reflect":
                 reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
                 reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
-                self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1, source=attack_name)
+                reflect_flat = int(effect.get("flat", 0) or 0)
+                self.queue_incoming_modifier(
+                    target_id,
+                    percent=reduce_percent,
+                    reflect=reflect_ratio,
+                    flat=0,
+                    turns=1,
+                    source=attack_name,
+                )
+                if self.incoming_modifiers.get(target_id):
+                    self.incoming_modifiers[target_id][-1]["reflect_flat"] = reflect_flat
                 reduce_pct = int(round(max(0.0, reduce_percent) * 100))
                 reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
+                flat_text = f" und {reflect_flat} fixer Rückschaden ausgelöst werden" if reflect_flat > 0 else ""
                 self._append_effect_event(
                     effect_events,
                     _effect_source_text(
                         attack_name,
-                        f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert und {reflect_pct}% des verhinderten Schadens werden zurückgeworfen.",
+                        f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert, {reflect_pct}% des verhinderten Schadens werden zurückgeworfen{flat_text}.",
                     ),
                 )
             elif eff_type == "absorb_store":
                 percent = float(effect.get("percent", 0.0) or 0.0)
-                self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1, source=attack_name)
+                max_store = effect.get("max_store")
+                self.queue_incoming_modifier(
+                    target_id,
+                    percent=percent,
+                    store_ratio=1.0,
+                    max_store=(int(max_store) if max_store is not None else None),
+                    turns=1,
+                    source=attack_name,
+                )
                 self._append_effect_event(effect_events, _effect_source_text(attack_name, "Absorption aktiv: Verhinderter Schaden wird gespeichert."))
             elif eff_type == "cap_damage":
                 cap_setting = effect.get("max_damage", 0)
@@ -8312,8 +8820,9 @@ class MissionBattleView(DurableView):
                 self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1, source=attack_name)
                 self._append_effect_event(effect_events, _effect_source_text(attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
             elif eff_type == "special_lock":
-                self.special_lock_next_turn[target_id] = True
-                self._append_effect_event(effect_events, "Spezialfähigkeiten des Gegners sind nächste Runde gesperrt.")
+                turns = max(1, int(effect.get("turns", 1) or 1))
+                self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), turns)
+                self._append_effect_event(effect_events, f"Spezialfähigkeiten des Gegners sind für {turns} Runde(n) gesperrt.")
             elif eff_type == "blind":
                 miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
                 self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
@@ -8330,14 +8839,7 @@ class MissionBattleView(DurableView):
                 if healed_effect > 0:
                     self._append_effect_event(effect_events, f"Heileffekt: +{healed_effect} HP.")
             elif eff_type == "mix_heal_or_max":
-                heal_amount = int(effect.get("heal", 0) or 0)
-                if random.random() < 0.5:
-                    healed_mix = self.heal_player(target_id, heal_amount)
-                    if healed_mix > 0:
-                        self._append_effect_event(effect_events, f"Awesome Mix: +{healed_mix} HP.")
-                else:
-                    self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), 1)
-                    self._append_effect_event(effect_events, "Awesome Mix: Nächster Angriff verursacht Maximalschaden.")
+                _apply_mix_heal_or_max_effect(self, target_id, effect, effect_events)
             elif eff_type == "delayed_defense_after_next_attack":
                 defense_mode = str(effect.get("defense", "")).strip().lower()
                 counter = int(effect.get("counter", 0) or 0)
@@ -8348,6 +8850,7 @@ class MissionBattleView(DurableView):
                     target_id,
                     effect.get("landing_damage", [20, 40]),
                     effect_events,
+                    landing_attack=(effect.get("landing_attack") if isinstance(effect.get("landing_attack"), dict) else None),
                     source_attack_index=attack_index if not is_forced_landing else None,
                     cooldown_turns=int(attack.get("cooldown_turns", 0) or 0),
                 )
@@ -8375,14 +8878,28 @@ class MissionBattleView(DurableView):
                 effect_events=effect_events,
             )
             await self._safe_edit_battle_log(log_embed)
+        await self._log_mission_attack_event(
+            attacker_user_id=self.user_id,
+            defender_user_id=0,
+            attacker_name=self.player_card["name"],
+            attack_name=attack_name,
+            actual_damage=int(actual_damage or 0),
+            is_critical=bool(is_critical),
+            round_number=int(self.round_counter),
+            defender_remaining_hp=int(self.bot_hp),
+            attacker_remaining_hp=int(self.player_hp),
+            pre_effect_damage=int(pre_burn_total or 0),
+            self_hit_damage=int(self_damage if not hits_enemy and 'self_damage' in locals() else 0),
+            effect_events=effect_events,
+        )
         if self.airborne_pending_landing.get(0):
             self._consume_airborne_evade_marker(0)
 
         if (not is_forced_landing) and (not is_reload_action) and attack.get("requires_reload"):
             self.set_reload_needed(self.user_id, attack_index, True)
 
-        if self.special_lock_next_turn.get(self.user_id, False):
-            self.special_lock_next_turn[self.user_id] = False
+        if self.special_lock_next_turn.get(self.user_id, 0) > 0:
+            self.special_lock_next_turn[self.user_id] = max(0, self.special_lock_next_turn.get(self.user_id, 0) - 1)
         
         # Starte Cooldown (kartenspezifisch oder für starke Attacken) für den nächsten Zug.
         # In Missionen soll die stärkste Attacke im nächsten eigenen Zug gesperrt sein.
@@ -8505,7 +9022,7 @@ class MissionBattleView(DurableView):
         available_attacks = []
         attack_damages = []
         for i, atk in enumerate(bot_attacks[:4]):
-            if self.special_lock_next_turn.get(0, False) and i != 0:
+            if self.special_lock_next_turn.get(0, 0) > 0 and i != 0:
                 continue
             if not self.is_attack_on_cooldown_bot(i):
                 if atk.get("requires_reload") and self.is_reload_needed(0, i):
@@ -8736,7 +9253,7 @@ class MissionBattleView(DurableView):
                     if not bot_hits_enemy or int(actual_damage or 0) <= 0:
                         is_critical = False
     
-                self_damage_value = int(attack.get("self_damage", 0) or 0)
+                self_damage_value = _resolve_self_damage_value(attack.get("self_damage", 0))
                 if self_damage_value > 0:
                     self._apply_non_heal_damage_with_event(
                         bot_effect_events,
@@ -8748,10 +9265,12 @@ class MissionBattleView(DurableView):
     
                 heal_data = attack.get("heal")
                 if heal_data is not None:
-                    heal_amount = _random_int_from_range(heal_data)
-                    healed_now = self.heal_player(0, heal_amount)
-                    if healed_now > 0:
-                        self._append_effect_event(bot_effect_events, f"Heilung: +{healed_now} HP.")
+                    heal_chance = float(attack.get("heal_chance", 1.0) or 1.0)
+                    if random.random() <= heal_chance:
+                        heal_amount = _random_int_from_range(heal_data)
+                        healed_now = self.heal_player(0, heal_amount)
+                        if healed_now > 0:
+                            self._append_effect_event(bot_effect_events, f"Heilung: +{healed_now} HP.")
     
                 lifesteal_ratio = float(attack.get("lifesteal_ratio", 0.0) or 0.0)
                 if lifesteal_ratio > 0 and bot_hits_enemy and actual_damage > 0:
@@ -8872,19 +9391,38 @@ class MissionBattleView(DurableView):
                     elif eff_type == "reflect":
                         reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
                         reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
-                        self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, turns=1, source=bot_attack_name)
+                        reflect_flat = int(effect.get("flat", 0) or 0)
+                        self.queue_incoming_modifier(
+                            target_id,
+                            percent=reduce_percent,
+                            reflect=reflect_ratio,
+                            flat=0,
+                            turns=1,
+                            source=bot_attack_name,
+                        )
+                        if self.incoming_modifiers.get(target_id):
+                            self.incoming_modifiers[target_id][-1]["reflect_flat"] = reflect_flat
                         reduce_pct = int(round(max(0.0, reduce_percent) * 100))
                         reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
+                        flat_text = f" und {reflect_flat} fixer Rückschaden ausgelöst werden" if reflect_flat > 0 else ""
                         self._append_effect_event(
                             bot_effect_events,
                             _effect_source_text(
                                 bot_attack_name,
-                                f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert und {reflect_pct}% des verhinderten Schadens werden zurückgeworfen.",
+                                f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert, {reflect_pct}% des verhinderten Schadens werden zurückgeworfen{flat_text}.",
                             ),
                         )
                     elif eff_type == "absorb_store":
                         percent = float(effect.get("percent", 0.0) or 0.0)
-                        self.queue_incoming_modifier(target_id, percent=percent, store_ratio=1.0, turns=1, source=bot_attack_name)
+                        max_store = effect.get("max_store")
+                        self.queue_incoming_modifier(
+                            target_id,
+                            percent=percent,
+                            store_ratio=1.0,
+                            max_store=(int(max_store) if max_store is not None else None),
+                            turns=1,
+                            source=bot_attack_name,
+                        )
                         self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Absorption aktiv: Verhinderter Schaden wird gespeichert."))
                     elif eff_type == "cap_damage":
                         cap_setting = effect.get("max_damage", 0)
@@ -8906,8 +9444,9 @@ class MissionBattleView(DurableView):
                         self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1, source=bot_attack_name)
                         self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
                     elif eff_type == "special_lock":
-                        self.special_lock_next_turn[target_id] = True
-                        self._append_effect_event(bot_effect_events, "Spezialfähigkeiten des Gegners sind nächste Runde gesperrt.")
+                        turns = max(1, int(effect.get("turns", 1) or 1))
+                        self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), turns)
+                        self._append_effect_event(bot_effect_events, f"Spezialfähigkeiten des Gegners sind für {turns} Runde(n) gesperrt.")
                     elif eff_type == "blind":
                         miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
                         self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
@@ -8924,14 +9463,7 @@ class MissionBattleView(DurableView):
                         if healed_effect > 0:
                             self._append_effect_event(bot_effect_events, f"Heileffekt: +{healed_effect} HP.")
                     elif eff_type == "mix_heal_or_max":
-                        heal_amount = int(effect.get("heal", 0) or 0)
-                        if random.random() < 0.5:
-                            healed_mix = self.heal_player(target_id, heal_amount)
-                            if healed_mix > 0:
-                                self._append_effect_event(bot_effect_events, f"Awesome Mix: +{healed_mix} HP.")
-                        else:
-                            self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), 1)
-                            self._append_effect_event(bot_effect_events, "Awesome Mix: Nächster Angriff verursacht Maximalschaden.")
+                        _apply_mix_heal_or_max_effect(self, target_id, effect, bot_effect_events)
                     elif eff_type == "delayed_defense_after_next_attack":
                         defense_mode = str(effect.get("defense", "")).strip().lower()
                         counter = int(effect.get("counter", 0) or 0)
@@ -8942,6 +9474,7 @@ class MissionBattleView(DurableView):
                             target_id,
                             effect.get("landing_damage", [20, 40]),
                             bot_effect_events,
+                            landing_attack=(effect.get("landing_attack") if isinstance(effect.get("landing_attack"), dict) else None),
                             source_attack_index=best_index if not is_forced_bot_landing else None,
                             cooldown_turns=int(attack.get("cooldown_turns", 0) or 0),
                         )
@@ -8967,14 +9500,28 @@ class MissionBattleView(DurableView):
                         effect_events=bot_effect_events,
                     )
                     await self._safe_edit_battle_log(log_embed)
+                await self._log_mission_attack_event(
+                    attacker_user_id=0,
+                    defender_user_id=self.user_id,
+                    attacker_name=self.bot_card["name"],
+                    attack_name=bot_attack_name,
+                    actual_damage=int(actual_damage or 0),
+                    is_critical=bool(is_critical),
+                    round_number=int(self.round_counter),
+                    defender_remaining_hp=int(self.player_hp),
+                    attacker_remaining_hp=int(self.bot_hp),
+                    pre_effect_damage=int(pre_burn_total_player or 0),
+                    self_hit_damage=int(self_damage if not bot_hits_enemy and 'self_damage' in locals() else 0),
+                    effect_events=bot_effect_events,
+                )
                 if self.airborne_pending_landing.get(self.user_id):
                     self._consume_airborne_evade_marker(self.user_id)
     
                 if (not is_forced_bot_landing) and (not is_bot_reload_action) and attack.get("requires_reload"):
                     self.set_reload_needed(0, best_index, True)
     
-                if self.special_lock_next_turn.get(0, False):
-                    self.special_lock_next_turn[0] = False
+                if self.special_lock_next_turn.get(0, 0) > 0:
+                    self.special_lock_next_turn[0] = max(0, self.special_lock_next_turn.get(0, 0) - 1)
     
                 if self.player_hp <= 0:
                     self.result = False
@@ -9289,7 +9836,7 @@ async def _handle_durable_view_error(
             f"Fehler in View: {view_label}",
             f"Guild: {guild_name}",
             f"Kanal/Thread: {channel_text}",
-            f"User: {safe_display_name(interaction.user, fallback=str(interaction.user.id))} ({interaction.user.id})",
+            f"User: {safe_display_name(interaction.user, fallback='Unbekannt')} ({interaction.user.id})",
             f"Exception: {error!r}",
         ],
     )
@@ -9761,15 +10308,15 @@ async def _select_user(interaction: discord.Interaction, prompt: str) -> tuple[i
     user_id = int(view.value)
     member = _get_member_if_available(interaction.guild, user_id)
     if member:
-        return user_id, safe_display_name(member, fallback=str(user_id))
+        return user_id, safe_display_name(member, fallback=f"<@{user_id}>")
     try:
         user = await interaction.client.fetch_user(user_id)
-        return user_id, safe_display_name(user, fallback=str(user_id))
+        return user_id, safe_display_name(user, fallback=f"<@{user_id}>")
     except discord.NotFound:
-        return user_id, str(user_id)
+        return user_id, f"<@{user_id}>"
     except discord.HTTPException:
         logging.exception("Failed to fetch user %s for admin selector", user_id)
-        return user_id, str(user_id)
+        return user_id, f"<@{user_id}>"
 
 async def _select_number(interaction: discord.Interaction, prompt: str, options: list[int]):
     view = NumberSelectView(interaction.user.id, options, prompt)
@@ -9783,12 +10330,39 @@ async def _select_card(interaction: discord.Interaction, prompt: str):
     await view.wait()
     return view.value
 
+class NumberInputModal(RestrictedModal):
+    def __init__(self, requester_id: int, parent_view: "NumberSelectView"):
+        super().__init__(title="Eigene Menge eingeben")
+        self.requester_id = requester_id
+        self.parent_view = parent_view
+        self.amount = ui.TextInput(
+            label="Menge",
+            placeholder="Gib eine positive Zahl ein",
+            required=True,
+            max_length=9,
+        )
+        self.add_item(self.amount)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        raw_value = str(self.amount.value or "").strip()
+        if not raw_value.isdigit() or int(raw_value) <= 0:
+            await interaction.response.send_message("❌ Bitte gib eine gültige positive Zahl ein.", ephemeral=True)
+            return
+        self.parent_view.value = int(raw_value)
+        self.parent_view.stop()
+        await interaction.response.send_message(f"✅ Eigene Menge gewählt: **{int(raw_value)}**", ephemeral=True)
+
+
 class NumberSelectView(RestrictedView):
     def __init__(self, requester_id: int, options: list[int], placeholder: str):
         super().__init__(timeout=60)
         self.requester_id = requester_id
         self.value = None
-        select_options = [SelectOption(label=str(n), value=str(n)) for n in options][:25]
+        select_options = [SelectOption(label="Eigener Wert...", value="__custom__", description="Gib selbst eine Menge ein.")]
+        select_options.extend(SelectOption(label=str(n), value=str(n)) for n in options[:24])
         self.select = ui.Select(placeholder=placeholder, min_values=1, max_values=1, options=select_options)
         self.select.callback = self.select_callback
         self.add_item(self.select)
@@ -9797,7 +10371,11 @@ class NumberSelectView(RestrictedView):
         if interaction.user.id != self.requester_id:
             await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
-        self.value = int(self.select.values[0])
+        selected = str(self.select.values[0] or "").strip()
+        if selected == "__custom__":
+            await interaction.response.send_modal(NumberInputModal(self.requester_id, self))
+            return
+        self.value = int(selected)
         self.stop()
         await interaction.response.defer()
 
@@ -9837,7 +10415,7 @@ async def _post_dust_result_message(
         description="\n".join(lines),
         color=0xD64B4B if remove else 0x2ECC71,
     )
-    embed.set_footer(text=f"Ausgeführt von {safe_display_name(interaction.user, fallback=str(interaction.user.id))}")
+    embed.set_footer(text=f"Ausgeführt von {safe_display_name(interaction.user, fallback='Unbekannt')}")
     sent_message = await _send_channel_message(
         interaction.channel,
         embed=embed,
@@ -9932,10 +10510,9 @@ async def run_dust_command_flow(
         results=results,
     )
     if result_sent:
-        await interaction.followup.send("? Vorgang abgeschlossen. Die ?ffentliche Ergebnisnachricht wurde gesendet.", ephemeral=True)
         return
     await interaction.followup.send(
-        "? Vorgang abgeschlossen, aber ich konnte die ?ffentliche Ergebnisnachricht nicht senden.",
+        "❌ Die öffentliche Ergebnisnachricht konnte nicht gesendet werden.",
         ephemeral=True,
     )
 
@@ -9943,7 +10520,7 @@ class CardSelectPagerView(RestrictedView):
     def __init__(self, requester_id: int, cards: list[dict]):
         super().__init__(timeout=120)
         self.requester_id = requester_id
-        self.cards = cards
+        self.cards = list(cards)
         self.page = 0
         self.value = None
         self.select = ui.Select(placeholder="Wähle eine Karte...", min_values=1, max_values=1, options=[])
@@ -10053,6 +10630,39 @@ async def send_db_backup(interaction: discord.Interaction, visibility_key: str |
         file=discord.File(str(db_path), filename=db_path.name),
     )
 
+
+async def send_stats_excel_export(interaction: discord.Interaction) -> None:
+    try:
+        workbook_bytes, filename = await build_stats_workbook()
+    except Exception:
+        logging.exception("Failed to build stats workbook")
+        await interaction.followup.send("❌ Der Excel-Export konnte nicht erstellt werden.", ephemeral=True)
+        return
+
+    try:
+        await interaction.user.send(
+            content="📊 Hier ist dein aktueller Statistik-Export.",
+            file=discord.File(BytesIO(workbook_bytes), filename=filename),
+        )
+    except discord.Forbidden:
+        await interaction.followup.send("❌ Ich konnte dir keine DM senden. Bitte aktiviere Direktnachrichten.", ephemeral=True)
+        return
+    except Exception:
+        logging.exception("Failed to deliver stats workbook via DM")
+        await interaction.followup.send("❌ Der Excel-Export wurde erstellt, konnte aber nicht per DM gesendet werden.", ephemeral=True)
+        return
+
+    await _log_event_safe(
+        "admin_stats_export",
+        guild_id=interaction.guild_id,
+        channel_id=interaction.channel_id,
+        thread_id=_thread_id_for_channel(interaction.channel),
+        actor_user_id=interaction.user.id,
+        command_name="stats_e",
+        payload={"filename": filename, "bytes": len(workbook_bytes)},
+    )
+    await interaction.followup.send("✅ Die Excel-Datei wurde dir per DM geschickt.", ephemeral=True)
+
 async def send_db_debug(interaction: discord.Interaction, visibility_key: str | None = None):
     async with db_context() as db:
         cursor = await db.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
@@ -10124,7 +10734,7 @@ async def send_logs_last(interaction: discord.Interaction, count: int, visibilit
 async def send_karten_validate(interaction: discord.Interaction, visibility_key: str | None = None):
     issues = validate_cards(karten)
     if not issues:
-        await _send_with_visibility(interaction, visibility_key, content=f"karten.py ist valide ({len(karten)} Karten).")
+        await _send_with_visibility(interaction, visibility_key, content=f"karten.py ist valide ({len(list(karten))} Karten).")
         return
     preview = summarize_validation_issues(issues, max_items=20)
     await _send_with_visibility(interaction, visibility_key, content=f"Probleme gefunden:\n{preview}")
@@ -10212,7 +10822,7 @@ async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_na
         await _send_with_visibility(interaction, visibility_key, content=f"❌ {mention} hat noch keine Karten in seiner Sammlung.")
         return
     embed = discord.Embed(
-        title=f"🔍 Vault von {escape_display_text(user_name, fallback=str(user_id))}",
+        title=f"🔍 Vault von {escape_display_text(user_name, fallback=mention)}",
         description=f"**{mention}** besitzt **{len(user_karten)}** verschiedene Karten:",
     )
     if infinitydust > 0:
@@ -10222,7 +10832,7 @@ async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_na
         karte = await get_karte_by_name(kartenname)
         if karte:
             embed.add_field(name=f"{karte['name']} (x{anzahl})", value=karte['beschreibung'][:100] + "...", inline=False)
-    embed.set_footer(text=f"Vault-Lookup durch {safe_display_name(interaction.user, fallback=str(interaction.user.id))}")
+    embed.set_footer(text=f"Vault-Lookup durch {safe_display_name(interaction.user, fallback='Unbekannt')}")
     embed.color = 0xff6b6b
     logging.info("Vault look: actor=%s target=%s", interaction.user.id, user_id)
     await _send_with_visibility(interaction, visibility_key, embed=embed)
@@ -10255,7 +10865,7 @@ async def send_test_report(interaction: discord.Interaction, visibility_key: str
         ),
         inline=False,
     )
-    embed.set_footer(text=f"Angefordert von {safe_display_name(interaction.user, fallback=str(interaction.user.id))} | {time.strftime('%d.%m.%Y %H:%M:%S')}")
+    embed.set_footer(text=f"Angefordert von {safe_display_name(interaction.user, fallback='Unbekannt')} | {time.strftime('%d.%m.%Y %H:%M:%S')}")
     logging.info("Test report requested by %s", interaction.user.id)
     await _send_with_visibility(interaction, visibility_key, embed=embed)
 
@@ -10272,7 +10882,7 @@ async def send_bot_status(interaction: discord.Interaction, visibility_key: str 
 async def send_balance_stats(interaction: discord.Interaction, visibility_key: str | None = None):
     if not await is_channel_allowed(interaction, bypass_maintenance=True):
         return
-    total_cards = len(karten)
+    total_cards = len(list(karten))
     rarity_counts = {}
     hp_values = []
     attack_max_values = []
@@ -10524,6 +11134,14 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
             return
         await set_maintenance_mode(interaction.guild.id, True)
         logging.info("Maintenance ON by %s in guild %s", interaction.user.id, interaction.guild_id)
+        await _log_event_safe(
+            "admin_maintenance_on",
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+            thread_id=_thread_id_for_channel(interaction.channel),
+            actor_user_id=interaction.user.id,
+            command_name="entwicklerpanel",
+        )
         await _send_with_visibility(interaction, "maintenance", content="Wartungsmodus aktiviert.")
         return
     if action == "maintenance_off":
@@ -10532,6 +11150,14 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
             return
         await set_maintenance_mode(interaction.guild.id, False)
         logging.info("Maintenance OFF by %s in guild %s", interaction.user.id, interaction.guild_id)
+        await _log_event_safe(
+            "admin_maintenance_off",
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+            thread_id=_thread_id_for_channel(interaction.channel),
+            actor_user_id=interaction.user.id,
+            command_name="entwicklerpanel",
+        )
         await _send_with_visibility(interaction, "maintenance", content="Wartungsmodus deaktiviert.")
         return
     if action == "delete_user":
@@ -10559,6 +11185,16 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
             return
         await add_infinitydust(user_id, int(amount))
         logging.info("Give dust: actor=%s target=%s amount=%s", interaction.user.id, user_id, amount)
+        await _log_event_safe(
+            "admin_dust_action",
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+            thread_id=_thread_id_for_channel(interaction.channel),
+            actor_user_id=interaction.user.id,
+            target_user_id=user_id,
+            command_name="entwicklerpanel",
+            payload={"action": "give", "requested_amount": int(amount), "applied_amount": int(amount), "mode": "single"},
+        )
         await _send_with_visibility(interaction, "give_dust", content=f"{user_name} erhält {amount}x Infinitydust.")
         return
     if action == "grant_card":
@@ -10573,6 +11209,17 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
             return
         await add_karte_amount(user_id, card_name, int(amount))
         logging.info("Grant card: actor=%s target=%s card=%s amount=%s", interaction.user.id, user_id, card_name, amount)
+        await _log_event_safe(
+            "admin_card_grant",
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+            thread_id=_thread_id_for_channel(interaction.channel),
+            actor_user_id=interaction.user.id,
+            target_user_id=user_id,
+            command_name="entwicklerpanel",
+            hero_name=card_name,
+            payload={"amount": int(amount)},
+        )
         await _send_with_visibility(interaction, "grant_card", content=f"{user_name} erhält {amount}x {card_name}.")
         return
     if action == "revoke_card":
@@ -10587,6 +11234,17 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
             return
         new_amount = await remove_karte_amount(user_id, card_name, int(amount))
         logging.info("Revoke card: actor=%s target=%s card=%s amount=%s new_total=%s", interaction.user.id, user_id, card_name, amount, new_amount)
+        await _log_event_safe(
+            "admin_card_revoke",
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+            thread_id=_thread_id_for_channel(interaction.channel),
+            actor_user_id=interaction.user.id,
+            target_user_id=user_id,
+            command_name="entwicklerpanel",
+            hero_name=card_name,
+            payload={"amount": int(amount), "new_total": int(new_amount)},
+        )
         await _send_with_visibility(interaction, "revoke_card", content=f"Neue Menge {card_name} bei {user_name}: {new_amount}.")
         return
     if action == "set_daily":
@@ -11004,6 +11662,15 @@ class BotStatusSelect(ui.Select):
                 ephemeral=True,
             )
             return
+        await _log_event_safe(
+            "admin_bot_status_changed",
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+            thread_id=_thread_id_for_channel(interaction.channel),
+            actor_user_id=interaction.user.id,
+            command_name="bot_status",
+            payload={"status": choice},
+        )
 
         embed = discord.Embed(
             title="✅ Bot-Status geändert",
@@ -11030,6 +11697,22 @@ story = _gameplay_commands["story"]
 fight = _gameplay_commands["fight"]
 
 _admin_commands = register_admin_commands(bot, sys.modules[__name__])
+
+
+@bot.tree.command(name="stats_e", description="Nur für Admins!!!")
+async def stats_e(interaction: discord.Interaction):
+    if not await is_channel_allowed(interaction):
+        return
+    if not await is_admin(interaction):
+        await interaction.response.send_message(
+            "❌ Du hast keine Berechtigung für diesen Command! Nur Admins/Owner können den Excel-Export anfordern.",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.defer(ephemeral=True)
+    await send_stats_excel_export(interaction)
+
+
 configure_group = _admin_commands["configure_group"]
 add_channel_shortcut = _admin_commands["add_channel_shortcut"]
 configure_add = _admin_commands["configure_add"]

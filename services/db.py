@@ -291,6 +291,44 @@ async def init_db():
         )
         """
     )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS analytics_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at INTEGER,
+            event_type TEXT NOT NULL,
+            guild_id INTEGER,
+            channel_id INTEGER,
+            thread_id INTEGER,
+            session_id INTEGER,
+            session_kind TEXT,
+            actor_user_id INTEGER,
+            target_user_id INTEGER,
+            command_name TEXT,
+            hero_name TEXT,
+            attack_name TEXT,
+            payload_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_analytics_events_created_at
+        ON analytics_events (created_at)
+        """
+    )
+    await db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_analytics_events_event_type
+        ON analytics_events (event_type)
+        """
+    )
+    await db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_analytics_events_session_id
+        ON analytics_events (session_id)
+        """
+    )
 
     await _ensure_column(db, "user_daily", "mission_count", "INTEGER DEFAULT 0")
     await _ensure_column(db, "user_daily", "last_mission_reset", "INTEGER")
