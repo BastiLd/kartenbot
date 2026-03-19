@@ -1,0 +1,127 @@
+0000: Charaktere
+0001: Black Widow:Treten = 10–15 Schaden (Stabilster Move).
+0002: Taser= 10–25 Schaden (2 Runden Abklingzeit)
+0003: Präzisionsschuss = 20-35 nach angriff text änderung zu „Nachladen“ und wenn man da draufdrückt, erst dann kann man wieder schießen;
+0004: Tarnung = Macht keinen Schaden (Der Gegner) und selbst normal; 4 Runden nicht nutzbar
+0005: Iron-Man:Repulsor Strahlen = 5 -20 (oder 12 – 22)
+0006: Überladung= Nächste Attacke macht +50% Schaden, aber Iron Man erleidet selbst 5 Schaden (Hitzeentwicklung) (2 Runden Abklingezeit)
+0007: Unibeamstrahl = 25–30 Schaden (4 Runden Abklingzeit, verbraucht viel Energie).)
+0008: Fliegen (wie Pokemon) 4 Züge Abklingzeit; 20-40
+0009: Captain America:
+0010: Schildwurf = 15 – 20 Schaden
+0011: Inspiration =  Heilt Fix 25 HP und 4 Runden abklingzeit
+0012: Schild-Block = Blockt 60% (runde 1) & 30% (Runde 2) des Schadens) (4 Runden Abklingzeit)
+0013: Hieb = 5-25
+0014: Hulk:
+0015: Smash = 18-24
+0016: Gammastrahl = Vergiftung (Verbrennung) 2-7 Runden 5 Schaden
+0017: Unverwundbarkeit = Gamma Wut: nächste 2 Ataclen machen +10 mehr Schaeden als sie machen würden) 3 Runden Abklingzeit
+0018: Sprung = 25-40 (4 Runden Abklingzeit)
+0019: Hawkeye:Flammen Pfeil: 10 Schaden + Brennen 5 Schaden für 3 Runden (4 Runden Abklingzeit)
+0020: Pfeil:  12-18
+0021: Treffsicherhheit: Nächste Attacke trifft 100% max runden (4 Runden Abklingzeit)
+0022: Tripple Arrow: 5-10 Schaden, pro pfeil der trifft max 10 Damage (3 Pfeile) (3 Runden Abklingzeit)
+0023: Doctor Strange:Eldritch-Peitsche: 10–18 Schaden.
+0024: Auge von Agamotto (Zeitmanipulation): Der Gegner muss seine nächste Runde aussetzen (Stun). (4 Runden Abklingzeit)
+0025: Spiegeldimension (Reflektion): Strange erschafft eine Barriere. In der nächsten Runde wird der erlittene Schaden halbiert und die andere Hälfte direkt auf den Gegner zurückgeworfen. (4 Runden Ablöingzeit)
+0026: Strahlen der Vishanti: 10–45 Schaden. (4 Runden Abklingzeit
+0027: Black Panther:Vibranium-Krallen: 12–18 Schaden
+0028: Kinetische Absorption: Black Panther nimmt in dieser Runde 50% weniger Schaden. Der Absorbierte Schaden wird für Kinetische Entladung gespeichert (3 Runden abklingzeit)
+0029: Kinetische Entladung: 10 Schaden + der Schaden, den er in der letzten Runde eingesteckt hat. (3 Runden Abklingzeit)
+0030: Jagdinstinkt: 20 Schaden. Falls der Gegner unter 50% Leben ist, trifft dieser Angriff garantiert mit 30 Schaden. (4 Runden Abklingzeit)
+0031: Star Lord:Element-Blaster: 15–18 Schaden.
+0032: Schwerkraft-Mine: 15 Schaden. Der nächste Angriff des Gegners macht 10 Schaden weniger. (3 Runden Abklingzeit)
+0033: Jet-Boots (Flugmanöver): Star-Lord weicht dem nächsten Angriff komplett aus. Sein eigener nächster Angriff verursacht zusätzlich +10 Schaden. (4 Runden Abklingzeit)
+0034: Awesome Mix (Tanz-Ablenkung): Star-Lord heilt 20 HP oder sein nächster Angriff verursacht garantiert den Maximalschaden (z.B. beim Blaster 18). (5 Runden Abklingzeit)
+0035: Groot:Rankenschlag: 15–20 Schaden.
+0036: Verwurzeln: 5–15 Schaden. Der Gegner wird festgehalten und sein nächster Angriff macht 50% weniger Schaden. (3 Runden Abklingzeit)
+0037: Wachstumsschub (Regeneration): Groot heilt sich um 15–30 HP. (5 Runden Abklingzeit)
+0038: ICH BIN GROOT!": 35–45 Schaden. Groot schlägt mit massiven Baumstamm-Fäusten zu. (5 Runden Abklingzeit)
+0039: Rocket:Duale Blaster: 12–22 Schaden.
+0040: Elektroschock-Falle: 10 Schaden. Der Gegner wird geschockt und kann in seiner nächsten Runde keine Spezialfähigkeiten nutzen (nur Standard-Angriffe erlaubt)  (4 Runden Abklingzeit)
+0041: "Das dicke Ding" (Hadron-Enforcer): 40–50 Schaden. Rocket erleidet durch den Rückstoß selbst 15 Schaden. (5 Runden Abklingzeit)
+0042: Kleines Ziel: Rocket ist so klein und flink, dass der nächste Angriff des Gegners nur minimalen Schaden macht (3 Runden abklingzeit)
+0043: Moon knight:Mondsicheln 12–18 Schaden.
+0044: Chaos-Stil: 5–30 Schaden. (2 Runden Abklingzeit)
+0045: Segen des Khonshu (Regeneration): Heilt 15–25 HP. (4 Runden Abklingzeit)
+0046: Rache des Avatars: 20 Schaden + hast du nur noch 50% Leben, macht der Angriff +10 Schaden extra (Insgesamt 30). (4 Runden abklingzeit)
+0047: Blade:Silber-Katana: 12–18 Schaden.
+0048: Daywalker-Biss: 10–20 Schaden. Blade heilt sich um 50% des verursachten Schadens. (3 Runden Abklingzeit)
+0049: UV-Granate: 10–15 Schaden. Der Gegner erblindet kurzzeitig und sein nächster Angriff hat eine 50% Chance, komplett zu verfehlen (0 Schaden). (3 Runden Abklingzeit)
+0050: Jagdfieber (Ultimative Combo): 25–35 Schaden + Blutungseffekt (5 Schaden für die nächsten 2 Runden). (5 Runden Abklingzeit)
+0051: Wolverine:Adamantium-Krallen: 12–18 Schaden.
+0052: Heilfaktor: Wolverine regeneriert 3 Runden lang jeweils 10 HP (insgesamt 30 HP). (6 Runden Abklingzeit)
+0053: Berserkerwut: 20–30 Schaden. Wenn Wolverine weniger als 50% seiner maximalen Lebenspunkte hat, verursacht dieser Angriff zusätzlich +10 Schaden. (3 Runden Abklingzeit)
+0054: X-Schnitt: 15–20 Schaden + Tiefe Wunde (Der Gegner erleidet für 3 Runden jeweils 5 Schaden durch Blutung). (4 Runden Abklingzeit)
+0055: Spider-Man:Netzschuss: 10–15 Schaden.
+0056: Spinnensinn: Spider-Man weicht dem nächsten Angriff zu 100% aus. Wenn er ausweicht, schlägt er sofort mit einem Konter-Tritt (15 Schaden) zurück. (4 Runden Abklingzeit)
+0057: Netz-Versiegelung: Der Gegner wird in Netze eingewickelt und sein nächster Angriff verursacht 15 Schaden weniger. (4 Runden Abklingzeit)
+0058: Netzschwing-Combo: 25–35 Schaden. (4 Runden Abklingzeit)
+0059: ----------------------------------------------------------------
+0060: Venom:Symbionten-Peitsche: 10–15 Schaden.
+0061: Wir sind Venom: 15 Schaden. Venom heilt sich um 15 HP, mit einer 45% Wahrscheinlichkeit (3 Runden Abklingzeit)
+0062: Symbionten-Schild: Venom hüllt sich in seine schwarze Masse ein. Er blockt den nächsten Angriff komplett ab und verursacht beim Angreifer 10 Schaden als Rückstoß. (4 Runden Abklingzeit)
+0063: Tödlicher Biss: 30–45 Schaden. (5 Runden Abklingzeit)
+0064: Captain Marvel:Photonen-Strahl: 15–20 Schaden.
+0065: Energie-Absorber: Carol geht in eine Verteidigungshaltung. Sie erleidet 50% weniger Schaden in dieser Runde und speichert die abgefangene Energie als "Ladung". (Max 20 Schaden) (3 Runden Abklingzeit)
+0066: Binär-Schlag: 20 Schaden. Falls sie in der Vorrunde "Energie-Absorber" genutzt hat, verursacht dieser Angriff zusätzlich +20 Schaden (insgesamt 40). (4 Runden Abklingzeit oder ab 27 Schaden 5 Runden mit Energie-Absorber)
+0067: Sternenflug: Captain Marvel fliegt ins All (weicht dem nächsten Angriff zu 100% aus) und schlägt in der nächsten Runde mit 20 Schaden ein, der den Gegner betäubt (Stun für 1 Runde) (6 Runden Abklingzeit)
+0068: Ms Marvel:Dehn-Schlag: 10–15 Schaden.
+0069: Riesen-Faust: 20–30 Schaden (3 Runden Abklingzeit)
+0070: Gummiband-Ausweichen: Kamala dehnt ihren Körper, um dem nächsten Angriff auszuweichen. Es besteht auch eine 50% Wahrscheinlichkeit, dass Sie sich um 15 HP heilt, da sie den Schwung nutzt, um sich zu entspannen. (4 Runden Abklingzeit)
+0071: Wirbelsturm-Kick: 15 Schaden an den Gegner + der Gegner verliert seinen nächsten Standard-Angriff (er kann nur Spezialfähigkeiten nutzen, falls diese keine Abklingzeit haben) (4 Runden Abklingzeit)
+0072: Ant-Man:Ameisen-Hieb: 10–15 Schaden.
+0073: Schrumpfen: Ant-Man wird winzig. Er ist für die nächsten 2 Runden fast unmöglich zu treffen (erleidet 50% weniger Schaden), macht aber selbst auch 5 Schaden weniger pro Angriff. (4 Runden Abklingzeit)
+0074: Giant-Man: 35–45 Schaden. Ant-Man wird riesig und zertrampelt alles. Nach diesem Angriff ist er jedoch erschöpft und sein nächster Angriff macht 0 Schaden. (5 Runden Abklingzeit)
+0075: Pym-Partikel-Wurf: 15 Schaden. Der Gegner wird entweder geschrumpft (macht nächste Runde 10 Schaden weniger) oder vergrößert (wird ungeschickt und seine nächste Attacke hat eine 50% Fehlschlag-Chance oder der Gegner 10 mehr schaden macht in der nächsten Runde) (3 Runden Abklingzeit)
+0076: Miles Morales:Netz-Schwinger: 10–15 Schaden.
+0077: Venom Blast: 15–20 Schaden. Der Gegner wird "gelähmt" und seine nächste Attacke kostet 5 zusätzliche Schadenspunkte (er erleidet 5 Schaden beim Versuch anzugreifen). (3 Runden Abklingzeit)
+0078: Camouflage: Miles wird für eine Runde unsichtbar. Er erleidet 0 Schaden (4 Runden Abklingzeit)
+0079: Mega Venom Blast: 35–45 Schaden. Miles entlädt seine gesamte Energie in einer gewaltigen Explosion. Danach sind seine eigenen Spezialangriffe für 2 Runden gesperrt (Überhitzung). (5 Runden Abklingzeit)
+0080: Namor:Dreizack-Stich: 12–18 Schaden.
+0081: Ruf des Ozeans: Namor beschwört eine Welle. Er verursacht 10 Schaden und ist in der nächsten Runde immun gegen negative Effekte (wie Blutung, Vergiftung oder Betäubung). (3 Runden Abklingzeit)
+0082: Flug der Knöchelflügel: Namor weicht dem nächsten Angriff aus und stößt dann aus der Luft herab, was 20 Schaden verursacht. (Überraschungsmoment) (3 Runden Abklingzeit)
+0083: Zorn des Imperator Rex: 30–45 Schaden. Falls Namor weniger als 35% HP hat, verursacht dieser Angriff zusätzlich 10 Schaden durch puren Zorn. (5 Runden Abklingzeit)
+0084: Nick Fury: S.H.I.E.L.D. Dienstwaffe: 10–15 Schaden.
+0085: Luftschlag angefordert: 20–30 Schaden. (3 Runden Abklingzeit)
+0086: S.H.I.E.L.D. Verstärkung: Fury ruft Agenten. Er nimmt 2 Runden lang 25% weniger Schaden und sein Standard-Angriff macht +10 Schaden. (4 Runden Abklingzeit)
+0087: Geheimakte: Fury deckt die Schwäche des Gegners auf. In der nächsten Runde verursacht Fury doppelten Schaden  (5 Runden Abklingzeit)
+0088: Shang-ChiPräzisionsschlag: 10–15 Schaden.
+0089: Ring-Verteidigung: Shang-Chi lässt die Ringe um sich kreisen. Er erleidet in dieser Runde 40% weniger Schaden und sein nächster Angriff macht +10 Schaden  (3 Runden Abklingzeit)
+0090: Fünf-Finger-Explosion: 15–25 Schaden.  Gegner kann zu 45% für eine Runde betäubt werden (4 Runden Abklingzeit)
+0091: Zehn-Ringe-Wucht: 8 Schaden pro Ring, der trifft (insgesamt 3–5 Treffer möglich)(5 Runden Abklingzeit)
+0092: She-HulkJuristischer Schlag: 12–18 Schaden.
+0093: Beweisaufnahme: 15 Schaden. Der Gegner wird zu Boden geworfen und kann in seiner nächsten Runde nicht ausweichen oder blocken (3 Runden Abklingzeit)
+0094: Einspruch!: Sie erleidet 50% weniger Schaden vom nächsten Angriff und wirft 10 Schaden als "Verfahrenskosten" direkt auf den Gegner zurück. (3 Runden Abklingzeit)
+0095: Schlussplädoyer: 35–50 Schaden. (5 Runden Abklingzeit)
+0096: Sue StormKraftfeld-Explosion: 10–15 Schaden.
+0097: Unsichtbarer Schutz: Sue absorbiert die nächsten 25 Schaden. Wenn das Schild durch einen Angriff zerbricht, erleidet der Angreifer 10 Rückstoß-Schaden. (5 Runden Abklingzeit)
+0098: Kraftfeld-Infiltration: 20 Schaden. Dieser Angriff ignoriert Schilde und Verteidigung. (4 Runden Abklingzeit)
+0099: Implosions-Kuppel: 25 Schaden + Betäubung (1 Runde). (5 Runden Abklingzeit)
+0100: ThorMjölnir-Wurf: 15–18 Schaden.
+0101: Ruf des Donners: 15 Schaden. Der Gegner wird vom Blitz getroffen und geschockt. Ein geschockter Gegner verliert in der nächsten Runde 10 HP, wenn er eine Spezialfähigkeit einsetzt. Die Spezialfähigkeit muss davor geklickt werden (3 Runden Abklingzeit)
+0102: Gott des Donners: Thor kanalisiert die Blitze. Er heilt sich um 15 HP und sein nächster Angriff verursacht +10 Schaden. (4 Runden Abklingzeit)
+0103: Der Götterschlag: 45 Schaden (6 Runden Abklingzeit – ab 55 Schaden 7 Runden abklingzeit))
+0104: Mr. FantasticPräzisions-Dehnung: 10–15 Schaden.
+0105: Molekular-Reflektion: Reed verformt sich zu einer lebenden Sprungfeder. Er absorbiert 50% des Schadens des nächsten Angriffs und wirft denselben Wert als Konter-Schaden auf den Gegner zurück. (3 Runden Abklingzeit)
+0106: Taktische Analyse: Reed beobachtet den Kampfstil des Gegners. Der nächste Angriff des Gegners hat eine 50% Fehlschlag-Chance. Zusätzlich wird die Abklingzeit einer zufälligen gegnerischen Fähigkeit um 1 Runde erhöht  (4 Runden Abklingzeit)
+0107: Hyper-Intelligenz-Schlag: 30 Schaden. Falls Reed in der Vorrunde "Taktische Analyse" genutzt hat, verursacht dieser Angriff zusätzlich 20 Schaden (insgesamt 50) (5 Runden Abklingzeit – ab 40 6 Runden und ab 55 immer 7 Runden)
+0108: The ThingSteinharte Faust: 12–18 Schaden.
+0109: Es ist Zeit zum Klopfen!: Ben stürmt vor. 15 Schaden + der nächste Angriff des Gegners verursacht 50% weniger Schaden (da er von der Wucht benommen ist). (4 Runden Abklingzeit)
+0110: Felsenhaut: Ben härtet seinen Körper. Er erhält einen Schild von 40 HP. Solange der Schild hält, kann Ben nicht betäubt (stunned) werden. (5 Runden Abklingzeit)
+0111: Clobberin’ Time: 40–55 Schaden. Falls Bens HP unter 30% liegen, heilt er sich nach diesem Schlag zusätzlich um 20 HP (6 Runden Abklingzeit)
+0112: Human TorchFeuerball: 12 Schaden + 5 Brand-Schaden in der nächsten Runde.
+0113: Flammenwand: Johnny hüllt sich in Hitze. Sollte der gegner in der nächsten Runde seinen Normal-Angriff machen, wird dieser Unterbrochen und der Gegner erleidet zusätzlich 15 Schaden – ansonsten erhält er 10 HP (4 Runden Abklingzeit)
+0114: Supernova-Ladung: Johnny erhöht seine Temperatur. Sein nächster Angriff verursacht doppelten Brand-Schaden (3 Runden Abklingzeit)
+0115: FLAMME AN!: 30 Schaden sofort + Brand 5 Schaden für die nächsten 2 Runden. (5 Runden Abklingzeit)
+0116: CyclopsOptischer Strahl: 10- 15 Schaden
+0117: Taktisches Manöver: Cyclops nutzt seine Umgebung. Er weicht dem nächsten Angriff aus und verringert die Verteidigung des Gegners für die nächsten 2 Runden um 5 Punkte (der Gegner erleidet 5 Schaden mehr durch jeden Treffer) (4 Runden Abklingzeit)
+0118: Visier-Anpassung: Cyclops fokussiert sein Ziel. Sein nächster Angriff verursacht +15 Schaden und kann nicht durch Ausweichen (wie bei Spider-Man) vermieden werden (4 Runden Abklingzeit)
+0119: Mega-Optic-Blast: 40–50 Schaden (6 Runden Abklingzeit)
+0120: Selten:
+0121: Loki, Ultron, Scarlet Witch, Deadpool, Carnage,
+0122: Normal:
+0123: Black Widow, Iron-Man, Captain America, Hulk, Hawkeye, Doctor Strange, Black Panther, Star, Groot, Rocket, Moon Knight, Blade, Wolverine, Spider-Man, Venom, Captain Marvel, Miss Marvel, Ant-Man, Miles Morales, Namor, Nick Fury, Chon Chin, She Hulk, Sue, Reed, The Thing, Humen Torch, Thor, Cyclops
+0124: Maße
+0125: Format: 5:7 / 2.5:3.5Ich wusste nicht welches Format, das ist und ChatGPT hat das obige gesagt. Denke du kennst dich aus und falls das oben falsch sein sollte, kannst du dich an dem untrigen Orientieren.Diese Karte ist glaub ich eine gute Referenz:https://i.imgur.com/4mxNv2c.png
+0126: Am wichtigsten ist nur, das es Hochformat ist.
