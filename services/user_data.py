@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from db import db_context
 from karten import karten
+from services.card_variants import base_card_name, build_runtime_card, has_exact_variant, normalize_owned_card_name
 from services.card_pool import random_gameplay_card
 
 
@@ -110,6 +111,7 @@ async def log_admin_dust_action(
 
 
 async def add_card_buff(user_id, card_name, buff_type, attack_number, buff_amount):
+    normalized_card_name = base_card_name(card_name, cards=karten)
     async with db_context() as db:
         await db.execute(
             """
@@ -121,19 +123,13 @@ async def add_card_buff(user_id, card_name, buff_type, attack_number, buff_amoun
                 buff_amount = user_card_buffs.buff_amount + excluded.buff_amount,
                 created_at = CURRENT_TIMESTAMP
             """,
-            (user_id, card_name, buff_type, attack_number, buff_amount),
+            (user_id, normalized_card_name, buff_type, attack_number, buff_amount),
         )
         await db.commit()
 
 
 def _card_data_by_name(card_name: str) -> dict | None:
-    card_name_normalized = str(card_name or "").strip()
-    if not card_name_normalized:
-        return None
-    for card in karten:
-        if str(card.get("name") or "").strip() == card_name_normalized:
-            return card
-    return None
+    return build_runtime_card(base_card_name(card_name, cards=karten), cards=karten)
 
 
 def _attack_allows_damage_buff(attack: dict) -> bool:
@@ -214,7 +210,8 @@ async def remove_invalid_damage_card_buffs(*, user_id: int | None = None, card_n
 
 
 async def get_card_buffs(user_id: int, card_name: str) -> list[tuple[str, int, int]]:
-    await remove_invalid_damage_card_buffs(user_id=user_id, card_name=card_name)
+    normalized_card_name = base_card_name(card_name, cards=karten)
+    await remove_invalid_damage_card_buffs(user_id=user_id, card_name=normalized_card_name)
     async with db_context() as db:
         cursor = await db.execute(
             """
@@ -222,7 +219,7 @@ async def get_card_buffs(user_id: int, card_name: str) -> list[tuple[str, int, i
             FROM user_card_buffs
             WHERE user_id = ? AND card_name = ?
             """,
-            (user_id, card_name),
+            (user_id, normalized_card_name),
         )
         rows = await cursor.fetchall()
         return [
@@ -236,20 +233,22 @@ async def get_card_buffs(user_id: int, card_name: str) -> list[tuple[str, int, i
 
 
 async def add_karte(user_id, karten_name):
+    normalized_name = normalize_owned_card_name(karten_name, cards=karten)
     async with db_context() as db:
         await db.execute(
             "INSERT INTO user_karten (user_id, karten_name, anzahl) VALUES (?, ?, 1) "
             "ON CONFLICT(user_id, karten_name) DO UPDATE SET anzahl = anzahl + 1",
-            (user_id, karten_name),
+            (user_id, normalized_name),
         )
         await db.commit()
 
 
 async def check_and_add_karte(user_id, karte):
+    normalized_name = normalize_owned_card_name(karte["name"], cards=karten)
     async with db_context() as db:
         cursor = await db.execute(
             "SELECT COUNT(*) FROM user_karten WHERE user_id = ? AND karten_name = ?",
-            (user_id, karte["name"]),
+            (user_id, normalized_name),
         )
         row = await cursor.fetchone()
 
@@ -257,18 +256,19 @@ async def check_and_add_karte(user_id, karte):
         await add_infinitydust(user_id, 1)
         return False
 
-    await add_karte(user_id, karte["name"])
+    await add_karte(user_id, normalized_name)
     return True
 
 
 async def add_karte_amount(user_id, karten_name, amount: int):
     if amount <= 0:
         return
+    normalized_name = normalize_owned_card_name(karten_name, cards=karten)
     async with db_context() as db:
         await db.execute(
             "INSERT INTO user_karten (user_id, karten_name, anzahl) VALUES (?, ?, ?) "
             "ON CONFLICT(user_id, karten_name) DO UPDATE SET anzahl = anzahl + excluded.anzahl",
-            (user_id, karten_name, amount),
+            (user_id, normalized_name, amount),
         )
         await db.commit()
 
@@ -276,10 +276,11 @@ async def add_karte_amount(user_id, karten_name, amount: int):
 async def remove_karte_amount(user_id, karten_name, amount: int) -> int:
     if amount <= 0:
         return 0
+    normalized_name = normalize_owned_card_name(karten_name, cards=karten)
     async with db_context() as db:
         cursor = await db.execute(
             "SELECT anzahl FROM user_karten WHERE user_id = ? AND karten_name = ?",
-            (user_id, karten_name),
+            (user_id, normalized_name),
         )
         row = await cursor.fetchone()
         if not row:
@@ -289,13 +290,13 @@ async def remove_karte_amount(user_id, karten_name, amount: int) -> int:
         if new_amount <= 0:
             await db.execute(
                 "DELETE FROM user_karten WHERE user_id = ? AND karten_name = ?",
-                (user_id, karten_name),
+                (user_id, normalized_name),
             )
             await db.commit()
             return 0
         await db.execute(
             "UPDATE user_karten SET anzahl = ? WHERE user_id = ? AND karten_name = ?",
-            (new_amount, user_id, karten_name),
+            (new_amount, user_id, normalized_name),
         )
         await db.commit()
         return new_amount
@@ -358,7 +359,7 @@ async def get_user_karten(user_id: int) -> list[tuple[str, int]]:
     async with db_context() as db:
         cursor = await db.execute("SELECT karten_name, anzahl FROM user_karten WHERE user_id = ?", (user_id,))
         rows = await cursor.fetchall()
-        return [(str(row[0] or ""), int(row[1] or 0)) for row in rows]
+        return [(normalize_owned_card_name(row[0], cards=karten), int(row[1] or 0)) for row in rows]
 
 
 async def get_last_karte(user_id):
@@ -368,7 +369,19 @@ async def get_last_karte(user_id):
             (user_id,),
         )
         row = await cursor.fetchone()
-        return row[0] if row else None
+        return normalize_owned_card_name(row[0], cards=karten) if row else None
+
+
+async def has_exact_card_variant(user_id: int, karten_name: str) -> bool:
+    user_cards = await get_user_karten(user_id)
+    return has_exact_variant(user_cards, karten_name, cards=karten)
+
+
+async def add_exact_card_variant_once(user_id: int, karten_name: str) -> bool:
+    if await has_exact_card_variant(user_id, karten_name):
+        return False
+    await add_karte_amount(user_id, karten_name, 1)
+    return True
 
 
 async def delete_user_data(user_id: int) -> None:

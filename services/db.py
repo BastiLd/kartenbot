@@ -4,6 +4,9 @@ from contextlib import asynccontextmanager
 
 import aiosqlite
 
+from karten import karten
+from services.card_variants import default_variant_name_for_base, iter_card_variants
+
 DB_PATH = os.getenv("KARTENBOT_DB_PATH", "kartenbot.db")
 
 _db = None
@@ -56,6 +59,29 @@ async def _column_exists(db, table_name: str, column_name: str) -> bool:
 async def _ensure_column(db, table: str, column: str, definition: str) -> None:
     if not await _column_exists(db, table, column):
         await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+async def _migrate_default_variant_card_names(db) -> None:
+    for card in karten:
+        base_name = str(card.get("name") or "").strip()
+        variants = iter_card_variants(card)
+        if len(variants) <= 1:
+            continue
+        default_variant_name = default_variant_name_for_base(base_name, cards=karten)
+        if not default_variant_name or default_variant_name == base_name:
+            continue
+        cursor = await db.execute(
+            "SELECT user_id, anzahl FROM user_karten WHERE karten_name = ?",
+            (base_name,),
+        )
+        rows = await cursor.fetchall()
+        for user_id, amount in rows:
+            await db.execute(
+                "INSERT INTO user_karten (user_id, karten_name, anzahl) VALUES (?, ?, ?) "
+                "ON CONFLICT(user_id, karten_name) DO UPDATE SET anzahl = anzahl + excluded.anzahl",
+                (user_id, default_variant_name, int(amount or 0)),
+            )
+        await db.execute("DELETE FROM user_karten WHERE karten_name = ?", (base_name,))
 
 
 async def init_db():
@@ -349,5 +375,7 @@ async def init_db():
                 (user_id, amount),
             )
         await db.execute("UPDATE user_karten SET infinitydust = 0")
+
+    await _migrate_default_variant_card_names(db)
 
     await db.commit()

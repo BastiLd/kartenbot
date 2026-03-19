@@ -21,6 +21,7 @@ from services.battle import (
     update_battle_log,
 )
 from services.card_pool import ALPHA_PLAYABLE_CARD_NAMES, alpha_playable_cards
+from services.card_variants import build_runtime_card, group_owned_cards_by_base, reward_runtime_cards
 
 
 def _find_card(name: str) -> dict:
@@ -248,6 +249,39 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+    def test_iron_man_alpha_variant_uses_shared_stats_and_new_image(self) -> None:
+        standard = build_runtime_card("Standard_Iron-Man", cards=karten)
+        alpha = build_runtime_card("Alpha_Iron-Man", cards=karten)
+        self.assertIsNotNone(standard)
+        self.assertIsNotNone(alpha)
+        assert standard is not None
+        assert alpha is not None
+        self.assertEqual(str(standard.get("base_name") or ""), "Iron-Man")
+        self.assertEqual(str(alpha.get("base_name") or ""), "Iron-Man")
+        self.assertEqual(int(standard.get("hp", 0) or 0), int(alpha.get("hp", 0) or 0))
+        self.assertEqual(
+            [str(attack.get("name") or "") for attack in standard.get("attacks", [])],
+            [str(attack.get("name") or "") for attack in alpha.get("attacks", [])],
+        )
+        self.assertEqual(str(alpha.get("bild") or ""), "https://i.imgur.com/ge54AbX.png")
+        self.assertTrue(bool(alpha.get("admin_only")))
+        self.assertFalse(bool(alpha.get("reward_enabled")))
+
+    def test_reward_runtime_cards_exclude_admin_only_variants(self) -> None:
+        reward_names = {str(card.get("name") or "") for card in reward_runtime_cards(karten)}
+        self.assertIn("Standard_Iron-Man", reward_names)
+        self.assertNotIn("Alpha_Iron-Man", reward_names)
+
+    def test_group_owned_cards_by_base_collapses_variants(self) -> None:
+        grouped = group_owned_cards_by_base(
+            [("Standard_Iron-Man", 1), ("Alpha_Iron-Man", 1), ("Hulk", 2)],
+            cards=karten,
+        )
+        iron_group = next(group for group in grouped if str(group.get("base_name") or "") == "Iron-Man")
+        self.assertEqual(int(iron_group.get("total_amount", 0) or 0), 2)
+        self.assertEqual(list(iron_group.get("variants") or []), [("Standard_Iron-Man", 1), ("Alpha_Iron-Man", 1)])
+
+
 class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
     def test_sort_user_cards_like_karten_order(self) -> None:
         ordered_names = [str(card.get("name") or "") for card in karten if card.get("name")]
@@ -262,7 +296,7 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
         sorted_cards = bot_module._sort_user_cards_like_karten(unsorted_cards)
         self.assertEqual(
             [name for name, _amount in sorted_cards],
-            [ordered_names[0], ordered_names[1], ordered_names[2], ordered_names[3], "Unknown Card"],
+            [ordered_names[0], "Standard_Iron-Man", ordered_names[2], ordered_names[3], "Unknown Card"],
         )
 
     def test_outgoing_flat_overflow(self) -> None:
@@ -582,6 +616,42 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("INSERT INTO user_card_buffs", query)
         self.assertEqual(params, (15, "Iron-Man", "damage", 2, 5))
         self.assertEqual(fake_db.commit_calls, 1)
+
+    async def test_add_card_buff_normalizes_variant_name_to_base_card(self) -> None:
+        class _FakeDb:
+            def __init__(self) -> None:
+                self.executed: list[tuple[str, tuple[object, ...]]] = []
+
+            async def execute(self, query, params=()):
+                self.executed.append((str(query), tuple(params)))
+                return None
+
+            async def commit(self):
+                return None
+
+        fake_db = _FakeDb()
+
+        @asynccontextmanager
+        async def _fake_db_context():
+            yield fake_db
+
+        with patch.object(user_data_module, "db_context", _fake_db_context):
+            await user_data_module.add_card_buff(44, "Alpha_Iron-Man", "damage", 1, 3)
+
+        _query, params = fake_db.executed[0]
+        self.assertEqual(params, (44, "Iron-Man", "damage", 1, 3))
+
+    async def test_add_exact_card_variant_once_blocks_duplicate_exact_variant(self) -> None:
+        with (
+            patch.object(user_data_module, "has_exact_card_variant", AsyncMock(side_effect=[False, True])),
+            patch.object(user_data_module, "add_karte_amount", AsyncMock()) as add_amount_mock,
+        ):
+            first_added = await user_data_module.add_exact_card_variant_once(101, "Alpha_Iron-Man")
+            second_added = await user_data_module.add_exact_card_variant_once(101, "Alpha_Iron-Man")
+
+        self.assertTrue(first_added)
+        self.assertFalse(second_added)
+        add_amount_mock.assert_awaited_once_with(101, "Alpha_Iron-Man", 1)
 
     def test_multi_hit_force_max(self) -> None:
         cfg = {"hits": 3, "hit_chance": 0.45, "per_hit_damage": [1, 10]}

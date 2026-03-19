@@ -59,6 +59,16 @@ from services import battle_state
 from services.card_validation import summarize_validation_issues, validate_cards
 from services.battle_types import CardData
 from services.analytics import log_event as log_analytics_event
+from services.card_variants import (
+    base_card_name,
+    build_runtime_card,
+    card_has_multiple_variants,
+    default_variant_name_for_base,
+    exact_variant_names_with_amounts,
+    group_owned_cards_by_base,
+    normalize_owned_card_name,
+    variant_names_for_base,
+)
 from services.card_pool import (
     ALPHA_PLAYABLE_CARD_NAMES,
     card_is_alpha_playable,
@@ -109,6 +119,7 @@ from services.runtime_store import (
 )
 from services.stats_export import build_stats_workbook
 from services.user_data import (
+    add_exact_card_variant_once,
     add_card_buff,
     add_infinitydust,
     add_karte,
@@ -122,6 +133,7 @@ from services.user_data import (
     get_mission_count,
     get_team,
     get_user_karten,
+    has_exact_card_variant,
     increment_mission_count,
     log_admin_dust_action,
     remove_invalid_damage_card_buffs,
@@ -270,6 +282,24 @@ def current_gameplay_cards() -> list[CardData]:
 
 def _filter_owned_cards_for_current_mode(user_cards: list[tuple[str, int]]) -> list[tuple[str, int]]:
     return filter_owned_cards_for_gameplay(user_cards, alpha_enabled=ALPHA_PHASE_ENABLED)
+
+
+def _group_owned_cards_for_current_mode(user_cards: list[tuple[str, int]]) -> list[dict[str, Any]]:
+    return group_owned_cards_by_base(_filter_owned_cards_for_current_mode(user_cards), cards=karten)
+
+
+def _owned_variant_rows_for_base(
+    user_cards: list[tuple[str, int]],
+    base_name: str,
+) -> list[tuple[str, int]]:
+    filtered_cards = _filter_owned_cards_for_current_mode(user_cards)
+    return exact_variant_names_with_amounts(filtered_cards, base_name, cards=karten)
+
+
+def _group_option_label(group: dict[str, Any]) -> str:
+    base_name = str(group.get("base_name") or "Karte")
+    total_amount = int(group.get("total_amount", 0) or 0)
+    return f"{base_name} (x{total_amount})" if total_amount > 1 else base_name
 
 
 async def _log_event_safe(event_type: str, **kwargs: Any) -> None:
@@ -1481,14 +1511,16 @@ def _build_mission_embed(mission_data: dict) -> discord.Embed:
 # Hilfsfunktion: Karte nach Namen finden
 async def get_karte_by_name(name: str) -> dict[str, Any] | None:
     wanted_name = canonical_card_name(name)
-    for karte in karten:
-        card_name = canonical_card_name(karte.get("name"))
-        if card_name == wanted_name:
-            return karte
+    runtime_card = build_runtime_card(wanted_name, cards=karten)
+    if runtime_card is not None:
+        return runtime_card
+    runtime_card = build_runtime_card(name, cards=karten)
+    if runtime_card is not None:
+        return runtime_card
     return None
 
 def _sort_user_cards_like_karten(user_cards) -> list[tuple[str, int]]:
-    """Sort user-owned cards by the order in karten.py, unknown cards last."""
+    """Sort user-owned exact cards by base-card order and variant order."""
     order_map = {
         str(card.get("name", "")).strip().lower(): idx
         for idx, card in enumerate(karten)
@@ -1500,12 +1532,15 @@ def _sort_user_cards_like_karten(user_cards) -> list[tuple[str, int]]:
             amount = int(row[1])
         except Exception:
             continue
-        normalized.append((name, amount))
+        normalized.append((normalize_owned_card_name(name, cards=karten), amount))
 
     def _key(item: tuple[str, int]) -> tuple[int, str]:
         name = str(item[0]).strip()
-        idx = order_map.get(name.lower(), 10**9)
-        return idx, name.lower()
+        base_name = base_card_name(name, cards=karten)
+        idx = order_map.get(base_name.lower(), 10**9)
+        variant_rows = exact_variant_names_with_amounts([(name, 1)], base_name, cards=karten)
+        variant_name = variant_rows[0][0] if variant_rows else name
+        return idx, variant_name.lower()
 
     return sorted(normalized, key=_key)
 
@@ -4547,21 +4582,55 @@ class CardSelectView(RestrictedView):
         super().__init__(timeout=90)
         self.user_id = user_id
         self.value = None
-        filtered_cards = _filter_owned_cards_for_current_mode(list(karten_liste))
-        options = [SelectOption(label=k[0], value=k[0]) for k in filtered_cards]
+        self.anzahl = int(anzahl)
+        self.user_cards = list(karten_liste)
+        self.base_groups = _group_owned_cards_for_current_mode(self.user_cards)
+        self.selected_base_name: str | None = None
+        options = [SelectOption(label=_group_option_label(group)[:100], value=str(group.get("base_name") or "")) for group in self.base_groups[:25]]
         if not options:
             options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
-        self.select = ui.Select(placeholder=f"Wähle {anzahl} Karte(n)...", min_values=anzahl, max_values=anzahl, options=options)
+        self.select = ui.Select(placeholder=f"Wähle {anzahl} Karte(n)...", min_values=1, max_values=1, options=options)
         self.select.callback = self.select_callback
         self.add_item(self.select)
+
+    def _variant_rows_for_selected_base(self) -> list[tuple[str, int]]:
+        if not self.selected_base_name:
+            return []
+        return _owned_variant_rows_for_base(self.user_cards, self.selected_base_name)
+
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Nur der Herausforderer kann Karten wählen!", ephemeral=True)
             return
-        if "__none__" in self.select.values:
+        selected_value = str(self.select.values[0] or "").strip()
+        if selected_value == "__none__":
             await interaction.response.send_message("❌ Es sind aktuell keine nutzbaren Karten verfügbar.", ephemeral=True)
             return
-        self.value = self.select.values
+        if self.selected_base_name is None:
+            self.selected_base_name = selected_value
+            variant_rows = self._variant_rows_for_selected_base()
+            if len(variant_rows) <= 1:
+                if not variant_rows:
+                    await interaction.response.send_message("❌ Für diese Karte wurde kein nutzbarer Style gefunden.", ephemeral=True)
+                    return
+                self.value = [variant_rows[0][0]]
+                self.stop()
+                await interaction.response.defer()
+                return
+            self.select.placeholder = f"Wähle den Style für {self.selected_base_name}..."
+            self.select.options = [
+                SelectOption(
+                    label=(f"{variant_name} (x{amount})" if amount > 1 else variant_name)[:100],
+                    value=variant_name,
+                )
+                for variant_name, amount in variant_rows[:25]
+            ]
+            await interaction.response.edit_message(
+                content=f"Wähle den Style für **{self.selected_base_name}**:",
+                view=self,
+            )
+            return
+        self.value = [selected_value]
         self.stop()
         await interaction.response.defer()
 
@@ -4576,6 +4645,7 @@ class FightCardSelectView(DurableView):
         challenger_card_name: str,
         challenged_card_options,
         *,
+        selected_base_name: str | None = None,
         origin_channel_id: int | None,
         thread_id: int | None,
         thread_created: bool,
@@ -4588,15 +4658,35 @@ class FightCardSelectView(DurableView):
         self.thread_id = thread_id
         self.thread_created = thread_created
         self.challenged_card_options = list(challenged_card_options or [])
-        options = [
-            SelectOption(label=str(name), value=str(name))
-            for name in self.challenged_card_options
-            if str(name).strip()
-        ][:25]
+        self.selected_base_name = str(selected_base_name or "").strip() or None
+        grouped_cards = group_owned_cards_by_base([(str(name), 1) for name in self.challenged_card_options], cards=karten)
+        self._grouped_cards = grouped_cards
+        if self.selected_base_name:
+            variant_rows = exact_variant_names_with_amounts(
+                [(str(name), 1) for name in self.challenged_card_options],
+                self.selected_base_name,
+                cards=karten,
+            )
+            options = [
+                SelectOption(
+                    label=(f"{variant_name} (x{amount})" if amount > 1 else variant_name)[:100],
+                    value=variant_name,
+                )
+                for variant_name, amount in variant_rows[:25]
+            ]
+        else:
+            options = [
+                SelectOption(label=_group_option_label(group)[:100], value=str(group.get("base_name") or ""))
+                for group in grouped_cards[:25]
+            ]
         if not options:
             options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
         self.select = ui.Select(
-            placeholder="Wähle deine Karte für den 1v1 Kampf...",
+            placeholder=(
+                f"Wähle den Style für {self.selected_base_name}..."
+                if self.selected_base_name
+                else "Wähle deine Karte für den 1v1 Kampf..."
+            ),
             min_values=1,
             max_values=1,
             options=options,
@@ -4611,6 +4701,7 @@ class FightCardSelectView(DurableView):
             "challenged_id": self.challenged_id,
             "challenger_card_name": self.challenger_card_name,
             "challenged_card_options": list(self.challenged_card_options),
+            "selected_base_name": self.selected_base_name,
             "origin_channel_id": self.origin_channel_id,
             "thread_id": self.thread_id,
             "thread_created": self.thread_created,
@@ -4624,6 +4715,29 @@ class FightCardSelectView(DurableView):
         if not selected_name or selected_name == "__none__":
             await interaction.response.send_message("❌ Keine gültige Karte verfügbar.", ephemeral=True)
             return
+        if self.selected_base_name is None:
+            self.selected_base_name = selected_name
+            variant_rows = exact_variant_names_with_amounts(
+                [(str(name), 1) for name in self.challenged_card_options],
+                self.selected_base_name,
+                cards=karten,
+            )
+            if len(variant_rows) > 1:
+                self.select.placeholder = f"Wähle den Style für {self.selected_base_name}..."
+                self.select.options = [
+                    SelectOption(
+                        label=(f"{variant_name} (x{amount})" if amount > 1 else variant_name)[:100],
+                        value=variant_name,
+                    )
+                    for variant_name, amount in variant_rows[:25]
+                ]
+                await interaction.response.edit_message(
+                    content=f"Wähle den Style für **{self.selected_base_name}**:",
+                    view=self,
+                )
+                return
+            if variant_rows:
+                selected_name = variant_rows[0][0]
         await interaction.response.defer()
         try:
             if interaction.message is not None:
@@ -4937,10 +5051,11 @@ class AdminUserSelectView(RestrictedView):
 
 
 class DustMultiUserSelectView(RestrictedView):
-    def __init__(self, requester_id: int, guild: discord.Guild):
+    def __init__(self, requester_id: int, guild: discord.Guild, *, item_label: str = "Infinitydust"):
         super().__init__(timeout=120)
         self.requester_id = requester_id
         self.guild = guild
+        self.item_label = str(item_label or "Auswahl")
         self.selected_user_ids: list[int] = []
         self.value: list[int] | None = None
         self._message: discord.Message | None = None
@@ -4958,7 +5073,7 @@ class DustMultiUserSelectView(RestrictedView):
         self._message = message
 
     def _content(self) -> str:
-        return "Wähle mehrere Nutzer für Infinitydust. Die Suche steht immer ganz oben."
+        return f"Wähle mehrere Nutzer für {self.item_label}. Die Suche steht immer ganz oben."
 
     def _available_members(self) -> list[discord.Member]:
         chosen = set(self.selected_user_ids)
@@ -4987,8 +5102,9 @@ class DustMultiUserSelectView(RestrictedView):
     def _summary_embed(self) -> discord.Embed:
         available_count = len(self._available_members())
         selected_count = len(self.selected_user_ids)
+        title = f"💎 Multi-Auswahl für {self.item_label}" if self.item_label == "Infinitydust" else f"Multi-Auswahl für {self.item_label}"
         embed = discord.Embed(
-            title="💎 Multi-Auswahl für Infinitydust",
+            title=title,
             description="Speichere mehrere Nutzer und drücke danach auf **Fertig**.",
             color=0x3498DB,
         )
@@ -6120,6 +6236,9 @@ def _cards_by_rarity_group() -> dict[str, list[dict]]:
     return grouped
 
 def _card_by_name_local(name: str | None) -> dict | None:
+    card = build_runtime_card(name or "", cards=karten)
+    if card is not None:
+        return card
     normalized = str(name or "").strip().lower()
     if not normalized:
         return None
@@ -6323,13 +6442,23 @@ class FuseCardSelectView(RestrictedView):
 class CardSelect(ui.Select):
     def __init__(self, user_karten, dust_amount):
         self.dust_amount = dust_amount
-        options = []
-        for kartenname, anzahl in user_karten[:25]:
-            options.append(SelectOption(label=f"{kartenname} (x{anzahl})", value=kartenname))
+        grouped_cards = _group_owned_cards_for_current_mode(list(user_karten))
+        options = [
+            SelectOption(
+                label=_group_option_label(group)[:100],
+                value=str(group.get("base_name") or ""),
+            )
+            for group in grouped_cards[:25]
+        ]
+        if not options:
+            options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
         super().__init__(placeholder="Wähle eine Karte zum Verstärken...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
         selected_card = self.values[0]
+        if selected_card == "__none__":
+            await interaction.response.send_message("❌ Du hast aktuell keine Karte zum Verstärken.", ephemeral=True)
+            return
         karte_data = await get_karte_by_name(selected_card)
         if not karte_data:
             await interaction.response.send_message("❌ Karte nicht gefunden!", ephemeral=True)
@@ -6809,6 +6938,64 @@ class UserSelectView(RestrictedView):
             self.next_btn.disabled = (self.page_index == len(self.pages) - 1)
         await interaction.response.edit_message(view=self)
 
+async def _build_owned_card_detail(
+    *,
+    user_id: int,
+    selected_name: str,
+    variant_rows: list[tuple[str, int]] | None = None,
+) -> tuple[discord.Embed, RestrictedView] | None:
+    karte = await get_karte_by_name(selected_name)
+    if not karte:
+        return None
+    embed = discord.Embed(
+        title=str(karte.get("name") or selected_name),
+        description=str(karte.get("beschreibung") or ""),
+        color=_card_rarity_color(karte),
+    )
+    if karte.get("bild"):
+        embed.set_image(url=str(karte.get("bild")))
+
+    attacks = karte.get("attacks", [])
+    user_buffs = await get_card_buffs(user_id, str(karte.get("base_name") or karte.get("name") or selected_name))
+    damage_buff_map: dict[int, int] = {}
+    for buff_type, attack_number, buff_amount in user_buffs:
+        if buff_type == "damage" and 1 <= attack_number <= 4:
+            damage_buff_map[int(attack_number)] = damage_buff_map.get(int(attack_number), 0) + int(buff_amount or 0)
+
+    if attacks:
+        lines = []
+        for idx, atk in enumerate(attacks, start=1):
+            buff = damage_buff_map.get(idx, 0)
+            _button_label, _button_style, attack_summary = _attack_display_parts(atk, max_only_bonus=buff)
+            info_text = str(atk.get("info") or "").strip()
+            if info_text:
+                lines.append(f"• {attack_summary}\n  ↳ {info_text}")
+            else:
+                lines.append(f"• {attack_summary}")
+        embed.add_field(name="Attacken", value="\n".join(lines), inline=False)
+
+    variant_rows = list(variant_rows or [])
+    if len(variant_rows) > 1:
+        embed.add_field(
+            name="Varianten",
+            value="\n".join(f"• {variant_name} (x{amount})" for variant_name, amount in variant_rows),
+            inline=False,
+        )
+
+    view_buttons = RestrictedView(timeout=60)
+    for i, atk in enumerate(attacks[:4]):
+        buff = damage_buff_map.get(i + 1, 0)
+        button_label, button_style, _attack_summary = _attack_display_parts(atk, max_only_bonus=buff)
+        btn = ui.Button(
+            label=button_label,
+            style=button_style,
+            disabled=True,
+            row=0 if i < 2 else 1,
+        )
+        view_buttons.add_item(btn)
+    return embed, view_buttons
+
+
 class VaultView(RestrictedView):
     def __init__(self, user_id: int, user_karten):
         super().__init__(timeout=120)
@@ -6819,165 +7006,116 @@ class VaultView(RestrictedView):
         anzeigen_button.callback = self.on_anzeige
         self.add_item(anzeigen_button)
 
+    async def _show_card_detail(self, interaction: discord.Interaction, base_name: str) -> None:
+        variant_rows = _owned_variant_rows_for_base(self.user_karten, base_name)
+        if not variant_rows:
+            await interaction.response.send_message("Karte nicht gefunden.", ephemeral=True)
+            return
+        if len(variant_rows) == 1:
+            detail_payload = await _build_owned_card_detail(
+                user_id=self.user_id,
+                selected_name=variant_rows[0][0],
+                variant_rows=variant_rows,
+            )
+            if detail_payload is None:
+                await interaction.response.send_message("Karte nicht gefunden.", ephemeral=True)
+                return
+            embed, view_buttons = detail_payload
+            await interaction.response.send_message(embed=embed, view=view_buttons, ephemeral=True)
+            return
+        variant_view = CardVariantSelectView(self.user_id, base_name, variant_rows)
+        await interaction.response.send_message(
+            f"Wähle den Style für **{base_name}**:",
+            view=variant_view,
+            ephemeral=True,
+        )
+        await variant_view.wait()
+        if not variant_view.value:
+            return
+        detail_payload = await _build_owned_card_detail(
+            user_id=self.user_id,
+            selected_name=variant_view.value,
+            variant_rows=variant_rows,
+        )
+        if detail_payload is None:
+            return
+        embed, view_buttons = detail_payload
+        await interaction.followup.send(embed=embed, view=view_buttons, ephemeral=True)
+
     async def on_anzeige(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Das ist nicht dein Button!", ephemeral=True)
             return
 
-        # Baue Optionsliste aus dem Besitz des Users
-        options = []
-        for kartenname, anzahl in self.user_karten:
-            options.append(SelectOption(label=f"{kartenname} (x{anzahl})", value=kartenname))
+        grouped_cards = _group_owned_cards_for_current_mode(list(self.user_karten))
+        options = [
+            SelectOption(label=_group_option_label(group)[:100], value=str(group.get("base_name") or ""))
+            for group in grouped_cards
+        ]
 
-        # Discord erlaubt höchstens 25 Optionen; bei mehr paginieren
         if len(options) <= 25:
             select = ui.Select(placeholder="Wähle eine Karte zur Anzeige...", min_values=1, max_values=1, options=options)
+
             async def handle_select(interaction: discord.Interaction):
                 if interaction.user.id != self.user_id:
                     await interaction.response.send_message("Das ist nicht dein Menü!", ephemeral=True)
                     return
-                card_name = select.values[0]
-                karte = await get_karte_by_name(card_name)
-                if not karte:
-                    await interaction.response.send_message("Karte nicht gefunden.", ephemeral=True)
-                    return
-                embed = discord.Embed(
-                    title=karte["name"],
-                    description=karte["beschreibung"],
-                    color=_card_rarity_color(karte),
-                )
-                embed.set_image(url=karte["bild"])
-                
-                # Attacken + Schaden unter der Karte anzeigen (inkl. /verbessern-Buffs des Users)
-                attacks = karte.get("attacks", [])
-                # Mappe Damage-Buffs je Attacke (1..4) für diesen User
-                user_buffs = await get_card_buffs(self.user_id, karte["name"])
-                damage_buff_map = {}
-                for buff_type, attack_number, buff_amount in user_buffs:
-                    if buff_type == "damage" and 1 <= attack_number <= 4:
-                        damage_buff_map[attack_number] = damage_buff_map.get(attack_number, 0) + buff_amount
-                
-                if attacks:
-                    lines = []
-                    for idx, atk in enumerate(attacks, start=1):
-                        buff = damage_buff_map.get(idx, 0)
-                        _button_label, _button_style, attack_summary = _attack_display_parts(atk, max_only_bonus=buff)
-                        info_text = str(atk.get("info") or "").strip()
-                        if info_text:
-                            lines.append(f"• {attack_summary}\n  ↳ {info_text}")
-                        else:
-                            lines.append(f"• {attack_summary}")
-                    embed.add_field(name="Attacken", value="\n".join(lines), inline=False)
-                
-                # Buttons für Attacken anzeigen, aber deaktiviert (kein Effekt beim Klicken)
-                view_buttons = RestrictedView(timeout=60)
-                for i, atk in enumerate(attacks[:4]):
-                    buff = damage_buff_map.get(i + 1, 0)
-                    button_label, button_style, _attack_summary = _attack_display_parts(atk, max_only_bonus=buff)
-                    btn = ui.Button(
-                        label=button_label,
-                        style=button_style,
-                        disabled=True,
-                        row=0 if i < 2 else 1
-                    )
-                    view_buttons.add_item(btn)
-                
-                await interaction.response.send_message(embed=embed, view=view_buttons, ephemeral=True)
+                await self._show_card_detail(interaction, str(select.values[0] or "").strip())
 
             select.callback = handle_select
             view = RestrictedView(timeout=90)
             view.add_item(select)
             await interaction.response.send_message("Wähle eine Karte:", view=view, ephemeral=True)
-        else:
-            # Paginierung
-            pages = [options[i:i+25] for i in range(0, len(options), 25)]
-            current_index = 0
+            return
 
-            async def send_page(interaction: discord.Interaction, page_index: int):
-                sel = ui.Select(placeholder=f"Seite {page_index+1}/{len(pages)} – Karte wählen...", min_values=1, max_values=1, options=pages[page_index])
-                async def handle_sel(interaction: discord.Interaction):
-                    if interaction.user.id != self.user_id:
-                        await interaction.response.send_message("Das ist nicht dein Menü!", ephemeral=True)
-                        return
-                    card_name = sel.values[0]
-                    karte = await get_karte_by_name(card_name)
-                    if not karte:
-                        await interaction.response.send_message("Karte nicht gefunden.", ephemeral=True)
-                        return
-                    embed = discord.Embed(
-                        title=karte["name"],
-                        description=karte["beschreibung"],
-                        color=_card_rarity_color(karte),
-                    )
-                    embed.set_image(url=karte["bild"])
-                    
-                    # Attacken + Schaden unter der Karte anzeigen (inkl. /verbessern-Buffs des Users)
-                    attacks = karte.get("attacks", [])
-                    # Mappe Damage-Buffs je Attacke (1..4) für diesen User
-                    user_buffs = await get_card_buffs(self.user_id, karte["name"])
-                    damage_buff_map = {}
-                    for buff_type, attack_number, buff_amount in user_buffs:
-                        if buff_type == "damage" and 1 <= attack_number <= 4:
-                            damage_buff_map[attack_number] = damage_buff_map.get(attack_number, 0) + buff_amount
-                    
-                    if attacks:
-                        lines = []
-                        for idx, atk in enumerate(attacks, start=1):
-                            buff = damage_buff_map.get(idx, 0)
-                            _button_label, _button_style, attack_summary = _attack_display_parts(atk, max_only_bonus=buff)
-                            info_text = str(atk.get("info") or "").strip()
-                            if info_text:
-                                lines.append(f"• {attack_summary}\n  ↳ {info_text}")
-                            else:
-                                lines.append(f"• {attack_summary}")
-                        embed.add_field(name="Attacken", value="\n".join(lines), inline=False)
-                    
-                    # Buttons für Attacken anzeigen, aber deaktiviert (kein Effekt beim Klicken)
-                    view_buttons = RestrictedView(timeout=60)
-                    for i, atk in enumerate(attacks[:4]):
-                        buff = damage_buff_map.get(i + 1, 0)
-                        button_label, button_style, _attack_summary = _attack_display_parts(atk, max_only_bonus=buff)
-                        btn = ui.Button(
-                            label=button_label,
-                            style=button_style,
-                            disabled=True,
-                            row=0 if i < 2 else 1
-                        )
-                        view_buttons.add_item(btn)
-                    
-                    await interaction.response.send_message(embed=embed, view=view_buttons, ephemeral=True)
-                sel.callback = handle_sel
+        pages = [options[i:i + 25] for i in range(0, len(options), 25)]
+        current_index = 0
 
-                prev_btn = ui.Button(label="Zurück", style=discord.ButtonStyle.secondary, disabled=page_index==0)
-                next_btn = ui.Button(label="Weiter", style=discord.ButtonStyle.secondary, disabled=page_index==len(pages)-1)
+        async def send_page(interaction: discord.Interaction, page_index: int):
+            sel = ui.Select(
+                placeholder=f"Seite {page_index + 1}/{len(pages)} – Karte wählen...",
+                min_values=1,
+                max_values=1,
+                options=pages[page_index],
+            )
 
-                async def on_prev(interaction: discord.Interaction):
-                    if interaction.user.id != self.user_id:
-                        await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
-                        return
-                    await send_page(interaction, page_index-1)
+            async def handle_sel(interaction: discord.Interaction):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("Das ist nicht dein Menü!", ephemeral=True)
+                    return
+                await self._show_card_detail(interaction, str(sel.values[0] or "").strip())
 
-                async def on_next(interaction: discord.Interaction):
-                    if interaction.user.id != self.user_id:
-                        await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
-                        return
-                    await send_page(interaction, page_index+1)
+            sel.callback = handle_sel
 
-                prev_btn.callback = on_prev
-                next_btn.callback = on_next
+            prev_btn = ui.Button(label="Zurück", style=discord.ButtonStyle.secondary, disabled=page_index == 0)
+            next_btn = ui.Button(label="Weiter", style=discord.ButtonStyle.secondary, disabled=page_index == len(pages) - 1)
 
-                v = RestrictedView(timeout=120)
-                v.add_item(sel)
-                v.add_item(prev_btn)
-                v.add_item(next_btn)
+            async def on_prev(interaction: discord.Interaction):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
+                    return
+                await send_page(interaction, page_index - 1)
 
-                # Falls dies eine Folgeaktion ist, verwende followup, sonst response
-                try:
-                    await interaction.response.send_message("Wähle eine Karte:", view=v, ephemeral=True)
-                except discord.InteractionResponded:
-                    await interaction.followup.send("Wähle eine Karte:", view=v, ephemeral=True)
+            async def on_next(interaction: discord.Interaction):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
+                    return
+                await send_page(interaction, page_index + 1)
 
-            await send_page(interaction, current_index)
+            prev_btn.callback = on_prev
+            next_btn.callback = on_next
+
+            v = RestrictedView(timeout=120)
+            v.add_item(sel)
+            v.add_item(prev_btn)
+            v.add_item(next_btn)
+
+            try:
+                await interaction.response.send_message("Wähle eine Karte:", view=v, ephemeral=True)
+            except discord.InteractionResponded:
+                await interaction.followup.send("Wähle eine Karte:", view=v, ephemeral=True)
+
+        await send_page(interaction, current_index)
 
 class GiveCardSelectView(RestrictedView):
     def __init__(self, user_id, target_user_id):
@@ -7214,17 +7352,45 @@ class MissionAcceptView(DurableView):
 class MissionStartCardSelectView(DurableView):
     durable_view_kind = VIEW_KIND_MISSION_CARD_SELECT
 
-    def __init__(self, user_id: int, mission_data: dict, *, is_admin: bool, user_karten: list[str] | None = None):
+    def __init__(
+        self,
+        user_id: int,
+        mission_data: dict,
+        *,
+        is_admin: bool,
+        user_karten: list[str] | None = None,
+        selected_base_name: str | None = None,
+    ):
         super().__init__(timeout=None)
         self.user_id = user_id
         self.mission_data = mission_data
         self.is_admin = is_admin
         self.user_karten = [str(name) for name in (user_karten or []) if str(name).strip()]
-        options = [SelectOption(label=name, value=name) for name in self.user_karten[:25]]
+        self.selected_base_name = str(selected_base_name or "").strip() or None
+        if self.selected_base_name:
+            variant_rows = exact_variant_names_with_amounts(
+                [(name, 1) for name in self.user_karten],
+                self.selected_base_name,
+                cards=karten,
+            )
+            options = [
+                SelectOption(
+                    label=(f"{variant_name} (x{amount})" if amount > 1 else variant_name)[:100],
+                    value=variant_name,
+                )
+                for variant_name, amount in variant_rows[:25]
+            ]
+        else:
+            grouped_cards = group_owned_cards_by_base([(name, 1) for name in self.user_karten], cards=karten)
+            options = [SelectOption(label=_group_option_label(group)[:100], value=str(group.get("base_name") or "")) for group in grouped_cards[:25]]
         if not options:
             options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
         self.select = ui.Select(
-            placeholder="Wähle deine Karte für die Mission...",
+            placeholder=(
+                f"Wähle den Style für {self.selected_base_name}..."
+                if self.selected_base_name
+                else "Wähle deine Karte für die Mission..."
+            ),
             min_values=1,
             max_values=1,
             options=options,
@@ -7239,6 +7405,7 @@ class MissionStartCardSelectView(DurableView):
             "mission_data": _json_clone(self.mission_data),
             "is_admin": self.is_admin,
             "user_karten": list(self.user_karten),
+            "selected_base_name": self.selected_base_name,
         }
 
     async def select_callback(self, interaction: discord.Interaction):
@@ -7249,6 +7416,29 @@ class MissionStartCardSelectView(DurableView):
         if not selected_name or selected_name == "__none__":
             await interaction.response.send_message("❌ Keine gültige Karte verfügbar.", ephemeral=True)
             return
+        if self.selected_base_name is None:
+            self.selected_base_name = selected_name
+            variant_rows = exact_variant_names_with_amounts(
+                [(name, 1) for name in self.user_karten],
+                self.selected_base_name,
+                cards=karten,
+            )
+            if len(variant_rows) > 1:
+                self.select.placeholder = f"Wähle den Style für {self.selected_base_name}..."
+                self.select.options = [
+                    SelectOption(
+                        label=(f"{variant_name} (x{amount})" if amount > 1 else variant_name)[:100],
+                        value=variant_name,
+                    )
+                    for variant_name, amount in variant_rows[:25]
+                ]
+                await interaction.response.edit_message(
+                    content=f"Wähle den Style für **{self.selected_base_name}**:",
+                    view=self,
+                )
+                return
+            if variant_rows:
+                selected_name = variant_rows[0][0]
         await interaction.response.defer()
         try:
             if interaction.message is not None:
@@ -7322,16 +7512,36 @@ class MissionPauseView(DurableView):
 class MissionNewCardSelectView(DurableView):
     durable_view_kind = VIEW_KIND_MISSION_NEW_CARD_SELECT
 
-    def __init__(self, user_id, user_karten, *, mission_state: dict[str, Any]):
+    def __init__(self, user_id, user_karten, *, mission_state: dict[str, Any], selected_base_name: str | None = None):
         super().__init__(timeout=None)
         self.user_id = user_id
         self.mission_state = mission_state
-        self.user_karten = [str(karte_name) for karte_name, _amount in user_karten]
-        options = [SelectOption(label=karte_name, value=karte_name) for karte_name in self.user_karten[:25]]
+        self.user_karten = [normalize_owned_card_name(karte_name, cards=karten) for karte_name, _amount in user_karten]
+        self.selected_base_name = str(selected_base_name or "").strip() or None
+        if self.selected_base_name:
+            variant_rows = exact_variant_names_with_amounts(
+                [(name, 1) for name in self.user_karten],
+                self.selected_base_name,
+                cards=karten,
+            )
+            options = [
+                SelectOption(
+                    label=(f"{variant_name} (x{amount})" if amount > 1 else variant_name)[:100],
+                    value=variant_name,
+                )
+                for variant_name, amount in variant_rows[:25]
+            ]
+        else:
+            grouped_cards = group_owned_cards_by_base([(name, 1) for name in self.user_karten], cards=karten)
+            options = [SelectOption(label=_group_option_label(group)[:100], value=str(group.get("base_name") or "")) for group in grouped_cards[:25]]
         if not options:
             options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
         self.select = ui.Select(
-            placeholder="Wähle eine neue Karte...",
+            placeholder=(
+                f"Wähle den Style für {self.selected_base_name}..."
+                if self.selected_base_name
+                else "Wähle eine neue Karte..."
+            ),
             min_values=1,
             max_values=1,
             options=options,
@@ -7345,6 +7555,7 @@ class MissionNewCardSelectView(DurableView):
             "user_id": self.user_id,
             "user_karten": [[name, 1] for name in self.user_karten],
             "mission_state": _json_clone(self.mission_state),
+            "selected_base_name": self.selected_base_name,
         }
 
     async def select_callback(self, interaction: discord.Interaction):
@@ -7355,6 +7566,29 @@ class MissionNewCardSelectView(DurableView):
         if not selected_name or selected_name == "__none__":
             await interaction.response.send_message("❌ Keine gültige Karte verfügbar.", ephemeral=True)
             return
+        if self.selected_base_name is None:
+            self.selected_base_name = selected_name
+            variant_rows = exact_variant_names_with_amounts(
+                [(name, 1) for name in self.user_karten],
+                self.selected_base_name,
+                cards=karten,
+            )
+            if len(variant_rows) > 1:
+                self.select.placeholder = f"Wähle den Style für {self.selected_base_name}..."
+                self.select.options = [
+                    SelectOption(
+                        label=(f"{variant_name} (x{amount})" if amount > 1 else variant_name)[:100],
+                        value=variant_name,
+                    )
+                    for variant_name, amount in variant_rows[:25]
+                ]
+                await interaction.response.edit_message(
+                    content=f"Wähle den Style für **{self.selected_base_name}**:",
+                    view=self,
+                )
+                return
+            if variant_rows:
+                selected_name = variant_rows[0][0]
         await interaction.response.defer()
         try:
             if interaction.message is not None:
@@ -10048,6 +10282,7 @@ async def _restore_durable_view_instance(
             int(payload.get("challenged_id", 0) or 0),
             str(payload.get("challenger_card_name") or ""),
             payload.get("challenged_card_options", []),
+            selected_base_name=str(payload.get("selected_base_name") or ""),
             origin_channel_id=int(payload.get("origin_channel_id", 0) or 0) or None,
             thread_id=int(payload.get("thread_id", 0) or 0) or None,
             thread_created=bool(payload.get("thread_created", False)),
@@ -10087,6 +10322,7 @@ async def _restore_durable_view_instance(
             _dict_str_any(payload.get("mission_data")),
             is_admin=bool(payload.get("is_admin", False)),
             user_karten=[str(item) for item in _list_any(payload.get("user_karten"))],
+            selected_base_name=str(payload.get("selected_base_name") or ""),
         )
     if view_kind == VIEW_KIND_MISSION_PAUSE:
         return MissionPauseView(
@@ -10099,6 +10335,7 @@ async def _restore_durable_view_instance(
             int(payload.get("user_id", 0) or 0),
             [tuple(item) for item in _list_any(payload.get("user_karten")) if isinstance(item, list) and len(item) == 2],
             mission_state=_dict_str_any(payload.get("mission_state")),
+            selected_base_name=str(payload.get("selected_base_name") or ""),
         )
     if view_kind == VIEW_KIND_MISSION_BATTLE:
         return await _restore_mission_battle_view_from_session(int(payload.get("session_id", 0) or 0))
@@ -10687,6 +10924,70 @@ class CardSelectPagerView(RestrictedView):
         self.stop()
         await interaction.response.edit_message(content="Abgebrochen.", view=None)
 
+
+class CardVariantSelectView(RestrictedView):
+    def __init__(self, requester_id: int, base_name: str, variant_rows: list[tuple[str, int]], *, placeholder: str | None = None):
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        self.base_name = base_name
+        self.variant_rows = list(variant_rows)
+        self.value: str | None = None
+        options = [
+            SelectOption(
+                label=(f"{variant_name} (x{amount})" if amount > 1 else variant_name)[:100],
+                value=variant_name,
+            )
+            for variant_name, amount in self.variant_rows[:25]
+        ]
+        if not options:
+            options = [SelectOption(label="Keine Varianten verfügbar", value="__none__")]
+        self.select = ui.Select(
+            placeholder=placeholder or f"Wähle den Style für {base_name}...",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        selected_value = str(self.select.values[0] or "").strip()
+        if not selected_value or selected_value == "__none__":
+            await interaction.response.send_message("❌ Keine gültige Variante verfügbar.", ephemeral=True)
+            return
+        self.value = selected_value
+        self.stop()
+        await interaction.response.defer()
+
+
+class SingleMultiModeView(RestrictedView):
+    def __init__(self, requester_id: int, *, placeholder: str):
+        super().__init__(timeout=60)
+        self.requester_id = requester_id
+        self.value: str | None = None
+        self.select = ui.Select(
+            placeholder=placeholder,
+            min_values=1,
+            max_values=1,
+            options=[
+                SelectOption(label="Single", value="single", description="Einen Nutzer auswählen"),
+                SelectOption(label="Multi", value="multi", description="Mehrere Nutzer auswählen"),
+            ],
+        )
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        self.value = str(self.select.values[0] or "").strip() or None
+        self.stop()
+        await interaction.response.defer()
+
 class ConfirmDeleteUserView(RestrictedView):
     def __init__(self, requester_id: int, target_id: int, target_name: str):
         super().__init__(timeout=60)
@@ -10926,21 +11227,29 @@ async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_na
     target_user = _get_member_if_available(interaction.guild, user_id)
     mention = target_user.mention if target_user else f"<@{user_id}>"
     user_karten = await get_user_karten(user_id)
+    grouped_cards = _group_owned_cards_for_current_mode(user_karten)
     infinitydust = await get_infinitydust(user_id)
     if not user_karten and infinitydust == 0:
         await _send_with_visibility(interaction, visibility_key, content=f"❌ {mention} hat noch keine Karten in seiner Sammlung.")
         return
     embed = discord.Embed(
         title=f"🔍 Vault von {escape_display_text(user_name, fallback=mention)}",
-        description=f"**{mention}** besitzt **{len(user_karten)}** verschiedene Karten:",
+        description=f"**{mention}** besitzt **{len(grouped_cards)}** verschiedene Helden:",
     )
     if infinitydust > 0:
         embed.add_field(name="💎 Infinitydust", value=f"Anzahl: {infinitydust}x", inline=True)
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
-    for kartenname, anzahl in user_karten:
-        karte = await get_karte_by_name(kartenname)
+    for group in grouped_cards:
+        base_name = str(group.get("base_name") or "")
+        karte = await get_karte_by_name(base_name)
         if karte:
-            embed.add_field(name=f"{karte['name']} (x{anzahl})", value=karte['beschreibung'][:100] + "...", inline=False)
+            variant_rows = list(group.get("variants") or [])
+            variant_text = ", ".join(f"{variant_name} x{amount}" for variant_name, amount in variant_rows)
+            embed.add_field(
+                name=_group_option_label(group),
+                value=f"{str(karte['beschreibung'])[:80]}...\nVarianten: {variant_text}",
+                inline=False,
+            )
     embed.set_footer(text=f"Vault-Lookup durch {safe_display_name(interaction.user, fallback='Unbekannt')}")
     embed.color = 0xff6b6b
     logging.info("Vault look: actor=%s target=%s", interaction.user.id, user_id)

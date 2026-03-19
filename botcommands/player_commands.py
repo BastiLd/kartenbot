@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import random
 from types import ModuleType
 
 import discord
@@ -9,8 +8,8 @@ from discord import app_commands
 
 
 def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
-    @bot.tree.command(name="täglich", description="Hole deine tägliche Belohnung ab")
-    async def täglich(interaction: discord.Interaction):
+    @bot.tree.command(name="t\u00e4glich", description="Hole deine t\u00e4gliche Belohnung ab")
+    async def taeglich(interaction: discord.Interaction):
         visibility_key = module.command_visibility_key_for_interaction(interaction)
         now = int(module.time.time())
         is_admin_user = await module.is_admin(interaction)
@@ -24,7 +23,7 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
                 stunden = int((86400 - (now - row[0])) / 3600)
                 await module._send_ephemeral(
                     interaction,
-                    content=f"Du kannst deine tägliche Belohnung erst in {stunden} Stunden abholen.",
+                    content=f"Du kannst deine t\u00e4gliche Belohnung erst in {stunden} Stunden abholen.",
                 )
                 return
             await db.execute(
@@ -34,7 +33,7 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
             await db.commit()
 
         user_id = interaction.user.id
-        karte = random.choice(module.karten)
+        karte = module.random_gameplay_card(module.karten, alpha_enabled=module.ALPHA_PHASE_ENABLED)
 
         is_new_card = await module.check_and_add_karte(user_id, karte)
         card_name_text = str(karte.get("name") or "Unbekannte Karte")
@@ -46,8 +45,8 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
 
         if is_new_card:
             embed = discord.Embed(
-                title="🎁 Tägliche Belohnung",
-                description="Du hast eine tägliche Belohnung erhalten:",
+                title="\U0001F381 T\u00e4gliche Belohnung",
+                description="Du hast eine t\u00e4gliche Belohnung erhalten:",
                 color=embed_color,
             )
             embed.add_field(
@@ -61,7 +60,7 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
             return
 
         embed = discord.Embed(
-            title="💎 Tägliche Belohnung - Infinitydust!",
+            title="\U0001F48E T\u00e4gliche Belohnung - Infinitydust!",
             description="Du hattest diese Karte bereits:",
             color=embed_color,
         )
@@ -82,7 +81,7 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
 
     @bot.tree.command(
         name="eingeladen",
-        description="Wähle wer dich eingeladen hat - beide erhalten 1x Infinitydust [Einmalig]",
+        description="W\u00e4hle, wer dich eingeladen hat - beide erhalten 1x Infinitydust [Einmalig]",
     )
     async def eingeladen(interaction: discord.Interaction):
         try:
@@ -114,7 +113,7 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
                     row = await cursor.fetchone()
                     if row and row[0] == 1:
                         await interaction.followup.send(
-                            "❌ Du hast den `/eingeladen` Command bereits verwendet! Nur Admins können ihn mehrfach nutzen.",
+                            "\u274c Du hast den `/eingeladen`-Command bereits verwendet! Nur Admins k\u00f6nnen ihn mehrfach nutzen.",
                             ephemeral=True,
                         )
                         return
@@ -137,7 +136,7 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
 
                 if not all_user_ids:
                     await interaction.followup.send(
-                        "❌ Keine anderen Spieler gefunden! Es müssen andere Spieler den Bot bereits genutzt haben.",
+                        "\u274c Keine anderen Spieler gefunden! Es m\u00fcssen andere Spieler den Bot bereits genutzt haben.",
                         ephemeral=True,
                     )
                     return
@@ -145,19 +144,19 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
             view = module.InviteUserSelectView(user_id, list(all_user_ids))
             if is_admin_user:
                 description = (
-                    "Wähle aus, wer dich eingeladen hat!\n\n"
-                    "**Beide erhaltet ihr 1x Infinitydust** 💎\n\n"
-                    "👑 **Du bist Admin - kannst unendlich oft einladen!**"
+                    "W\u00e4hle aus, wer dich eingeladen hat!\n\n"
+                    "**Beide erhaltet ihr 1x Infinitydust** \U0001F48E\n\n"
+                    "\U0001F5DD **Du bist Admin - kannst unendlich oft einladen!**"
                 )
             else:
                 description = (
-                    "Wähle aus, wer dich eingeladen hat!\n\n"
-                    "**Beide erhaltet ihr 1x Infinitydust** 💎\n\n"
-                    "⚠️ **Dieser Command kann nur einmal verwendet werden!**"
+                    "W\u00e4hle aus, wer dich eingeladen hat!\n\n"
+                    "**Beide erhaltet ihr 1x Infinitydust** \U0001F48E\n\n"
+                    "\u26a0\ufe0f **Dieser Command kann nur einmal verwendet werden!**"
                 )
 
             embed = discord.Embed(
-                title="🎁 Wer hat dich eingeladen?",
+                title="\U0001F381 Wer hat dich eingeladen?",
                 description=description,
                 color=0x9D4EDD,
             )
@@ -170,13 +169,13 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
             logging.exception("Fehler in eingeladen command")
             try:
                 await interaction.followup.send(
-                    "❌ Ein Fehler ist aufgetreten. Bitte versuche es erneut.",
+                    "\u274c Ein Fehler ist aufgetreten. Bitte versuche es erneut.",
                     ephemeral=True,
                 )
             except Exception:
                 logging.exception("Unexpected error")
 
-    @bot.tree.command(name="verbessern", description="Verstärke deine Karten mit Infinitydust")
+    @bot.tree.command(name="verbessern", description="Verst\u00e4rke deine Karten mit Infinitydust")
     async def fuse(interaction: discord.Interaction):
         if not await module.is_channel_allowed(interaction):
             return
@@ -186,10 +185,10 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
 
         if user_dust < module.FUSE_DUST_COST:
             embed = discord.Embed(
-                title="❌ Nicht genug Infinitydust",
+                title="\u274c Nicht genug Infinitydust",
                 description=(
                     f"Du hast nur **{user_dust} Infinitydust**.\n"
-                    f"Du brauchst mindestens **{module.FUSE_DUST_COST} Infinitydust** zum Verstärken!"
+                    f"Du brauchst mindestens **{module.FUSE_DUST_COST} Infinitydust** zum Verst\u00e4rken!"
                 ),
                 color=0xFF0000,
             )
@@ -198,11 +197,11 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
 
         view = module.DustAmountView(user_dust)
         embed = discord.Embed(
-            title="💎 Karten-Verstärkung",
+            title="\U0001F48E Karten-Verst\u00e4rkung",
             description=(
                 f"Du hast **{user_dust} Infinitydust**\n\n"
-                "Wähle die Menge für die Verstärkung:\n\n"
-                f"💎 **{module.FUSE_DUST_COST} Dust** = +{module.FUSE_HEALTH_BONUS} Leben "
+                "W\u00e4hle die Menge f\u00fcr die Verst\u00e4rkung:\n\n"
+                f"\U0001F48E **{module.FUSE_DUST_COST} Dust** = +{module.FUSE_HEALTH_BONUS} Leben "
                 f"oder +{module.FUSE_DAMAGE_MAX_BONUS} Max-Schaden"
             ),
             color=0x9D4EDD,
@@ -226,33 +225,38 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
             )
             return
 
+        grouped_cards = module._group_owned_cards_for_current_mode(user_karten)
         embed = discord.Embed(
-            title="🗄️ Deine Karten-Sammlung",
-            description=f"Du besitzt **{len(user_karten)}** verschiedene Karten:",
+            title="\U0001F5C4\ufe0f Deine Karten-Sammlung",
+            description=f"Du besitzt **{len(grouped_cards)}** verschiedene Helden:",
         )
 
         if infinitydust > 0:
-            embed.add_field(name="💎 Infinitydust", value=f"Anzahl: {infinitydust}x", inline=True)
+            embed.add_field(name="\U0001F48E Infinitydust", value=f"Anzahl: {infinitydust}x", inline=True)
             embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
 
-        for kartenname, anzahl in user_karten[:10]:
-            karte = await module.get_karte_by_name(kartenname)
+        for group in grouped_cards[:10]:
+            base_name = str(group.get("base_name") or "")
+            variant_rows = list(group.get("variants") or [])
+            detail_name = variant_rows[0][0] if variant_rows else base_name
+            karte = await module.get_karte_by_name(detail_name)
             if karte:
+                variant_text = ", ".join(f"{variant_name} x{amount}" for variant_name, amount in variant_rows)
                 embed.add_field(
-                    name=f"{karte['name']} (x{anzahl})",
-                    value=karte["beschreibung"][:100] + "...",
+                    name=module._group_option_label(group),
+                    value=f"{karte['beschreibung'][:80]}...\nVarianten: {variant_text}",
                     inline=False,
                 )
 
-        if len(user_karten) > 10:
-            embed.set_footer(text=f"Und {len(user_karten) - 10} weitere Karten...")
+        if len(grouped_cards) > 10:
+            embed.set_footer(text=f"Und {len(grouped_cards) - 10} weitere Helden...")
 
         view = module.VaultView(interaction.user.id, user_karten)
         await module._send_with_visibility(interaction, visibility_key, embed=embed, view=view)
 
     @bot.tree.command(
         name="anfang",
-        description="Zeigt das Startmenü mit Schnellzugriff auf wichtige Funktionen",
+        description="Zeigt das Startmen\u00fc mit Schnellzugriff auf wichtige Funktionen",
     )
     @app_commands.describe(action="Optional: /anfang aktualisieren oder /anfang lastaktu")
     @app_commands.choices(
@@ -281,20 +285,20 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
 
         if action:
             if not is_admin_user:
-                await interaction.response.send_message("❌ Keine Berechtigung.", ephemeral=True)
+                await interaction.response.send_message("\u274c Keine Berechtigung.", ephemeral=True)
                 return
             if action == "lastaktu":
                 existing = await module.get_latest_anfang_message(interaction.guild_id)
                 if not existing:
                     await interaction.response.send_message(
-                        "ℹ️ Es gibt noch keine gespeicherte /anfang-Nachricht.",
+                        "\u2139\ufe0f Es gibt noch keine gespeicherte /anfang-Nachricht.",
                         ephemeral=True,
                     )
                     return
                 channel_id, message_id = existing
                 link = f"https://discord.com/channels/{interaction.guild_id}/{channel_id}/{message_id}"
                 await interaction.response.send_message(
-                    f"🔗 Letzte /anfang-Nachricht: {link}",
+                    f"\U0001F517 Letzte /anfang-Nachricht: {link}",
                     ephemeral=True,
                 )
                 return
@@ -302,7 +306,7 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
                 existing = await module.get_latest_anfang_message(interaction.guild_id)
                 if not existing:
                     await interaction.response.send_message(
-                        "ℹ️ Keine gespeicherte /anfang-Nachricht gefunden. Nutze zuerst `/anfang`.",
+                        "\u2139\ufe0f Keine gespeicherte /anfang-Nachricht gefunden. Nutze zuerst `/anfang`.",
                         ephemeral=True,
                     )
                     return
@@ -313,7 +317,7 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
                     )
                     if not isinstance(old_channel, (discord.TextChannel, discord.Thread)):
                         await interaction.response.send_message(
-                            "❌ Kanal der gespeicherten Nachricht nicht gefunden.",
+                            "\u274c Kanal der gespeicherten Nachricht nicht gefunden.",
                             ephemeral=True,
                         )
                         return
@@ -325,11 +329,11 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
                         old_message_id,
                         interaction.user.id,
                     )
-                    await interaction.response.send_message("✅ /anfang aktualisiert.", ephemeral=True)
+                    await interaction.response.send_message("\u2705 /anfang aktualisiert.", ephemeral=True)
                 except Exception:
                     logging.exception("Failed to edit latest /anfang message")
                     await interaction.response.send_message(
-                        "❌ Konnte die gespeicherte /anfang-Nachricht nicht aktualisieren.",
+                        "\u274c Konnte die gespeicherte /anfang-Nachricht nicht aktualisieren.",
                         ephemeral=True,
                     )
                 return
@@ -360,6 +364,8 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
                 logging.exception("Failed to send /anfang message")
                 return
 
+            if sent_message is None:
+                return
             await module.set_latest_anfang_message(
                 interaction.guild_id,
                 sent_message.channel.id,
@@ -374,7 +380,7 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
             await module._send_ephemeral(interaction, content=text, view=view)
 
     return {
-        "täglich": täglich,
+        "t\u00e4glich": taeglich,
         "eingeladen": eingeladen,
         "fuse": fuse,
         "vault": vault,

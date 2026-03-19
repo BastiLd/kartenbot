@@ -4,6 +4,7 @@ import random
 from typing import Iterable
 
 from services.battle_types import CardData
+from services.card_variants import base_card_name, build_runtime_card, reward_runtime_cards
 
 
 ALPHA_PLAYABLE_CARD_NAMES: tuple[str, ...] = (
@@ -74,11 +75,17 @@ def canonical_card_name(name: object) -> str:
     raw = str(name or "").strip()
     if not raw:
         return ""
-    return CARD_NAME_ALIASES.get(raw.lower(), raw)
+    runtime_card = build_runtime_card(raw)
+    if runtime_card is not None:
+        return str(runtime_card.get("name") or raw)
+    base_alias = CARD_NAME_ALIASES.get(raw.lower())
+    if base_alias:
+        return base_alias
+    return raw
 
 
 def card_is_alpha_playable(name: object) -> bool:
-    return canonical_card_name(name) in ALPHA_PLAYABLE_CARD_NAMES
+    return base_card_name(canonical_card_name(name)) in ALPHA_PLAYABLE_CARD_NAMES
 
 
 def alpha_playable_cards(cards: Iterable[CardData]) -> list[CardData]:
@@ -104,7 +111,7 @@ def filter_owned_cards_for_gameplay(
 
 
 def random_gameplay_card(cards: Iterable[CardData], *, alpha_enabled: bool) -> CardData:
-    pool = gameplay_cards(cards, alpha_enabled=alpha_enabled)
+    pool = reward_runtime_cards(gameplay_cards(cards, alpha_enabled=alpha_enabled))
     if not pool:
         raise ValueError("No playable cards available for the current mode")
     return random.choice(pool)

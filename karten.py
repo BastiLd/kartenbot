@@ -34,6 +34,25 @@ karten = [
         "beschreibung": "Tony Stark im Anzug, bereit für den Kampf.",
         "bild": "https://i.imgur.com/HxcQOw5.png",
         "seltenheit": COMMON,
+        "variants": [
+            {
+                "variant_id": "Standard_Iron-Man",
+                "display_name": "Standard_Iron-Man",
+                "image_url": "https://i.imgur.com/HxcQOw5.png",
+                "admin_only": False,
+                "reward_enabled": True,
+                "sort_order": 0,
+                "is_default": True,
+            },
+            {
+                "variant_id": "Alpha_Iron-Man",
+                "display_name": "Alpha_Iron-Man",
+                "image_url": "https://i.imgur.com/ge54AbX.png",
+                "admin_only": True,
+                "reward_enabled": False,
+                "sort_order": 1,
+            },
+        ],
         "hp": DEFAULT_HP,
         "attacks": [
             {"name": "Repulsor Strahlen", "damage": [5, 20], "info": "Standardstrahl mit breiter Schadensspanne."},
