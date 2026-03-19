@@ -302,6 +302,25 @@ def _group_option_label(group: dict[str, Any]) -> str:
     return f"{base_name} (x{total_amount})" if total_amount > 1 else base_name
 
 
+def _fight_challenge_card_label(card_name: str) -> str:
+    card = build_runtime_card(card_name, cards=karten)
+    if card is None:
+        return str(card_name or "Unbekannte Karte").strip() or "Unbekannte Karte"
+    base_name = str(card.get("base_name") or card.get("name") or "").strip()
+    selected_name = str(card.get("name") or base_name).strip()
+    if base_name and selected_name and selected_name != base_name:
+        return f"{base_name} [{selected_name}]"
+    return base_name or selected_name or "Unbekannte Karte"
+
+
+def _fight_challenge_prompt(challenged_mention: str, challenger_card_name: str) -> str:
+    card_label = _fight_challenge_card_label(challenger_card_name)
+    return (
+        f"{challenged_mention}, du wurdest zu einem 1v1-Kartenkampf herausgefordert!\n"
+        f"Herausforderer-Karte: **{card_label}**"
+    )
+
+
 async def _log_event_safe(event_type: str, **kwargs: Any) -> None:
     try:
         await log_analytics_event(event_type, **kwargs)
@@ -5481,7 +5500,10 @@ async def _start_fight_card_selection_from_challenge(
     if await _safe_send_channel(
         interaction,
         interaction.channel,
-        content=f"{challenged.mention}, wähle deine Karte für den 1v1 Kampf:",
+        content=(
+            f"{challenged.mention}, wähle deine Karte für den 1v1 Kampf:\n"
+            f"Herausforderer-Karte: **{_fight_challenge_card_label(challenger_card_name)}**"
+        ),
         view=gegner_card_select_view,
     ) is None:
         return
@@ -10422,7 +10444,7 @@ async def resend_pending_requests() -> None:
                 bot.add_view(view, message_id=existing_message.id)
                 continue
             msg = await sendable_channel.send(
-                content=f"<@{row['challenged_id']}>, du wurdest zu einem 1v1 Kartenkampf herausgefordert!",
+                content=_fight_challenge_prompt(f"<@{row['challenged_id']}>", str(row["challenger_card"] or "")),
                 view=view,
                 allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
             )

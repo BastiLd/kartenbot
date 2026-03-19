@@ -281,6 +281,12 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(int(iron_group.get("total_amount", 0) or 0), 2)
         self.assertEqual(list(iron_group.get("variants") or []), [("Standard_Iron-Man", 1), ("Alpha_Iron-Man", 1)])
 
+    def test_fight_challenge_prompt_shows_challenger_card(self) -> None:
+        text = bot_module._fight_challenge_prompt("@Benni", "Alpha_Iron-Man")
+        self.assertIn("@Benni", text)
+        self.assertIn("Herausforderer-Karte", text)
+        self.assertIn("Iron-Man [Alpha_Iron-Man]", text)
+
 
 class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
     def test_sort_user_cards_like_karten_order(self) -> None:

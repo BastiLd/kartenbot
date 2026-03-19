@@ -228,7 +228,7 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
         message = await module._safe_send_channel(
             interaction,
             target_channel,
-            content=f"{challenged.mention}, du wurdest zu einem 1v1-Kartenkampf herausgefordert!",
+            content=module._fight_challenge_prompt(challenged.mention, selected_cards[0]["name"]),
             view=challenge_view,
         )
         if message is None:
