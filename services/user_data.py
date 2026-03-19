@@ -6,7 +6,6 @@ from zoneinfo import ZoneInfo
 
 from db import db_context
 from karten import karten
-from services.analytics import log_event as log_analytics_event
 from services.card_pool import random_gameplay_card
 
 
@@ -125,20 +124,6 @@ async def add_card_buff(user_id, card_name, buff_type, attack_number, buff_amoun
             (user_id, card_name, buff_type, attack_number, buff_amount),
         )
         await db.commit()
-    await log_analytics_event(
-        "admin_dust_action",
-        guild_id=guild_id,
-        channel_id=channel_id,
-        actor_user_id=actor_id,
-        target_user_id=target_id,
-        command_name="lödust" if str(action or "") == "remove" else "dust",
-        payload={
-            "action": str(action or "give"),
-            "mode": str(mode or "single"),
-            "requested_amount": int(requested_amount or 0),
-            "applied_amount": int(applied_amount or 0),
-        },
-    )
 
 
 def _card_data_by_name(card_name: str) -> dict | None:
@@ -166,7 +151,13 @@ def _attack_allows_damage_buff(attack: dict) -> bool:
     if isinstance(self_damage, list) and len(self_damage) == 2:
         if max(int(self_damage[0] or 0), int(self_damage[1] or 0)) > 0:
             return False
-    elif int(self_damage or 0) > 0:
+    elif isinstance(self_damage, (int, float)):
+        if int(self_damage) > 0:
+            return False
+    elif isinstance(self_damage, str):
+        if int(self_damage or 0) > 0:
+            return False
+    else:
         return False
     max_damage = 0
     raw_damage = attack.get("damage", [0, 0])
@@ -233,7 +224,15 @@ async def get_card_buffs(user_id: int, card_name: str) -> list[tuple[str, int, i
             """,
             (user_id, card_name),
         )
-        return await cursor.fetchall()
+        rows = await cursor.fetchall()
+        return [
+            (
+                str(row[0] or ""),
+                int(row[1] or 0),
+                int(row[2] or 0),
+            )
+            for row in rows
+        ]
 
 
 async def add_karte(user_id, karten_name):
@@ -254,7 +253,7 @@ async def check_and_add_karte(user_id, karte):
         )
         row = await cursor.fetchone()
 
-    if row[0] > 0:
+    if row and int(row[0] or 0) > 0:
         await add_infinitydust(user_id, 1)
         return False
 
@@ -358,7 +357,8 @@ async def set_team(user_id: int, team: list[int]) -> None:
 async def get_user_karten(user_id: int) -> list[tuple[str, int]]:
     async with db_context() as db:
         cursor = await db.execute("SELECT karten_name, anzahl FROM user_karten WHERE user_id = ?", (user_id,))
-        return await cursor.fetchall()
+        rows = await cursor.fetchall()
+        return [(str(row[0] or ""), int(row[1] or 0)) for row in rows]
 
 
 async def get_last_karte(user_id):

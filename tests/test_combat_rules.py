@@ -482,6 +482,35 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_db.deleted_rows, [(7, "Testkarte", 1)])
         self.assertEqual(result, buff_rows)
 
+    async def test_add_card_buff_writes_buff_without_unrelated_analytics_context(self) -> None:
+        class _FakeDb:
+            def __init__(self) -> None:
+                self.executed: list[tuple[str, tuple[object, ...]]] = []
+                self.commit_calls = 0
+
+            async def execute(self, query, params=()):
+                self.executed.append((str(query), tuple(params)))
+                return None
+
+            async def commit(self):
+                self.commit_calls += 1
+                return None
+
+        fake_db = _FakeDb()
+
+        @asynccontextmanager
+        async def _fake_db_context():
+            yield fake_db
+
+        with patch.object(user_data_module, "db_context", _fake_db_context):
+            await user_data_module.add_card_buff(15, "Iron-Man", "damage", 2, 5)
+
+        self.assertEqual(len(fake_db.executed), 1)
+        query, params = fake_db.executed[0]
+        self.assertIn("INSERT INTO user_card_buffs", query)
+        self.assertEqual(params, (15, "Iron-Man", "damage", 2, 5))
+        self.assertEqual(fake_db.commit_calls, 1)
+
     def test_multi_hit_force_max(self) -> None:
         cfg = {"hits": 3, "hit_chance": 0.45, "per_hit_damage": [1, 10]}
         damage, min_possible, max_possible = resolve_multi_hit_damage(cfg, force_max=True)
