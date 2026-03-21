@@ -122,7 +122,7 @@ from services.stats_export import build_stats_workbook
 from services.user_data import (
     add_exact_card_variant_once,
     add_card_buff,
-    add_infinitydust,
+    add_infinitydust as _add_infinitydust,
     add_karte,
     add_karte_amount,
     add_mission_reward,
@@ -606,6 +606,10 @@ async def _invoke_command_callback(
         raise TypeError("Command callback is not callable")
     typed_callback = cast(Callable[[discord.Interaction], Awaitable[object]], callback)
     await typed_callback(interaction)
+
+
+async def add_infinitydust(user_id: int, amount: int = 1) -> None:
+    await _add_infinitydust(user_id, amount)
 
 
 def _env_flag_enabled(name: str, *, default: bool = False) -> bool:

@@ -16,7 +16,7 @@ def _berlin_midnight_epoch() -> int:
     return int(midnight.timestamp())
 
 
-async def add_infinitydust(user_id, amount=1):
+async def add_infinitydust(user_id: int, amount: int = 1) -> None:
     async with db_context() as db:
         cursor = await db.execute("SELECT amount FROM user_infinitydust WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
