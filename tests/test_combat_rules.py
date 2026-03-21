@@ -315,6 +315,14 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Iron-Man [Alpha_Iron-Man]", text)
 
 
+    def test_wolverine_heilfaktor_info_describes_following_regen_rounds(self) -> None:
+        wolverine = _find_card("Wolverine")
+        heal_factor = _find_attack(wolverine, "Heilfaktor")
+        info = str(heal_factor.get("info") or "")
+        self.assertIn("nächsten 3 Runden", info)
+        self.assertIn("jeweils um 10 HP", info)
+
+
 class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
     def test_sort_user_cards_like_karten_order(self) -> None:
         ordered_names = [str(card.get("name") or "") for card in karten if card.get("name")]
@@ -1053,6 +1061,42 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
             effect_events=["Heilung: +17 HP."],
         )
         self.assertIn("+17 HP Heilung", summary)
+        self.assertNotIn("0 Schaden", summary)
+
+    def test_regen_setup_does_not_count_as_immediate_heal_in_action_context(self) -> None:
+        heal_amount = bot_module._extract_heal_amount_from_events(
+            ["Regeneration aktiviert: Heilt sich in den nächsten 3 Runden jeweils um 10 HP."]
+        )
+        self.assertEqual(heal_amount, 0)
+
+    def test_recent_summary_shows_regen_setup_instead_of_heal_amount(self) -> None:
+        class _User:
+            def __init__(self, name: str):
+                self.display_name = name
+                self.mention = name
+
+        entry, summary = build_battle_log_entry(
+            "Wolverine",
+            "Spider-Man",
+            "Heilfaktor",
+            0,
+            False,
+            _User("Benni"),
+            _User("Bot"),
+            17,
+            46,
+            attacker_remaining_hp=56,
+            effect_events=[
+                "Aktionstyp: Heilfähigkeit.",
+                "Ausführung: erfolgreich ohne direkten Schaden eingesetzt.",
+                "Regeneration aktiviert: Heilt sich in den nächsten 3 Runden jeweils um 10 HP.",
+            ],
+        )
+        self.assertIn("Heilt sich in den nächsten 3 Runden jeweils um 10 HP", entry)
+        self.assertIn("Heilt sich in den nächsten 3 Runden jeweils um 10 HP", summary)
+        self.assertNotIn("+10 HP Heilung", entry)
+        self.assertNotIn("+10 HP Heilung", summary)
+        self.assertNotIn("0 Schaden", entry)
         self.assertNotIn("0 Schaden", summary)
 
     def test_recent_summary_shows_action_type_and_miss_reason(self) -> None:

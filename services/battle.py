@@ -269,12 +269,33 @@ def _extract_heal_amount_from_effect_events(effect_events: list[str] | None) -> 
         text = str(event or "").strip()
         if not text:
             continue
+        lowered = text.lower()
+        if lowered.startswith("ausführung:") or lowered.startswith("regeneration aktiviert:"):
+            continue
+        if not (
+            lowered.startswith("heilung:")
+            or lowered.startswith("heileffekt:")
+            or lowered.startswith("lebensraub:")
+            or lowered.startswith("regeneration heilt")
+            or lowered.startswith("awesome mix:")
+        ):
+            continue
         for match in re.findall(r"\+(\d+)\s*HP", text, flags=re.IGNORECASE):
             try:
                 total_heal += int(match)
             except Exception:
                 continue
     return max(0, total_heal)
+
+
+def _extract_regen_setup_text(effect_events: list[str] | None) -> str:
+    for event in effect_events or []:
+        text = str(event or "").strip()
+        if not text:
+            continue
+        if text.lower().startswith("regeneration aktiviert:"):
+            return text.rstrip(".")
+    return ""
 
 
 def _extract_action_meta(effect_events: list[str] | None) -> tuple[str, str]:
@@ -366,6 +387,7 @@ def build_battle_log_entry(
     self_hit_suffix = f" (Selbsttreffer: {self_hit_damage})" if (self_hit_damage and self_hit_damage > 0) else ""
     effect_text = ""
     heal_amount = _extract_heal_amount_from_effect_events(effect_events)
+    regen_setup_text = _extract_regen_setup_text(effect_events)
     action_type, execution = _extract_action_meta(effect_events)
     attacker_card_label = _owned_card_label(attacker_display, attacker_name)
     defender_card_label = _owned_card_label(defender_display, defender_name)
@@ -398,6 +420,11 @@ def build_battle_log_entry(
             f"**{attacker_card_label}** \u27a4 **{attack_title}** \u27a4 "
             f"**+{heal_amount} HP Heilung**"
         )
+    elif int(actual_damage or 0) == 0 and regen_setup_text:
+        attack_line = (
+            f"**{attacker_card_label}** \u27a4 **{attack_title}** \u27a4 "
+            f"**{regen_setup_text}**"
+        )
     else:
         attack_line = (
             f"**{attacker_card_label}** \u27a4 **{attack_title}** \u27a4 "
@@ -406,7 +433,7 @@ def build_battle_log_entry(
         )
     hp_display = defender_display
     hp_value = int(defender_remaining_hp or 0)
-    if int(actual_damage or 0) == 0 and heal_amount > 0 and attacker_remaining_hp is not None:
+    if int(actual_damage or 0) == 0 and attacker_remaining_hp is not None and (heal_amount > 0 or bool(regen_setup_text)):
         hp_display = attacker_display
         hp_value = int(attacker_remaining_hp)
     new_entry = (
@@ -421,6 +448,11 @@ def build_battle_log_entry(
         summary_line = (
             f"{attacker_card_label} \u27a4 {attack_title} \u27a4 "
             f"+{heal_amount} HP Heilung"
+        )
+    elif int(actual_damage or 0) == 0 and regen_setup_text:
+        summary_line = (
+            f"{attacker_card_label} \u27a4 {attack_title} \u27a4 "
+            f"{regen_setup_text}"
         )
     else:
         summary_line = (

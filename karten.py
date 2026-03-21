@@ -363,7 +363,7 @@ karten = [
                 "damage": [0, 0],
                 "cooldown_turns": 7,
                 "effects": [{"type": "regen", "target": "self", "turns": 3, "heal": 10, "chance": 1.0}],
-                "info": "Heilt 3 Runden lang jeweils 10 HP.",
+                "info": "Heilt sich in den nächsten 3 Runden jeweils um 10 HP.",
             },
             {
                 "name": "Berserkerwut",

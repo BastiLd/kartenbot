@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 import logging
 import aiosqlite
@@ -1169,6 +1169,17 @@ def _extract_heal_amount_from_events(effect_events: list[str] | None) -> int:
     for event in effect_events or []:
         text = str(event or "").strip()
         if not text:
+            continue
+        lowered = text.lower()
+        if lowered.startswith("regeneration aktiviert:"):
+            continue
+        if not (
+            lowered.startswith("heilung:")
+            or lowered.startswith("heileffekt:")
+            or lowered.startswith("lebensraub:")
+            or lowered.startswith("regeneration heilt")
+            or lowered.startswith("awesome mix:")
+        ):
             continue
         for match in re.findall(r"\+(\d+)\s*HP", text, flags=re.IGNORECASE):
             try:
@@ -4041,7 +4052,7 @@ class BattleView(DurableView):
                 turns = int(effect.get("turns", 1) or 1)
                 heal = int(effect.get("heal", 0) or 0)
                 self.active_effects[target_id].append({"type": "regen", "duration": turns, "heal": heal, "applier": self.current_turn})
-                self._append_effect_event(effect_events, f"Regeneration aktiviert: +{heal} HP für {turns} Runde(n).")
+                self._append_effect_event(effect_events, f"Regeneration aktiviert: Heilt sich in den nächsten {turns} Runden jeweils um {heal} HP.")
             elif eff_type == "heal":
                 heal_data_effect = effect.get("amount", 0)
                 heal_amount = _random_int_from_range(heal_data_effect)
@@ -4783,7 +4794,7 @@ class BattleView(DurableView):
                 turns = int(effect.get("turns", 1) or 1)
                 heal = int(effect.get("heal", 0) or 0)
                 self.active_effects[target_id].append({"type": "regen", "duration": turns, "heal": heal, "applier": 0})
-                self._append_effect_event(effect_events, f"Regeneration aktiviert: +{heal} HP für {turns} Runde(n).")
+                self._append_effect_event(effect_events, f"Regeneration aktiviert: Heilt sich in den nächsten {turns} Runden jeweils um {heal} HP.")
             elif eff_type == "heal":
                 heal_data_effect = effect.get("amount", 0)
                 heal_amount = _random_int_from_range(heal_data_effect)
@@ -10020,7 +10031,7 @@ class MissionBattleView(DurableView):
                 turns = int(effect.get("turns", 1) or 1)
                 heal = int(effect.get("heal", 0) or 0)
                 self.active_effects[target_id].append({"type": "regen", "duration": turns, "heal": heal, "applier": self.user_id})
-                self._append_effect_event(effect_events, f"Regeneration aktiviert: +{heal} HP für {turns} Runde(n).")
+                self._append_effect_event(effect_events, f"Regeneration aktiviert: Heilt sich in den nächsten {turns} Runden jeweils um {heal} HP.")
             elif eff_type == "heal":
                 heal_data_effect = effect.get("amount", 0)
                 heal_amount = _random_int_from_range(heal_data_effect)
