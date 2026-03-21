@@ -64,6 +64,9 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(e.get("type") == "force_max" for e in effects))
         self.assertIn("Maximalschaden", str(treffsicherheit.get("info") or ""))
 
+        standard_pfeil = _find_attack(hawkeye, "Pfeil")
+        self.assertTrue(bool(standard_pfeil.get("is_standard_attack")))
+
         triple = _find_attack(hawkeye, "Triple Arrow")
         mh = triple.get("multi_hit", {})
         self.assertEqual(int(triple.get("cooldown_turns", 0) or 0), 4)
@@ -72,6 +75,13 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mh.get("per_hit_damage"), [5, 10])
         self.assertEqual(int(mh.get("guaranteed_min_per_hit", 0) or 0), 5)
         self.assertIn("3 Pfeile", str(triple.get("info") or ""))
+
+    def test_daywalker_biss_info_mentions_damage_and_heal(self) -> None:
+        blade = _find_card("Blade")
+        bite = _find_attack(blade, "Daywalker-Biss")
+        info = str(bite.get("info") or "")
+        self.assertIn("10-20", info)
+        self.assertIn("50%", info)
 
     def test_ironman_overladung_specs(self) -> None:
         iron = _find_card("Iron-Man")
@@ -776,6 +786,30 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("+17 HP Heilung", summary)
         self.assertNotIn("0 Schaden", summary)
+
+    def test_recent_summary_shows_action_type_and_miss_reason(self) -> None:
+        class _User:
+            def __init__(self, name: str):
+                self.display_name = name
+                self.mention = name
+
+        entry, summary = build_battle_log_entry(
+            "Iron-Man",
+            "Blade",
+            "Repulsor Strahlen",
+            0,
+            False,
+            _User("Basti"),
+            _User("Bot"),
+            3,
+            112,
+            effect_events=[
+                "Aktionstyp: Standardangriff.",
+                "Ausführung: verfehlt durch Blendung (50% Verfehlchance).",
+            ],
+        )
+        self.assertIn("Repulsor Strahlen (Standardangriff)", entry)
+        self.assertIn("verfehlt durch Blendung", summary)
 
     def test_calculate_damage_zero_never_critical(self) -> None:
         with patch("services.battle.random.random", return_value=0.0):
@@ -1796,14 +1830,36 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         }
         view = BattleView(player_card, defender_card, 1, 2, None)
         view.current_turn = 1
-        view.queue_outgoing_attack_modifier(1, flat=30, turns=1)
+        view.queue_outgoing_attack_modifier(1, flat=30, turns=1, source="Schwerkraft-Mine")
         with patch("services.battle.random.random", return_value=0.0):
             await self._execute_player_attack_without_buffs(view)
         full_log = view._full_battle_log_text()
         self.assertNotIn("VOLLTREFFER", full_log)
-        self.assertIn("Ausgehende Reduktion: 20 -> 0.", full_log)
-        self.assertIn("Überlauf-Rückstoß: 10 Selbstschaden.", full_log)
+        self.assertIn("Ausgehende Reduktion: Normal waeren 20 Schaden moeglich gewesen, durch Schwerkraft-Mine jetzt 0 Schaden.", full_log)
+        self.assertIn("Ueberlauf-Rueckstoss durch Schwerkraft-Mine: 10 Selbstschaden.", full_log)
         self.assertIn("hat jetzt noch 130 Leben", full_log)
+
+    async def test_blind_miss_logs_action_type_and_reason(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 140,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [20, 20], "info": "test"}],
+        }
+        defender_card = {
+            "name": "DefenderCard",
+            "hp": 140,
+            "bild": "https://example.com/defender.png",
+            "attacks": [{"name": "Hit", "damage": [0, 0], "info": "test"}],
+        }
+        view = BattleView(player_card, defender_card, 1, 2, None)
+        view.current_turn = 1
+        view.blind_next_attack[1] = 0.5
+        with patch("services.battle.random.random", return_value=0.0):
+            await self._execute_player_attack_without_buffs(view)
+        full_log = view._full_battle_log_text()
+        self.assertIn("Aktionstyp: Standardangriff.", full_log)
+        self.assertIn("Ausführung: verfehlt durch Blendung (50% Verfehlchance).", full_log)
 
     async def test_real_critical_still_logged_for_positive_final_damage(self) -> None:
         player_card = {
@@ -1957,7 +2013,7 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         # R3: Iron-Man landet automatisch und verursacht Schaden.
         enemy_hp_before_landing = view.player2_hp
-        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=0, interaction_message=message)
+        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=3, interaction_message=message)
         self.assertEqual(view.current_turn, 2)
         self.assertEqual(view.player2_hp, enemy_hp_before_landing - 20)
 
@@ -1989,7 +2045,7 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view.player1_hp, hp_after_fliegen)
 
         # R3: Landungsschlag.
-        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=0, interaction_message=message)
+        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=3, interaction_message=message)
 
         # R4: Danach trifft ein normaler Angriff wieder (kein weiteres Ausweichen).
         hp_before_hit = view.player1_hp
@@ -2024,7 +2080,7 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         # R4: Iron-Man-Landung muss Schaden machen (nicht unverdient geblockt).
         hp_before_landing = view.player1_hp
-        await self._execute_attack_without_buffs(view, acting_user_id=2, attack_index=0, interaction_message=message)
+        await self._execute_attack_without_buffs(view, acting_user_id=2, attack_index=3, interaction_message=message)
         self.assertEqual(view.player1_hp, hp_before_landing - 20)
 
     async def test_airborne_two_phase_helpers(self) -> None:
@@ -2335,6 +2391,92 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(bool(attack_buttons[0].disabled))
         self.assertTrue(all(bool(btn.disabled) for btn in attack_buttons[1:]))
         self.assertIn("Cooldown: 2", str(attack_buttons[3].label))
+
+    async def test_airborne_turn_keeps_original_source_slot_when_available(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [
+                {"name": "A1", "damage": [10, 10], "info": "a"},
+                {"name": "A2", "damage": [10, 10], "info": "b"},
+                {"name": "A3", "damage": [10, 10], "info": "c"},
+                {"name": "A4", "damage": [10, 10], "info": "d"},
+            ],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        view.current_turn = 1
+        view.start_airborne_two_phase(1, [20, 40], [], source_attack_index=3)
+        original_get_card_buffs = bot_module.get_card_buffs
+
+        async def _fake_get_card_buffs(_user_id, _card_name):
+            return []
+
+        bot_module.get_card_buffs = _fake_get_card_buffs
+        try:
+            await view.update_attack_buttons()
+        finally:
+            bot_module.get_card_buffs = original_get_card_buffs
+
+        attack_buttons = [c for c in view.children if hasattr(c, "row") and c.row in (0, 1)][:4]
+        self.assertIn("Landungsschlag", str(attack_buttons[3].label))
+        self.assertFalse(bool(attack_buttons[3].disabled))
+        self.assertTrue(all(bool(btn.disabled) for btn in attack_buttons[:3]))
+
+    async def test_special_lock_keeps_hawkeye_standard_attack_in_original_slot(self) -> None:
+        player_card = copy.deepcopy(_find_card("Hawkeye"))
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [0, 0], "info": "test"}],
+        }
+        view = BattleView(player_card, bot_card, 1, 0, None)
+        view.current_turn = 1
+        view.special_lock_next_turn[1] = 1
+        original_get_card_buffs = bot_module.get_card_buffs
+
+        async def _fake_get_card_buffs(_user_id, _card_name):
+            return []
+
+        bot_module.get_card_buffs = _fake_get_card_buffs
+        try:
+            await view.update_attack_buttons()
+        finally:
+            bot_module.get_card_buffs = original_get_card_buffs
+
+        attack_buttons = [c for c in view.children if hasattr(c, "row") and c.row in (0, 1)][:4]
+        self.assertIn("Flammen Pfeil", str(attack_buttons[0].label))
+        self.assertTrue(bool(attack_buttons[0].disabled))
+        self.assertIn("Pfeil", str(attack_buttons[1].label))
+        self.assertFalse(bool(attack_buttons[1].disabled))
+        self.assertTrue(all(bool(btn.disabled) for btn in (attack_buttons[2], attack_buttons[3])))
+
+    async def test_hawkeye_treffsicherheit_makes_triple_arrow_max_damage(self) -> None:
+        player_card = copy.deepcopy(_find_card("Hawkeye"))
+        defender_card = {
+            "name": "DummyBot",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Wait", "damage": [0, 0], "info": "test"}],
+        }
+        view = BattleView(player_card, defender_card, 1, 2, None)
+        view.current_turn = 1
+
+        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=2)
+        await self._execute_attack_without_buffs(view, acting_user_id=2, attack_index=0)
+        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=3)
+
+        self.assertEqual(view.player2_hp, 70)
+        full_log = view._full_battle_log_text()
+        self.assertIn("Triple Arrow (Fähigkeit)", full_log)
+        self.assertIn("Treffer: 3/3 | Schaden pro Treffer: 10, 10, 10 | Gesamt: 30.", full_log)
 
     async def test_battle_reload_button_for_shield_throw(self) -> None:
         player_card = {
@@ -2702,6 +2844,73 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(bool(attack_buttons[0].disabled))
         self.assertTrue(all(bool(btn.disabled) for btn in attack_buttons[1:]))
         self.assertIn("Cooldown: 2", str(attack_buttons[3].label))
+
+    async def test_mission_airborne_turn_keeps_original_source_slot_when_available(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [
+                {"name": "A1", "damage": [10, 10], "info": "a"},
+                {"name": "A2", "damage": [10, 10], "info": "b"},
+                {"name": "A3", "damage": [10, 10], "info": "c"},
+                {"name": "A4", "damage": [10, 10], "info": "d"},
+            ],
+        }
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = MissionBattleView(player_card, bot_card, 1, 1, 1)
+        view.start_airborne_two_phase(1, [20, 40], [], source_attack_index=3)
+        view.update_attack_buttons_mission()
+        attack_buttons = [c for c in view.children if hasattr(c, "row") and c.row in (0, 1)][:4]
+        self.assertIn("Landungsschlag", str(attack_buttons[3].label))
+        self.assertFalse(bool(attack_buttons[3].disabled))
+        self.assertTrue(all(bool(btn.disabled) for btn in attack_buttons[:3]))
+
+    async def test_mission_special_lock_keeps_hawkeye_standard_attack_in_original_slot(self) -> None:
+        player_card = copy.deepcopy(_find_card("Hawkeye"))
+        bot_card = {
+            "name": "BotCard",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Hit", "damage": [0, 0], "info": "test"}],
+        }
+        view = MissionBattleView(player_card, bot_card, 1, 1, 1)
+        view.special_lock_next_turn[1] = 1
+        view.update_attack_buttons_mission()
+        attack_buttons = [c for c in view.children if hasattr(c, "row") and c.row in (0, 1)][:4]
+        self.assertIn("Flammen Pfeil", str(attack_buttons[0].label))
+        self.assertTrue(bool(attack_buttons[0].disabled))
+        self.assertIn("Pfeil", str(attack_buttons[1].label))
+        self.assertFalse(bool(attack_buttons[1].disabled))
+        self.assertTrue(all(bool(btn.disabled) for btn in (attack_buttons[2], attack_buttons[3])))
+
+    async def test_mission_hawkeye_treffsicherheit_makes_triple_arrow_max_damage(self) -> None:
+        player_card = copy.deepcopy(_find_card("Hawkeye"))
+        bot_card = {
+            "name": "DummyBot",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Wait", "damage": [0, 0], "info": "test"}],
+        }
+        view = MissionBattleView(player_card, bot_card, 1, 1, 1)
+        view.persist_session = AsyncMock()
+        view._log_mission_attack_event = AsyncMock()
+
+        await view.execute_attack(_DummyInteraction(1, _DummyMessage()), 2)
+        await view.execute_attack(_DummyInteraction(1, _DummyMessage()), 3)
+
+        self.assertEqual(view.bot_hp, 70)
+        player_triple_call = view._log_mission_attack_event.await_args_list[2]
+        self.assertEqual(player_triple_call.kwargs["actual_damage"], 30)
+        self.assertIn(
+            "Treffer: 3/3 | Schaden pro Treffer: 10, 10, 10 | Gesamt: 30.",
+            player_triple_call.kwargs["effect_events"],
+        )
 
     async def test_mission_reload_button_for_shield_throw(self) -> None:
         player_card = {

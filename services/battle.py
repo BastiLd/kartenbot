@@ -277,6 +277,21 @@ def _extract_heal_amount_from_effect_events(effect_events: list[str] | None) -> 
     return max(0, total_heal)
 
 
+def _extract_action_meta(effect_events: list[str] | None) -> tuple[str, str]:
+    action_type = ""
+    execution = ""
+    for event in effect_events or []:
+        text = str(event or "").strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered.startswith("aktionstyp:"):
+            action_type = text.split(":", 1)[1].strip().rstrip(".")
+        elif lowered.startswith("ausführung:"):
+            execution = text.split(":", 1)[1].strip().rstrip(".")
+    return action_type, execution
+
+
 def _extract_boost_breakdown(effect_events: list[str] | None) -> tuple[int, int, int]:
     for event in effect_events or []:
         text = str(event or "").strip()
@@ -351,9 +366,11 @@ def build_battle_log_entry(
     self_hit_suffix = f" (Selbsttreffer: {self_hit_damage})" if (self_hit_damage and self_hit_damage > 0) else ""
     effect_text = ""
     heal_amount = _extract_heal_amount_from_effect_events(effect_events)
+    action_type, execution = _extract_action_meta(effect_events)
     attacker_card_label = _owned_card_label(attacker_display, attacker_name)
     defender_card_label = _owned_card_label(defender_display, defender_name)
     attack_display_name = _card_display_name(attack_name)
+    attack_title = f"{attack_display_name} ({action_type})" if action_type else attack_display_name
     if effect_events:
         lines = [str(event).strip() for event in effect_events if str(event).strip()]
         lines = [
@@ -378,12 +395,12 @@ def build_battle_log_entry(
 
     if int(actual_damage or 0) == 0 and heal_amount > 0:
         attack_line = (
-            f"**{attacker_card_label}** \u27a4 **{attack_display_name}** \u27a4 "
+            f"**{attacker_card_label}** \u27a4 **{attack_title}** \u27a4 "
             f"**+{heal_amount} HP Heilung**"
         )
     else:
         attack_line = (
-            f"**{attacker_card_label}** \u27a4 **{attack_display_name}** \u27a4 "
+            f"**{attacker_card_label}** \u27a4 **{attack_title}** \u27a4 "
             f"**{actual_damage} Schaden{burn_suffix}{confusion_suffix}{self_hit_suffix}** an "
             f"**{defender_card_label}**"
         )
@@ -402,14 +419,16 @@ def build_battle_log_entry(
     )
     if int(actual_damage or 0) == 0 and heal_amount > 0:
         summary_line = (
-            f"{attacker_card_label} \u27a4 {attack_display_name} \u27a4 "
+            f"{attacker_card_label} \u27a4 {attack_title} \u27a4 "
             f"+{heal_amount} HP Heilung"
         )
     else:
         summary_line = (
-            f"{attacker_card_label} \u27a4 {attack_display_name} \u27a4 "
+            f"{attacker_card_label} \u27a4 {attack_title} \u27a4 "
             f"{actual_damage} Schaden an {defender_card_label}"
         )
+    if execution and ("verfehlt" in execution.lower() or "ohne direkten schaden" in execution.lower() or "geheilt" in execution.lower()):
+        summary_line = f"{summary_line} | {execution}"
     return new_entry, summary_line
 
 

@@ -303,6 +303,10 @@ def _validate_attack(attack, path: str, issues: list[str], seen_attack_names: di
         elif str(button_style).strip() not in ALLOWED_BUTTON_STYLES:
             issues.append(f"{path}: button_style '{button_style}' ist ungueltig")
 
+    is_standard_attack = attack.get("is_standard_attack")
+    if is_standard_attack is not None and not isinstance(is_standard_attack, bool):
+        issues.append(f"{path}: is_standard_attack ist kein bool")
+
     damage_breakdown = attack.get("damage_breakdown")
     if damage_breakdown is not None:
         if not isinstance(damage_breakdown, dict):

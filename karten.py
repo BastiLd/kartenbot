@@ -138,7 +138,7 @@ karten = [
                 "effects": [{"type": "burning", "chance": 1.0, "duration": [3, 3], "damage": 5}],
                 "info": "Startschaden 10 plus Brennen: 3 Runden x 5 Schaden.",
             },
-            {"name": "Pfeil", "damage": [12, 18], "info": "Standardpfeil."},
+            {"name": "Pfeil", "damage": [12, 18], "is_standard_attack": True, "info": "Standardpfeil."},
             {
                 "name": "Treffsicherheit",
                 "damage": [0, 0],
@@ -332,7 +332,7 @@ karten = [
                 "damage": [10, 20],
                 "lifesteal_ratio": 0.5,
                 "cooldown_turns": 4,
-                "info": "Heilt 50% des verursachten Schadens.",
+                "info": "Verursacht 10-20 Schaden und heilt 50% des verursachten Schadens.",
             },
             {
                 "name": "UV-Granate",

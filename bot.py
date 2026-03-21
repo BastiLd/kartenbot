@@ -348,6 +348,30 @@ def _damage_transition_text(
     return f"{context}: {before} -> {after}."
 
 
+def _outgoing_reduction_effect_text(
+    original_damage: int,
+    final_damage: int,
+    *,
+    source: object | None = None,
+) -> str:
+    before = max(0, int(original_damage or 0))
+    after = max(0, int(final_damage or 0))
+    source_name = str(_effect_source_name(source)).strip() if source else ""
+    if source_name:
+        return (
+            f"Ausgehende Reduktion: Normal waeren {before} Schaden moeglich gewesen, "
+            f"durch {escape_display_text(source_name, fallback='Effekt')} jetzt {after} Schaden."
+        )
+    return f"Ausgehende Reduktion: Normal waeren {before} Schaden moeglich gewesen, jetzt {after} Schaden."
+
+
+def _overflow_recoil_source(source: object | None = None) -> str:
+    source_name = str(_effect_source_name(source)).strip() if source else ""
+    if source_name:
+        return f"Ueberlauf-Rueckstoss durch {escape_display_text(source_name, fallback='Effekt')}"
+    return "Ueberlauf-Rueckstoss"
+
+
 async def _delete_message_quietly(message: discord.Message | None) -> None:
     if message is None:
         return
@@ -1056,6 +1080,130 @@ def _damage_text_for_attack(attack: dict) -> str:
     return str(parsed)
 
 
+def _attack_total_damage_range(attack: dict, *, max_only_bonus: int = 0, flat_bonus: int = 0) -> tuple[int, int]:
+    multi_hit = attack.get("multi_hit")
+    if isinstance(multi_hit, dict):
+        hits = max(0, int(_maybe_int(multi_hit.get("hits")) or 0))
+        per_hit = multi_hit.get("per_hit_damage", [0, 0])
+        if isinstance(per_hit, list) and len(per_hit) == 2:
+            hit_min = max(0, int(_maybe_int(per_hit[0]) or 0))
+            hit_max = max(hit_min, int(_maybe_int(per_hit[1]) or 0))
+        else:
+            hit_min = 0
+            hit_max = 0
+        hit_chance = float(multi_hit.get("hit_chance", 0.0) or 0.0)
+        guaranteed_hits = hits if hit_chance >= 1.0 else 0
+        min_damage = guaranteed_hits * hit_min + int(flat_bonus or 0)
+        max_damage = hits * hit_max + int(flat_bonus or 0) + int(max_only_bonus or 0)
+        min_damage = max(0, int(min_damage))
+        max_damage = max(min_damage, int(max_damage))
+        return min_damage, max_damage
+    return _damage_range_with_max_bonus(
+        attack.get("damage", [0, 0]),
+        max_only_bonus=max_only_bonus,
+        flat_bonus=flat_bonus,
+    )
+
+
+def _attack_has_direct_damage(attack: dict) -> bool:
+    _min_damage, max_damage = _attack_total_damage_range(attack, max_only_bonus=0, flat_bonus=0)
+    return max_damage > 0
+
+
+def _standard_attack_index(attacks: list[dict]) -> int:
+    for idx, attack in enumerate(attacks[:4]):
+        if bool(attack.get("is_standard_attack")):
+            return idx
+    return 0
+
+
+def _is_standard_attack(attacks: list[dict], attack_index: int) -> bool:
+    if attack_index < 0:
+        return False
+    return _standard_attack_index(attacks) == int(attack_index)
+
+
+def _pending_landing_slot_index(pending_landing: dict[str, object] | None) -> int:
+    if not isinstance(pending_landing, dict):
+        return 0
+    attack_data = pending_landing.get("attack")
+    if isinstance(attack_data, dict):
+        raw_index = attack_data.get("cooldown_attack_index")
+        parsed_index = _maybe_int(raw_index)
+        if parsed_index is not None and 0 <= parsed_index < 4:
+            return int(parsed_index)
+    return 0
+
+
+def _readable_effect_source(source: object | None) -> str:
+    source_name = str(source or "").strip()
+    if not source_name:
+        return ""
+    if source_name.lower() == "airborne":
+        return "Flugphase"
+    return source_name
+
+
+def _attack_kind_label(
+    attack: dict,
+    *,
+    attacks: list[dict],
+    attack_index: int,
+    is_reload_action: bool = False,
+    is_forced_landing: bool = False,
+) -> str:
+    if is_reload_action:
+        return "Nachladen"
+    if is_forced_landing:
+        return "Folgeangriff"
+    if _is_standard_attack(attacks, attack_index):
+        return "Standardangriff"
+    if _attack_has_heal_component(attack) and not _attack_has_direct_damage(attack):
+        return "Heilfähigkeit"
+    return "Fähigkeit"
+
+
+def _extract_heal_amount_from_events(effect_events: list[str] | None) -> int:
+    total_heal = 0
+    for event in effect_events or []:
+        text = str(event or "").strip()
+        if not text:
+            continue
+        for match in re.findall(r"\+(\d+)\s*HP", text, flags=re.IGNORECASE):
+            try:
+                total_heal += int(match)
+            except Exception:
+                continue
+    return max(0, total_heal)
+
+
+def _prepend_action_context_events(
+    effect_events: list[str],
+    *,
+    action_type: str,
+    actual_damage: int,
+    miss_reason: str | None = None,
+    heal_amount: int = 0,
+    is_reload_action: bool = False,
+) -> None:
+    action_text = str(action_type or "").strip()
+    outcome_text = ""
+    if miss_reason:
+        outcome_text = f"verfehlt {miss_reason}"
+    elif heal_amount > 0 and int(actual_damage or 0) <= 0:
+        outcome_text = f"erfolgreich geheilt (+{heal_amount} HP)"
+    elif is_reload_action:
+        outcome_text = "ohne direkten Schaden nachgeladen"
+    elif int(actual_damage or 0) > 0:
+        outcome_text = "normal getroffen"
+    else:
+        outcome_text = "erfolgreich ohne direkten Schaden eingesetzt"
+    if outcome_text:
+        effect_events.insert(0, f"Ausführung: {outcome_text}.")
+    if action_text:
+        effect_events.insert(0, f"Aktionstyp: {action_text}.")
+
+
 def _format_cooldown_label(attack: dict, remaining_turns: int) -> str:
     remaining = max(0, int(remaining_turns or 0))
     try:
@@ -1151,11 +1299,7 @@ def _attack_display_parts(attack: dict, *, max_only_bonus: int = 0) -> tuple[str
         style = _resolve_attack_button_style(attack, discord.ButtonStyle.success)
         summary = f"{attack_name} — +{heal_label} Heilung{effects_label}"
         return label, style, summary
-    min_dmg, max_dmg = _damage_range_with_max_bonus(
-        attack.get("damage", [0, 0]),
-        max_only_bonus=max_only_bonus,
-        flat_bonus=0,
-    )
+    min_dmg, max_dmg = _attack_total_damage_range(attack, max_only_bonus=max_only_bonus, flat_bonus=0)
     damage_text = f"{min_dmg}-{max_dmg}"
     buff_text = f" (+{max_only_bonus} max)" if max_only_bonus > 0 else ""
     label = f"{attack_name} ({damage_text}{buff_text}){effects_label}"
@@ -2768,9 +2912,8 @@ class BattleView(DurableView):
         return False
 
     def _estimate_attack_max_damage_for_bot(self, attack: dict, defender_hp: int, attacker_hp: int) -> int:
-        damage = attack.get("damage", [0, 0])
+        attack_for_estimate = dict(attack)
         damage_buff = 0
-        damage_max_bonus = 0
         attacker_max_hp = self._max_hp_for(0)
         defender_max_hp = self._max_hp_for(self.player1_id)
 
@@ -2782,12 +2925,12 @@ class BattleView(DurableView):
         conditional_enemy_pct = attack.get("conditional_enemy_hp_below_pct")
         if conditional_enemy_pct is not None and defender_hp <= int(defender_max_hp * float(conditional_enemy_pct)):
             damage_if_condition = attack.get("damage_if_condition")
-            damage = _coerce_damage_input(damage_if_condition, default=0)
+            attack_for_estimate["damage"] = _coerce_damage_input(damage_if_condition, default=0)
 
         if attack.get("add_absorbed_damage"):
             damage_buff += int(self.absorbed_damage.get(0, 0) or 0)
 
-        max_damage = self.get_attack_max_damage(damage, damage_buff)
+        _min_damage, max_damage = _attack_total_damage_range(attack_for_estimate, max_only_bonus=0, flat_bonus=damage_buff)
         if max_damage > 0 and self.pending_flat_bonus_uses.get(0, 0) > 0:
             max_damage += int(self.pending_flat_bonus.get(0, 0) or 0)
         if max_damage > 0 and self.pending_multiplier_uses.get(0, 0) > 0:
@@ -2833,10 +2976,11 @@ class BattleView(DurableView):
         )
         if has_setup:
             strong_followup_exists = False
+            standard_idx = _standard_attack_index(attacks)
             for idx, other in enumerate(attacks[:4]):
                 if idx == attack_index:
                     continue
-                if self.special_lock_next_turn.get(0, 0) > 0 and idx != 0:
+                if self.special_lock_next_turn.get(0, 0) > 0 and idx != standard_idx:
                     continue
                 if self.is_attack_on_cooldown(0, idx):
                     continue
@@ -2877,17 +3021,18 @@ class BattleView(DurableView):
         attacker_max_hp = self._max_hp_for(0)
         defender_hp = self._hp_for(self.player1_id)
         defender_max_hp = self._max_hp_for(self.player1_id)
+        standard_idx = _standard_attack_index(attacks)
 
         candidate_indices: list[int] = []
         for i, attack in enumerate(attacks[:4]):
-            if self.special_lock_next_turn.get(0, 0) > 0 and i != 0:
+            if self.special_lock_next_turn.get(0, 0) > 0 and i != standard_idx:
                 continue
             if not self.is_attack_on_cooldown(0, i):
                 candidate_indices.append(i)
 
         if not candidate_indices:
             for i, _attack in enumerate(attacks[:4]):
-                if self.special_lock_next_turn.get(0, 0) > 0 and i != 0:
+                if self.special_lock_next_turn.get(0, 0) > 0 and i != standard_idx:
                     continue
                 candidate_indices.append(i)
 
@@ -2951,6 +3096,7 @@ class BattleView(DurableView):
         # Hole aktuelle Karte
         current_card = self.player1_card if self.current_turn == self.player1_id else self.player2_card
         attacks = current_card.get("attacks", [{"name": "Punch", "damage": [15, 25]}])
+        standard_idx = _standard_attack_index(attacks)
         
         # Hole Buffs für diese Karte
         card_buffs = await get_card_buffs(self.current_turn, current_card["name"])
@@ -2961,29 +3107,122 @@ class BattleView(DurableView):
 
         pending_landing = self.airborne_pending_landing.get(self.current_turn)
         if pending_landing:
+            landing_slot = _pending_landing_slot_index(pending_landing)
+            landing_attack = pending_landing.get("attack") if isinstance(pending_landing.get("attack"), dict) else {}
             landing_damage = pending_landing.get("damage", [20, 40])
             if isinstance(landing_damage, list) and len(landing_damage) == 2:
                 dmg_text = f"{int(landing_damage[0])}-{int(landing_damage[1])}"
             else:
                 dmg_text = "20-40"
-            if attack_buttons:
-                first = attack_buttons[0]
-                first.style = discord.ButtonStyle.danger
-                first.label = f"Landungsschlag ({dmg_text}) ✈️"
-                first.disabled = False
-            for i, btn in enumerate(attack_buttons[1:], start=1):
+            landing_name = str(landing_attack.get("name") or "Landungsschlag")
+            for i, btn in enumerate(attack_buttons):
                 btn.style = discord.ButtonStyle.secondary
-                if i < len(attacks):
-                    blocked_attack = attacks[i]
-                    blocked_name = str(blocked_attack.get("name") or f"Angriff {i+1}")
-                    if self.is_attack_on_cooldown(self.current_turn, i):
-                        cooldown_turns = self.attack_cooldowns[self.current_turn].get(i, 0)
-                        btn.label = f"{blocked_name} ({_format_cooldown_label(blocked_attack, cooldown_turns)})"
-                    else:
-                        btn.label = f"{blocked_name} (Blockiert)"
-                else:
+                if i >= len(attacks):
                     btn.label = "—"
+                    btn.disabled = True
+                    continue
+                if i == landing_slot:
+                    btn.style = discord.ButtonStyle.danger
+                    btn.label = f"{landing_name} ({dmg_text}) ✈️"
+                    btn.disabled = False
+                    continue
+                blocked_attack = attacks[i]
+                blocked_name = str(blocked_attack.get("name") or f"Angriff {i+1}")
+                if self.is_attack_on_cooldown(self.current_turn, i):
+                    cooldown_turns = self.attack_cooldowns[self.current_turn].get(i, 0)
+                    btn.label = f"{blocked_name} ({_format_cooldown_label(blocked_attack, cooldown_turns)})"
+                else:
+                    btn.label = f"{blocked_name} (Blockiert)"
                 btn.disabled = True
+            return
+
+        if self.special_lock_next_turn.get(self.current_turn, 0) > 0:
+            for i, button in enumerate(attack_buttons):
+                button.style = discord.ButtonStyle.secondary
+                if i >= len(attacks):
+                    button.label = "—"
+                    button.disabled = True
+                    continue
+                attack = attacks[i]
+                if i == standard_idx:
+                    base_damage = attack["damage"]
+                    damage_max_bonus = 0
+                    for buff_type, attack_number, buff_amount in card_buffs:
+                        if buff_type == "damage" and attack_number == (i + 1):
+                            damage_max_bonus += buff_amount
+                    min_dmg, max_dmg = _attack_total_damage_range(attack, max_only_bonus=damage_max_bonus, flat_bonus=0)
+                    damage_text = f"{min_dmg}-{max_dmg}"
+                    buff_text = f" (+{damage_max_bonus} max)" if damage_max_bonus > 0 else ""
+                    effects = attack.get("effects", [])
+                    effect_icons = []
+                    for eff in effects:
+                        eff_type = eff.get("type")
+                        if eff_type == "burning":
+                            if "🔥" not in effect_icons:
+                                effect_icons.append("🔥")
+                        elif eff_type == "confusion":
+                            if "🌀" not in effect_icons:
+                                effect_icons.append("🌀")
+                        elif eff_type == "stealth":
+                            if "🥷" not in effect_icons:
+                                effect_icons.append("🥷")
+                        elif eff_type == "stun":
+                            if "🛑" not in effect_icons:
+                                effect_icons.append("🛑")
+                        elif eff_type in {
+                            "damage_reduction",
+                            "damage_reduction_flat",
+                            "enemy_next_attack_reduction_percent",
+                            "enemy_next_attack_reduction_flat",
+                            "reflect",
+                            "absorb_store",
+                            "cap_damage",
+                            "delayed_defense_after_next_attack",
+                        }:
+                            if "🛡️" not in effect_icons:
+                                effect_icons.append("🛡️")
+                        elif eff_type == "airborne_two_phase":
+                            if "✈️" not in effect_icons:
+                                effect_icons.append("✈️")
+                        elif eff_type in {"damage_boost", "damage_multiplier"}:
+                            if "⚡" not in effect_icons:
+                                effect_icons.append("⚡")
+                        elif eff_type in {"force_max", "mix_heal_or_max", "guaranteed_hit"}:
+                            if "🎯" not in effect_icons:
+                                effect_icons.append("🎯")
+                        elif eff_type in {"heal", "regen"}:
+                            if "❤️" not in effect_icons:
+                                effect_icons.append("❤️")
+                    heal_label = _heal_label_for_attack(attack)
+                    if heal_label and "❤️" not in effect_icons:
+                        effect_icons.append("❤️")
+                    effects_label = f" {' '.join(effect_icons)}" if effect_icons else ""
+                    is_on_cooldown = self.is_attack_on_cooldown(self.current_turn, i)
+                    is_reload_action = bool(attack.get("requires_reload") and self.is_reload_needed(self.current_turn, i))
+                    if is_on_cooldown:
+                        cooldown_turns = self.attack_cooldowns[self.current_turn][i]
+                        button.label = f"{attack['name']} ({_format_cooldown_label(attack, cooldown_turns)})"
+                        button.disabled = True
+                    else:
+                        if heal_label is not None:
+                            default_style = discord.ButtonStyle.success
+                            button.label = f"{attack['name']} (+{heal_label}){effects_label}"
+                        elif is_reload_action:
+                            default_style = discord.ButtonStyle.primary
+                            button.label = str(attack.get("reload_name") or "Nachladen")
+                        else:
+                            default_style = discord.ButtonStyle.danger
+                            button.label = f"{attack['name']} ({damage_text}{buff_text}){effects_label}"
+                        button.style = _resolve_attack_button_style(attack, default_style)
+                        button.disabled = False
+                    continue
+                attack_name = str(attack.get("name") or f"Angriff {i+1}")
+                if self.is_attack_on_cooldown(self.current_turn, i):
+                    cooldown_turns = self.attack_cooldowns[self.current_turn].get(i, 0)
+                    button.label = f"{attack_name} ({_format_cooldown_label(attack, cooldown_turns)})"
+                else:
+                    button.label = f"{attack_name} (Gesperrt)"
+                button.disabled = True
             return
         
         for i, attack in enumerate(attacks[:4]):
@@ -2999,7 +3238,7 @@ class BattleView(DurableView):
                         damage_max_bonus += buff_amount
                 
                 # Berechne Schadenbereich mit Buffs
-                min_dmg, max_dmg = _damage_range_with_max_bonus(base_damage, max_only_bonus=damage_max_bonus, flat_bonus=0)
+                min_dmg, max_dmg = _attack_total_damage_range(attack, max_only_bonus=damage_max_bonus, flat_bonus=0)
                 damage_text = f"{min_dmg}-{max_dmg}"
                 
                 buff_text = f" (+{damage_max_bonus} max)" if damage_max_bonus > 0 else ""
@@ -3181,16 +3420,32 @@ class BattleView(DurableView):
         effect_events: list[str] = []
         forced_landing_attack = self.resolve_forced_landing_if_due(self.current_turn, effect_events)
         is_forced_landing = forced_landing_attack is not None
+        current_attacks = (
+            self.player1_card.get("attacks", [])
+            if self.current_turn == self.player1_id
+            else self.player2_card.get("attacks", [])
+        )
+        standard_idx = _standard_attack_index(current_attacks)
 
         # COOLDOWN-SYSTEM: Prüfe ob Attacke auf Cooldown ist
         if not is_forced_landing and self.is_attack_on_cooldown(self.current_turn, attack_index):
             await _safe_send_interaction_ephemeral(interaction, "Diese Attacke ist noch auf Cooldown!")
             return
 
-        if (not is_forced_landing) and self.special_lock_next_turn.get(self.current_turn, 0) > 0 and attack_index != 0:
+        if is_forced_landing:
+            landing_slot = _maybe_int(forced_landing_attack.get("cooldown_attack_index"))
+            if landing_slot is not None and 0 <= int(landing_slot) < 4 and int(landing_slot) != int(attack_index):
+                await _safe_send_interaction_ephemeral(
+                    interaction,
+                    f"Diese Runde ist nur {str(forced_landing_attack.get('name') or 'Landungsschlag')} im ursprünglichen Slot verfügbar.",
+                )
+                return
+
+        if (not is_forced_landing) and self.special_lock_next_turn.get(self.current_turn, 0) > 0 and attack_index != standard_idx:
+            standard_attack = current_attacks[standard_idx] if 0 <= standard_idx < len(current_attacks) else {"name": "Standardangriff"}
             await _safe_send_interaction_ephemeral(
                 interaction,
-                "Diese Runde sind nur Standard-Angriffe erlaubt (Attacke 1).",
+                f"Diese Runde ist nur der Standardangriff {str(standard_attack.get('name') or 'Standardangriff')} erlaubt.",
             )
             return
 
@@ -3264,6 +3519,15 @@ class BattleView(DurableView):
                 if buff_type == "damage" and attack_number == (attack_index + 1):
                     damage_max_bonus += buff_amount
 
+        action_type = _attack_kind_label(
+            attack,
+            attacks=attacks,
+            attack_index=attack_index,
+            is_reload_action=is_reload_action,
+            is_forced_landing=is_forced_landing,
+        )
+        miss_reason: str | None = None
+
         attacker_hp = self._hp_for(self.current_turn)
         attacker_max_hp = self._max_hp_for(self.current_turn)
         defender_hp = self._hp_for(defender_id)
@@ -3294,7 +3558,9 @@ class BattleView(DurableView):
                 f"Kinetische Entladung: Grundschaden {base_text}, durch Absorption +{absorbed_bonus}.",
             )
 
-        is_damaging_attack = self.get_attack_max_damage(base_damage, 0) > 0
+        effective_attack = dict(attack)
+        effective_attack["damage"] = base_damage
+        is_damaging_attack = _attack_has_direct_damage(effective_attack)
         attack_multiplier = 1.0
         applied_flat_bonus_now = 0
         force_max_damage = False
@@ -3339,7 +3605,13 @@ class BattleView(DurableView):
                 self.blind_next_attack[self.current_turn] = 0.0
                 self.consume_confusion_if_any(self.current_turn)
                 self._append_effect_event(effect_events, "Dieser Angriff trifft garantiert.")
-            max_damage_threshold = self.get_attack_max_damage(base_damage, damage_buff)
+            current_attack_profile = dict(attack)
+            current_attack_profile["damage"] = base_damage
+            _min_threshold_damage, max_damage_threshold = _attack_total_damage_range(
+                current_attack_profile,
+                max_only_bonus=0,
+                flat_bonus=damage_buff,
+            )
             blind_chance = float(self.blind_next_attack.get(self.current_turn, 0.0) or 0.0)
             blind_miss = False
             if blind_chance > 0:
@@ -3347,6 +3619,7 @@ class BattleView(DurableView):
                 blind_miss = random.random() < blind_chance
             # CONFUSION: Falls Angreifer verwirrt ist, 77% Selbstschaden, 23% normaler Treffer
             if blind_miss:
+                miss_reason = f"durch Blendung ({int(round(blind_chance * 100))}% Verfehlchance)"
                 actual_damage = 0
                 is_critical = False
                 attack_hits_enemy = False
@@ -3363,6 +3636,7 @@ class BattleView(DurableView):
                         source="Verwirrung",
                         self_damage=True,
                     )
+                    miss_reason = "durch Verwirrung, stattdessen Selbsttreffer"
                     actual_damage = 0
                     is_critical = False
                     attack_hits_enemy = False
@@ -3381,6 +3655,7 @@ class BattleView(DurableView):
                         actual_damage = 0
                         is_critical = False
                         attack_hits_enemy = False
+                        miss_reason = "durch Tarnung"
                         self.consume_stealth(defender_id)
                     elif defender_has_stealth:
                         self.consume_stealth(defender_id)
@@ -3401,6 +3676,7 @@ class BattleView(DurableView):
                     actual_damage = 0
                     is_critical = False
                     attack_hits_enemy = False
+                    miss_reason = "durch Tarnung"
                     self.consume_stealth(defender_id)
                 elif defender_has_stealth:
                     self.consume_stealth(defender_id)
@@ -3418,20 +3694,20 @@ class BattleView(DurableView):
                     modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
                     self._append_effect_event(
                         effect_events,
-                        _damage_transition_text(
+                        _outgoing_reduction_effect_text(
                             int(actual_damage),
                             int(reduced_damage),
                             source=modifier_source or None,
-                            context="Ausgehende Reduktion",
                         ),
                     )
                     actual_damage = reduced_damage
                 if overflow_self_damage > 0:
+                    modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
                     self._apply_non_heal_damage_with_event(
                         effect_events,
                         self.current_turn,
                         overflow_self_damage,
-                        source="Überlauf-Rückstoß",
+                        source=_overflow_recoil_source(modifier_source or None),
                         self_damage=True,
                     )
                 if actual_damage <= 0:
@@ -3459,6 +3735,8 @@ class BattleView(DurableView):
                     absorbed_after=absorbed_after,
                 )
                 if dodged:
+                    readable_source = _readable_effect_source((incoming_modifier or {}).get("source"))
+                    miss_reason = f"durch {readable_source}" if readable_source else "durch Ausweichen"
                     actual_damage = 0
                     attack_hits_enemy = False
                     is_critical = False
@@ -3759,7 +4037,16 @@ class BattleView(DurableView):
                 previous_turn = self.current_turn
                 current_cd = self.attack_cooldowns[previous_turn].get(landing_cd_index, 0)
                 self.attack_cooldowns[previous_turn][landing_cd_index] = max(current_cd, landing_cd_turns)
-        
+
+        _prepend_action_context_events(
+            effect_events,
+            action_type=action_type,
+            actual_damage=int(actual_damage or 0),
+            miss_reason=miss_reason,
+            heal_amount=_extract_heal_amount_from_events(effect_events),
+            is_reload_action=is_reload_action,
+        )
+
         # Log now including confusion/self-hit if it applied
         attacker_remaining_hp = self._hp_for(self.current_turn)
         defender_remaining_hp = self.player2_hp if self.current_turn == self.player1_id else self.player1_hp
@@ -4003,7 +4290,9 @@ class BattleView(DurableView):
                 effect_events,
                 f"Kinetische Entladung: Grundschaden {base_text}, durch Absorption +{absorbed_bonus}.",
             )
-        is_damaging_attack = self.get_attack_max_damage(base_damage, 0) > 0
+        effective_attack = dict(attack)
+        effective_attack["damage"] = base_damage
+        is_damaging_attack = _attack_has_direct_damage(effective_attack)
         attack_multiplier = 1.0
         applied_flat_bonus_now = 0
         force_max_damage = False
@@ -4031,6 +4320,14 @@ class BattleView(DurableView):
         guaranteed_hit = bool(attack.get("guaranteed_hit_if_condition") and conditional_enemy_triggered)
         is_reload_action = bool((not is_forced_landing) and attack.get("requires_reload") and self.is_reload_needed(0, attack_index))
         attack_name = str(attack.get("reload_name") or "Nachladen") if is_reload_action else attack["name"]
+        action_type = _attack_kind_label(
+            attack,
+            attacks=attacks,
+            attack_index=attack_index,
+            is_reload_action=is_reload_action,
+            is_forced_landing=is_forced_landing,
+        )
+        miss_reason: str | None = None
 
         # Confusion: 77% Selbstschaden, 23% normaler Treffer
         bot_hits_enemy = True
@@ -4053,8 +4350,15 @@ class BattleView(DurableView):
             if blind_chance > 0:
                 self.blind_next_attack[0] = 0.0
                 blind_miss = random.random() < blind_chance
-            max_damage_threshold = self.get_attack_max_damage(base_damage, damage_buff)
+            current_attack_profile = dict(attack)
+            current_attack_profile["damage"] = base_damage
+            _min_threshold_damage, max_damage_threshold = _attack_total_damage_range(
+                current_attack_profile,
+                max_only_bonus=0,
+                flat_bonus=damage_buff,
+            )
             if blind_miss:
+                miss_reason = f"durch Blendung ({int(round(blind_chance * 100))}% Verfehlchance)"
                 actual_damage, is_critical = 0, False
                 bot_hits_enemy = False
                 if self.confused_next_turn.get(0, False):
@@ -4073,6 +4377,7 @@ class BattleView(DurableView):
                         source="Verwirrung",
                         self_damage=True,
                     )
+                    miss_reason = "durch Verwirrung, stattdessen Selbsttreffer"
                     actual_damage, is_critical = 0, False
                     bot_hits_enemy = False
                 else:
@@ -4089,6 +4394,7 @@ class BattleView(DurableView):
                         actual_damage = 0
                         is_critical = False
                         bot_hits_enemy = False
+                        miss_reason = "durch Tarnung"
                         self.consume_stealth(self.player1_id)
                     elif defender_has_stealth:
                         self.consume_stealth(self.player1_id)
@@ -4113,6 +4419,7 @@ class BattleView(DurableView):
                     actual_damage = 0
                     is_critical = False
                     bot_hits_enemy = False
+                    miss_reason = "durch Tarnung"
                     self.consume_stealth(self.player1_id)
                 elif defender_has_stealth:
                     self.consume_stealth(self.player1_id)
@@ -4130,20 +4437,20 @@ class BattleView(DurableView):
                     modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
                     self._append_effect_event(
                         effect_events,
-                        _damage_transition_text(
+                        _outgoing_reduction_effect_text(
                             int(actual_damage),
                             int(reduced_damage),
                             source=modifier_source or None,
-                            context="Ausgehende Reduktion",
                         ),
                     )
                     actual_damage = reduced_damage
                 if overflow_self_damage > 0:
+                    modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
                     self._apply_non_heal_damage_with_event(
                         effect_events,
                         0,
                         overflow_self_damage,
-                        source="Überlauf-Rückstoß",
+                        source=_overflow_recoil_source(modifier_source or None),
                         self_damage=True,
                     )
                 if actual_damage <= 0:
@@ -4171,6 +4478,8 @@ class BattleView(DurableView):
                     absorbed_after=absorbed_after,
                 )
                 if dodged:
+                    readable_source = _readable_effect_source((incoming_modifier or {}).get("source"))
+                    miss_reason = f"durch {readable_source}" if readable_source else "durch Ausweichen"
                     actual_damage = 0
                     bot_hits_enemy = False
                     is_critical = False
@@ -4430,6 +4739,15 @@ class BattleView(DurableView):
                     cooldown_turns=int(attack.get("cooldown_turns", 0) or 0),
                 )
         # Kein separater Log-Eintrag – Effekte werden inline in der Angriffszeile angezeigt
+
+        _prepend_action_context_events(
+            effect_events,
+            action_type=action_type,
+            actual_damage=int(actual_damage or 0),
+            miss_reason=miss_reason,
+            heal_amount=_extract_heal_amount_from_events(effect_events),
+            is_reload_action=is_reload_action,
+        )
 
         await self._record_battle_log(
             bot_card["name"],
@@ -8509,32 +8827,113 @@ class MissionBattleView(DurableView):
         # Finde alle vier Angriffs-Buttons in den Zeilen 0 und 1
         attack_buttons = [child for child in self.children if isinstance(child, ui.Button) and child.row in (0, 1)]
         attack_buttons = attack_buttons[:4]
+        standard_idx = _standard_attack_index(self.attacks)
 
         pending_landing = self.airborne_pending_landing.get(self.user_id)
         if pending_landing:
+            landing_slot = _pending_landing_slot_index(pending_landing)
+            landing_attack = pending_landing.get("attack") if isinstance(pending_landing.get("attack"), dict) else {}
             landing_damage = pending_landing.get("damage", [20, 40])
             if isinstance(landing_damage, list) and len(landing_damage) == 2:
                 dmg_text = f"{int(landing_damage[0])}-{int(landing_damage[1])}"
             else:
                 dmg_text = "20-40"
-            if attack_buttons:
-                first = attack_buttons[0]
-                first.style = discord.ButtonStyle.danger
-                first.label = f"Landungsschlag ({dmg_text}) ✈️"
-                first.disabled = False
-            for i, btn in enumerate(attack_buttons[1:], start=1):
+            landing_name = str(landing_attack.get("name") or "Landungsschlag")
+            for i, btn in enumerate(attack_buttons):
                 btn.style = discord.ButtonStyle.secondary
-                if i < len(self.attacks):
-                    blocked_attack = self.attacks[i]
-                    blocked_name = str(blocked_attack.get("name") or f"Angriff {i+1}")
-                    if self.is_attack_on_cooldown_user(i):
-                        cooldown_turns = self.user_attack_cooldowns.get(i, 0)
-                        btn.label = f"{blocked_name} ({_format_cooldown_label(blocked_attack, cooldown_turns)})"
-                    else:
-                        btn.label = f"{blocked_name} (Blockiert)"
-                else:
+                if i >= len(self.attacks):
                     btn.label = "—"
+                    btn.disabled = True
+                    continue
+                if i == landing_slot:
+                    btn.style = discord.ButtonStyle.danger
+                    btn.label = f"{landing_name} ({dmg_text}) ✈️"
+                    btn.disabled = False
+                    continue
+                blocked_attack = self.attacks[i]
+                blocked_name = str(blocked_attack.get("name") or f"Angriff {i+1}")
+                if self.is_attack_on_cooldown_user(i):
+                    cooldown_turns = self.user_attack_cooldowns.get(i, 0)
+                    btn.label = f"{blocked_name} ({_format_cooldown_label(blocked_attack, cooldown_turns)})"
+                else:
+                    btn.label = f"{blocked_name} (Blockiert)"
                 btn.disabled = True
+            return
+
+        if self.special_lock_next_turn.get(self.user_id, 0) > 0:
+            for i, button in enumerate(attack_buttons):
+                button.style = discord.ButtonStyle.secondary
+                if i >= len(self.attacks):
+                    button.label = "—"
+                    button.disabled = True
+                    continue
+                attack = self.attacks[i]
+                if i == standard_idx:
+                    dmg_max_bonus = self.damage_bonuses.get(i + 1, 0)
+                    min_dmg, max_dmg = _attack_total_damage_range(attack, max_only_bonus=dmg_max_bonus, flat_bonus=0)
+                    damage_text = f"[{min_dmg}, {max_dmg}]"
+                    effects = attack.get("effects", [])
+                    effect_icons: list[str] = []
+                    for eff in effects:
+                        t = eff.get("type")
+                        if t == "burning" and "🔥" not in effect_icons:
+                            effect_icons.append("🔥")
+                        elif t == "confusion" and "🌀" not in effect_icons:
+                            effect_icons.append("🌀")
+                        elif t == "stealth" and "🥷" not in effect_icons:
+                            effect_icons.append("🥷")
+                        elif t == "stun" and "🛑" not in effect_icons:
+                            effect_icons.append("🛑")
+                        elif t in {
+                            "damage_reduction",
+                            "damage_reduction_flat",
+                            "enemy_next_attack_reduction_percent",
+                            "enemy_next_attack_reduction_flat",
+                            "reflect",
+                            "absorb_store",
+                            "cap_damage",
+                            "delayed_defense_after_next_attack",
+                        } and "🛡️" not in effect_icons:
+                            effect_icons.append("🛡️")
+                        elif t == "airborne_two_phase" and "✈️" not in effect_icons:
+                            effect_icons.append("✈️")
+                        elif t in {"damage_boost", "damage_multiplier"} and "⚡" not in effect_icons:
+                            effect_icons.append("⚡")
+                        elif t in {"force_max", "mix_heal_or_max", "guaranteed_hit"} and "🎯" not in effect_icons:
+                            effect_icons.append("🎯")
+                        elif t in {"heal", "regen"} and "❤️" not in effect_icons:
+                            effect_icons.append("❤️")
+                    heal_label = _heal_label_for_attack(attack)
+                    if heal_label and "❤️" not in effect_icons:
+                        effect_icons.append("❤️")
+                    effects_label = f" {' '.join(effect_icons)}" if effect_icons else ""
+                    is_on_cooldown = self.is_attack_on_cooldown_user(i)
+                    is_reload_action = bool(attack.get("requires_reload") and self.is_reload_needed(self.user_id, i))
+                    if is_on_cooldown:
+                        cooldown_turns = self.user_attack_cooldowns[i]
+                        button.label = f"{attack['name']} ({_format_cooldown_label(attack, cooldown_turns)})"
+                        button.disabled = True
+                    elif is_reload_action:
+                        button.style = discord.ButtonStyle.primary
+                        button.label = str(attack.get("reload_name") or "Nachladen")
+                        button.disabled = False
+                    else:
+                        if heal_label is not None:
+                            default_style = discord.ButtonStyle.success
+                            button.label = f"{attack['name']} (+{heal_label}){effects_label}"
+                        else:
+                            default_style = discord.ButtonStyle.danger
+                            button.label = f"{attack['name']} ({damage_text}){effects_label}"
+                        button.style = _resolve_attack_button_style(attack, default_style)
+                        button.disabled = False
+                    continue
+                attack_name = str(attack.get("name") or f"Angriff {i+1}")
+                if self.is_attack_on_cooldown_user(i):
+                    cooldown_turns = self.user_attack_cooldowns.get(i, 0)
+                    button.label = f"{attack_name} ({_format_cooldown_label(attack, cooldown_turns)})"
+                else:
+                    button.label = f"{attack_name} (Gesperrt)"
+                button.disabled = True
             return
         
         for i, button in enumerate(attack_buttons):
@@ -8544,7 +8943,7 @@ class MissionBattleView(DurableView):
                 dmg_max_bonus = self.damage_bonuses.get(i + 1, 0)
                 
                 # Berechne Damage-Text
-                min_dmg, max_dmg = _damage_range_with_max_bonus(base_damage, max_only_bonus=dmg_max_bonus, flat_bonus=0)
+                min_dmg, max_dmg = _attack_total_damage_range(attack, max_only_bonus=dmg_max_bonus, flat_bonus=0)
                 damage_text = f"[{min_dmg}, {max_dmg}]"
                 
                 # Effekte-Label (🔥/🌀)
@@ -8709,15 +9108,25 @@ class MissionBattleView(DurableView):
         if attack_index >= len(self.attacks):
             await _safe_send_interaction_ephemeral(interaction, "Ungültiger Angriff!")
             return
+        standard_idx = _standard_attack_index(self.attacks)
 
         # COOLDOWN prüfen (Spieler)
         if (not is_forced_landing) and self.is_attack_on_cooldown_user(attack_index):
             await _safe_send_interaction_ephemeral(interaction, "Diese Attacke ist noch auf Cooldown!")
             return
-        if (not is_forced_landing) and self.special_lock_next_turn.get(self.user_id, 0) > 0 and attack_index != 0:
+        if is_forced_landing:
+            landing_slot = _maybe_int(forced_landing_attack.get("cooldown_attack_index"))
+            if landing_slot is not None and 0 <= int(landing_slot) < 4 and int(landing_slot) != int(attack_index):
+                await _safe_send_interaction_ephemeral(
+                    interaction,
+                    f"Diese Runde ist nur {str(forced_landing_attack.get('name') or 'Landungsschlag')} im ursprünglichen Slot verfügbar.",
+                )
+                return
+        if (not is_forced_landing) and self.special_lock_next_turn.get(self.user_id, 0) > 0 and attack_index != standard_idx:
+            standard_attack = self.attacks[standard_idx] if 0 <= standard_idx < len(self.attacks) else {"name": "Standardangriff"}
             await _safe_send_interaction_ephemeral(
                 interaction,
-                "Diese Runde sind nur Standard-Angriffe erlaubt (Attacke 1).",
+                f"Diese Runde ist nur der Standardangriff {str(standard_attack.get('name') or 'Standardangriff')} erlaubt.",
             )
             return
 
@@ -8731,6 +9140,14 @@ class MissionBattleView(DurableView):
             damage = attack["damage"]
             is_reload_action = bool(attack.get("requires_reload") and self.is_reload_needed(self.user_id, attack_index))
             attack_name = str(attack.get("reload_name") or "Nachladen") if is_reload_action else attack["name"]
+        action_type = _attack_kind_label(
+            attack,
+            attacks=self.attacks,
+            attack_index=attack_index,
+            is_reload_action=is_reload_action,
+            is_forced_landing=is_forced_landing,
+        )
+        miss_reason: str | None = None
         dmg_buff = 0
         damage_max_bonus = self.damage_bonuses.get(attack_index + 1, 0)
         if is_forced_landing:
@@ -8763,7 +9180,9 @@ class MissionBattleView(DurableView):
                 f"Kinetische Entladung: Grundschaden {base_text}, durch Absorption +{absorbed_bonus}.",
             )
 
-        is_damaging_attack = self.mission_get_attack_max_damage(damage, 0) > 0
+        effective_attack = dict(attack)
+        effective_attack["damage"] = damage
+        is_damaging_attack = _attack_has_direct_damage(effective_attack)
         attack_multiplier = 1.0
         applied_flat_bonus_now = 0
         force_max_damage = False
@@ -8807,13 +9226,20 @@ class MissionBattleView(DurableView):
                 self.blind_next_attack[self.user_id] = 0.0
                 self.consume_confusion_if_any(self.user_id)
                 self._append_effect_event(effect_events, "Dieser Angriff trifft garantiert.")
-            max_dmg_threshold = self.mission_get_attack_max_damage(damage, dmg_buff)
+            current_attack_profile = dict(attack)
+            current_attack_profile["damage"] = damage
+            _min_threshold_damage, max_dmg_threshold = _attack_total_damage_range(
+                current_attack_profile,
+                max_only_bonus=0,
+                flat_bonus=dmg_buff,
+            )
             blind_chance = float(self.blind_next_attack.get(self.user_id, 0.0) or 0.0)
             blind_miss = False
             if blind_chance > 0:
                 self.blind_next_attack[self.user_id] = 0.0
                 blind_miss = random.random() < blind_chance
             if blind_miss:
+                miss_reason = f"durch Blendung ({int(round(blind_chance * 100))}% Verfehlchance)"
                 actual_damage, is_critical = 0, False
                 hits_enemy = False
                 if self.confused_next_turn.get(self.user_id, False):
@@ -8832,6 +9258,7 @@ class MissionBattleView(DurableView):
                         source="Verwirrung",
                         self_damage=True,
                     )
+                    miss_reason = "durch Verwirrung, stattdessen Selbsttreffer"
                     actual_damage, is_critical = 0, False
                     hits_enemy = False
                 else:
@@ -8848,6 +9275,7 @@ class MissionBattleView(DurableView):
                         actual_damage = 0
                         is_critical = False
                         hits_enemy = False
+                        miss_reason = "durch Tarnung"
                         self.consume_stealth(0)
                     elif defender_has_stealth:
                         self.consume_stealth(0)
@@ -8871,6 +9299,7 @@ class MissionBattleView(DurableView):
                     actual_damage = 0
                     is_critical = False
                     hits_enemy = False
+                    miss_reason = "durch Tarnung"
                     self.consume_stealth(0)
                 elif defender_has_stealth:
                     self.consume_stealth(0)
@@ -8888,20 +9317,20 @@ class MissionBattleView(DurableView):
                     modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
                     self._append_effect_event(
                         effect_events,
-                        _damage_transition_text(
+                        _outgoing_reduction_effect_text(
                             int(actual_damage),
                             int(reduced_damage),
                             source=modifier_source or None,
-                            context="Ausgehende Reduktion",
                         ),
                     )
                     actual_damage = reduced_damage
                 if overflow_self_damage > 0:
+                    modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
                     self._apply_non_heal_damage_with_event(
                         effect_events,
                         self.user_id,
                         overflow_self_damage,
-                        source="Überlauf-Rückstoß",
+                        source=_overflow_recoil_source(modifier_source or None),
                         self_damage=True,
                     )
                 if actual_damage <= 0:
@@ -8929,6 +9358,8 @@ class MissionBattleView(DurableView):
                     absorbed_after=absorbed_after,
                 )
                 if dodged:
+                    readable_source = _readable_effect_source((incoming_modifier or {}).get("source"))
+                    miss_reason = f"durch {readable_source}" if readable_source else "durch Ausweichen"
                     actual_damage = 0
                     hits_enemy = False
                     is_critical = False
@@ -9184,6 +9615,15 @@ class MissionBattleView(DurableView):
                     cooldown_turns=int(attack.get("cooldown_turns", 0) or 0),
                 )
 
+        _prepend_action_context_events(
+            effect_events,
+            action_type=action_type,
+            actual_damage=int(actual_damage or 0),
+            miss_reason=miss_reason,
+            heal_amount=_extract_heal_amount_from_events(effect_events),
+            is_reload_action=is_reload_action,
+        )
+
         # Update Kampf-Log (inkl. vorab angewandter Verbrennung im selben Eintrag)
         if self.battle_log_message:
             log_embed = self.battle_log_message.embeds[0] if self.battle_log_message.embeds else create_battle_log_embed()
@@ -9344,6 +9784,7 @@ class MissionBattleView(DurableView):
 
         # Bot-Angriff
         bot_attacks = self.bot_card.get("attacks", [{"name": "Punch", "damage": 20}])
+        standard_idx = _standard_attack_index(bot_attacks)
         bot_effect_events: list[str] = []
         forced_bot_landing_attack = self.resolve_forced_landing_if_due(0, bot_effect_events)
         is_forced_bot_landing = forced_bot_landing_attack is not None
@@ -9351,14 +9792,13 @@ class MissionBattleView(DurableView):
         available_attacks = []
         attack_damages = []
         for i, atk in enumerate(bot_attacks[:4]):
-            if self.special_lock_next_turn.get(0, 0) > 0 and i != 0:
+            if self.special_lock_next_turn.get(0, 0) > 0 and i != standard_idx:
                 continue
             if not self.is_attack_on_cooldown_bot(i):
                 if atk.get("requires_reload") and self.is_reload_needed(0, i):
                     max_dmg = 0
                 else:
-                    damage = atk["damage"]
-                    max_dmg = self.mission_get_attack_max_damage(damage) if isinstance(atk, dict) else 0
+                    _min_dmg, max_dmg = _attack_total_damage_range(atk, max_only_bonus=0, flat_bonus=0) if isinstance(atk, dict) else (0, 0)
                 available_attacks.append(i)
                 attack_damages.append(max_dmg)
         
@@ -9397,7 +9837,9 @@ class MissionBattleView(DurableView):
                     bot_effect_events,
                     f"Kinetische Entladung: Grundschaden {base_text}, durch Absorption +{absorbed_bonus}.",
                 )
-            is_damaging_attack = self.mission_get_attack_max_damage(damage, 0) > 0
+            effective_attack = dict(attack)
+            effective_attack["damage"] = damage
+            is_damaging_attack = _attack_has_direct_damage(effective_attack)
             attack_multiplier = 1.0
             applied_flat_bonus_now = 0
             force_max_damage = False
@@ -9425,8 +9867,17 @@ class MissionBattleView(DurableView):
             guaranteed_hit = bool(attack.get("guaranteed_hit_if_condition") and conditional_enemy_triggered)
             is_bot_reload_action = bool((not is_forced_bot_landing) and attack.get("requires_reload") and self.is_reload_needed(0, best_index))
             bot_attack_name = str(attack.get("reload_name") or "Nachladen") if is_bot_reload_action else attack["name"]
+            action_type = _attack_kind_label(
+                attack,
+                attacks=bot_attacks,
+                attack_index=best_index,
+                is_reload_action=is_bot_reload_action,
+                is_forced_landing=is_forced_bot_landing,
+            )
+            miss_reason: str | None = None
             # Bot kann ebenfalls verwirrt sein: 77% Selbstschaden, 23% normaler Treffer
             bot_hits_enemy = True
+            self_damage = 0
             if is_bot_reload_action:
                 actual_damage, is_critical = 0, False
                 bot_hits_enemy = False
@@ -9434,7 +9885,6 @@ class MissionBattleView(DurableView):
             else:
                 min_damage = 0
                 max_damage = 0
-                self_damage = 0
                 defender_has_stealth = self.has_stealth(self.user_id)
                 guaranteed_hit = guaranteed_hit or self.consume_guaranteed_hit(0)
                 if guaranteed_hit:
@@ -9446,13 +9896,21 @@ class MissionBattleView(DurableView):
                 if blind_chance > 0:
                     self.blind_next_attack[0] = 0.0
                     blind_miss = random.random() < blind_chance
+                current_attack_profile = dict(attack)
+                current_attack_profile["damage"] = damage
+                _min_threshold_damage, max_dmg_threshold = _attack_total_damage_range(
+                    current_attack_profile,
+                    max_only_bonus=0,
+                    flat_bonus=dmg_buff_bot,
+                )
                 if blind_miss:
+                    miss_reason = f"durch Blendung ({int(round(blind_chance * 100))}% Verfehlchance)"
                     actual_damage, is_critical = 0, False
                     bot_hits_enemy = False
                     self.confused_next_turn[0] = False
                 elif hasattr(self, 'confused_next_turn') and self.confused_next_turn.get(0, False):
                     if random.random() < 0.77:
-                        self_damage = random.randint(15, 20) if self.mission_get_attack_max_damage(damage, dmg_buff_bot) <= 100 else random.randint(40, 60)
+                        self_damage = random.randint(15, 20) if max_dmg_threshold <= 100 else random.randint(40, 60)
                         self._apply_non_heal_damage_with_event(
                             bot_effect_events,
                             0,
@@ -9460,6 +9918,7 @@ class MissionBattleView(DurableView):
                             source="Verwirrung",
                             self_damage=True,
                         )
+                        miss_reason = "durch Verwirrung, stattdessen Selbsttreffer"
                         actual_damage, is_critical = 0, False
                         bot_hits_enemy = False
                     else:
@@ -9476,6 +9935,7 @@ class MissionBattleView(DurableView):
                             actual_damage = 0
                             is_critical = False
                             bot_hits_enemy = False
+                            miss_reason = "durch Tarnung"
                             self.consume_stealth(self.user_id)
                         elif defender_has_stealth:
                             self.consume_stealth(self.user_id)
@@ -9495,430 +9955,442 @@ class MissionBattleView(DurableView):
                         actual_damage = 0
                         is_critical = False
                         bot_hits_enemy = False
+                        miss_reason = "durch Tarnung"
                         self.consume_stealth(self.user_id)
                     elif defender_has_stealth:
                         self.consume_stealth(self.user_id)
-    
-                    if bot_hits_enemy and actual_damage > 0:
-                        boost_text = _boosted_damage_effect_text(actual_damage, attack_multiplier, applied_flat_bonus_now)
-                        if boost_text:
-                            self._append_effect_event(bot_effect_events, boost_text)
-                        defender_hp_before = self._hp_for(self.user_id)
-                        reduced_damage, overflow_self_damage, outgoing_modifier = self._apply_outgoing_attack_modifiers_with_details(
-                            0,
-                            actual_damage,
-                        )
-                        if reduced_damage != actual_damage:
-                            modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
-                            self._append_effect_event(
-                                bot_effect_events,
-                                _damage_transition_text(
-                                    int(actual_damage),
-                                    int(reduced_damage),
-                                    source=modifier_source or None,
-                                    context="Ausgehende Reduktion",
-                                ),
-                            )
-                            actual_damage = reduced_damage
-                        if overflow_self_damage > 0:
-                            self._apply_non_heal_damage_with_event(
-                                bot_effect_events,
-                                0,
-                                overflow_self_damage,
-                                source="Überlauf-Rückstoß",
-                                self_damage=True,
-                            )
-                        if actual_damage <= 0:
-                            is_critical = False
-    
-                        incoming_raw_damage = int(actual_damage)
-                        absorbed_before = int(self.absorbed_damage.get(self.user_id, 0) or 0)
-                        final_damage, reflected_damage, dodged, counter_damage, incoming_modifier = self._resolve_incoming_modifiers_with_details(
-                            self.user_id,
-                            actual_damage,
-                            ignore_evade=(guaranteed_hit and not self.has_airborne(self.user_id)),
-                            incoming_min_damage=min_damage,
-                        )
-                        absorbed_after = int(self.absorbed_damage.get(self.user_id, 0) or 0)
-                        self._append_incoming_resolution_events(
-                            bot_effect_events,
-                            defender_name=self.player_card["name"],
-                            raw_damage=incoming_raw_damage,
-                            final_damage=int(final_damage),
-                            reflected_damage=int(reflected_damage),
-                            dodged=bool(dodged),
-                            counter_damage=int(counter_damage),
-                            modifier_details=incoming_modifier,
-                            absorbed_before=absorbed_before,
-                            absorbed_after=absorbed_after,
-                        )
-                        if dodged:
-                            actual_damage = 0
-                            bot_hits_enemy = False
-                            is_critical = False
-                        else:
-                            actual_damage = max(0, int(final_damage))
-                            if actual_damage > 0:
-                                self._apply_non_heal_damage(self.user_id, actual_damage)
-                            else:
-                                is_critical = False
-                        if reflected_damage > 0:
-                            self._apply_non_heal_damage_with_event(
-                                bot_effect_events,
-                                0,
-                                reflected_damage,
-                                source="Reflexions-Rückschaden",
-                                self_damage=False,
-                            )
-                        if counter_damage > 0:
-                            self._apply_non_heal_damage_with_event(
-                                bot_effect_events,
-                                0,
-                                counter_damage,
-                                source="Konter-Rückschaden",
-                                self_damage=False,
-                            )
-                        self._guard_non_heal_damage_result(self.user_id, defender_hp_before, "mission_bot_attack")
-                    if not bot_hits_enemy or int(actual_damage or 0) <= 0:
-                        is_critical = False
-    
-                self_damage_value = _resolve_self_damage_value(attack.get("self_damage", 0))
-                if self_damage_value > 0:
-                    self._apply_non_heal_damage_with_event(
-                        bot_effect_events,
+
+                if bot_hits_enemy and actual_damage > 0:
+                    boost_text = _boosted_damage_effect_text(actual_damage, attack_multiplier, applied_flat_bonus_now)
+                    if boost_text:
+                        self._append_effect_event(bot_effect_events, boost_text)
+                    defender_hp_before = self._hp_for(self.user_id)
+                    reduced_damage, overflow_self_damage, outgoing_modifier = self._apply_outgoing_attack_modifiers_with_details(
                         0,
-                        self_damage_value,
-                        source=f"{bot_attack_name} / Rückstoß",
-                        self_damage=True,
+                        actual_damage,
                     )
-    
-                heal_data = attack.get("heal")
-                if heal_data is not None:
-                    heal_chance = float(attack.get("heal_chance", 1.0) or 1.0)
-                    if random.random() <= heal_chance:
-                        heal_amount = _random_int_from_range(heal_data)
-                        healed_now = self.heal_player(0, heal_amount)
-                        if healed_now > 0:
-                            self._append_effect_event(bot_effect_events, f"Heilung: +{healed_now} HP.")
-    
-                lifesteal_ratio = float(attack.get("lifesteal_ratio", 0.0) or 0.0)
-                if lifesteal_ratio > 0 and bot_hits_enemy and actual_damage > 0:
-                    lifesteal_heal = self.heal_player(0, int(round(actual_damage * lifesteal_ratio)))
-                    if lifesteal_heal > 0:
-                        self._append_effect_event(bot_effect_events, f"Lebensraub: +{lifesteal_heal} HP.")
-    
-                self.player_hp = max(0, self.player_hp)
-                self.bot_hp = max(0, self.bot_hp)
-                
-                self.round_counter += 1
-    
-                if not is_bot_reload_action:
-                    self.activate_delayed_defense_after_attack(
-                        0,
-                        bot_effect_events,
-                        attack_landed=bool(bot_hits_enemy and int(actual_damage or 0) > 0),
-                    )
-    
-                # SIDE EFFECTS: Apply new effects from bot attack
-                effects = attack.get("effects", [])
-                bot_burning_duration_for_dynamic_cooldown: int | None = None
-                for effect in effects:
-                    # 70% Fix-Chance für Verwirrung
-                    chance = 0.7 if effect.get('type') == 'confusion' else effect.get('chance', 1.0)
-                    if random.random() >= chance:
-                        continue
-                    target = effect.get("target", "enemy")
-                    target_id = 0 if target == "self" else self.user_id
-                    eff_type = effect.get("type")
-                    if target != "self" and not bot_hits_enemy and eff_type not in {"stun"}:
-                        continue
-                    if eff_type == "stealth":
-                        self.grant_stealth(target_id)
-                        self._append_effect_event(bot_effect_events, "Schutz aktiv: Der nächste gegnerische Angriff wird geblockt.")
-                    elif eff_type == 'burning':
-                        duration = _random_int_from_range(effect.get("duration"), default=1)
-                        burn_damage = _effect_int(effect, "damage")
-                        new_effect: dict[str, object] = {
-                            'type': 'burning',
-                            'duration': duration,
-                            'damage': burn_damage,
-                            'applier': 0
-                        }
-                        self.active_effects[target_id].append(new_effect)
-                        if attack.get("cooldown_from_burning_plus") is not None:
-                            prev_duration = bot_burning_duration_for_dynamic_cooldown or 0
-                            bot_burning_duration_for_dynamic_cooldown = max(prev_duration, duration)
-                        self._append_effect_event(bot_effect_events, f"Verbrennung aktiv: {burn_damage} Schaden für {duration} Runden.")
-                    elif eff_type == 'confusion':
-                        self.set_confusion(target_id, 0)
-                        self._append_effect_event(bot_effect_events, "Verwirrung wurde angewendet.")
-                    elif eff_type == "stun":
-                        self.stunned_next_turn[target_id] = True
-                        self._append_effect_event(bot_effect_events, "Betäubung: Der Gegner setzt den nächsten Zug aus.")
-                    elif eff_type == "damage_boost":
-                        amount = int(effect.get("amount", 0) or 0)
-                        uses = int(effect.get("uses", 1) or 1)
-                        self.pending_flat_bonus[target_id] = max(self.pending_flat_bonus.get(target_id, 0), amount)
-                        self.pending_flat_bonus_uses[target_id] = max(self.pending_flat_bonus_uses.get(target_id, 0), uses)
-                        self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, f"Schadensbonus aktiv: +{amount} für {uses} Angriff(e)."))
-                    elif eff_type == "damage_multiplier":
-                        mult = float(effect.get("multiplier", 1.0) or 1.0)
-                        uses = int(effect.get("uses", 1) or 1)
-                        self.pending_multiplier[target_id] = max(self.pending_multiplier.get(target_id, 1.0), mult)
-                        self.pending_multiplier_uses[target_id] = max(self.pending_multiplier_uses.get(target_id, 0), uses)
-                        pct = int(round((mult - 1.0) * 100))
-                        if pct > 0:
-                            self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, f"Nächster Angriff macht +{pct}% Schaden."))
-                    elif eff_type == "force_max":
-                        uses = int(effect.get("uses", 1) or 1)
-                        self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
-                        self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Nächster Angriff verursacht Maximalschaden."))
-                    elif eff_type == "guaranteed_hit":
-                        uses = int(effect.get("uses", 1) or 1)
-                        self.guaranteed_hit_next[target_id] = max(self.guaranteed_hit_next.get(target_id, 0), uses)
-                        self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Nächster Angriff trifft garantiert."))
-                    elif eff_type == "damage_reduction":
-                        percent = float(effect.get("percent", 0.0) or 0.0)
-                        turns = int(effect.get("turns", 1) or 1)
-                        self.queue_incoming_modifier(target_id, percent=percent, turns=turns, source=bot_attack_name)
+                    if reduced_damage != actual_damage:
+                        modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
                         self._append_effect_event(
                             bot_effect_events,
-                            _effect_source_text(bot_attack_name, f"Eingehender Schaden reduziert um {int(round(percent * 100))}% ({turns} Runde(n))."),
-                        )
-                    elif eff_type == "damage_reduction_sequence":
-                        sequence = effect.get("sequence", [])
-                        if isinstance(sequence, list):
-                            for pct in sequence:
-                                self.queue_incoming_modifier(target_id, percent=float(pct or 0.0), turns=1, source=bot_attack_name)
-                            if sequence:
-                                seq_text = " -> ".join(f"{int(round(float(p) * 100))}%" for p in sequence)
-                                self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, f"Block-Sequenz vorbereitet: {seq_text}."))
-                    elif eff_type == "damage_reduction_flat":
-                        amount = int(effect.get("amount", 0) or 0)
-                        turns = int(effect.get("turns", 1) or 1)
-                        self.queue_incoming_modifier(target_id, flat=amount, turns=turns, source=bot_attack_name)
-                        self._append_effect_event(
-                            bot_effect_events,
-                            _effect_source_text(bot_attack_name, f"Eingehender Schaden reduziert um {amount} ({turns} Runde(n))."),
-                        )
-                    elif eff_type == "enemy_next_attack_reduction_percent":
-                        percent = float(effect.get("percent", 0.0) or 0.0)
-                        turns = int(effect.get("turns", 1) or 1)
-                        self.queue_outgoing_attack_modifier(target_id, percent=percent, turns=turns, source=bot_attack_name)
-                        self._append_effect_event(
-                            bot_effect_events,
-                            _effect_source_text(bot_attack_name, f"Nächster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden."),
-                        )
-                    elif eff_type == "enemy_next_attack_reduction_flat":
-                        amount = int(effect.get("amount", 0) or 0)
-                        turns = int(effect.get("turns", 1) or 1)
-                        self.queue_outgoing_attack_modifier(target_id, flat=amount, turns=turns, source=bot_attack_name)
-                        self._append_effect_event(
-                            bot_effect_events,
-                            _effect_source_text(bot_attack_name, f"Nächster gegnerischer Angriff: -{amount} Schaden (mit Überlauf-Rückstoß)."),
-                        )
-                    elif eff_type == "reflect":
-                        reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
-                        reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
-                        reflect_flat = int(effect.get("flat", 0) or 0)
-                        self.queue_incoming_modifier(
-                            target_id,
-                            percent=reduce_percent,
-                            reflect=reflect_ratio,
-                            flat=0,
-                            turns=1,
-                            source=bot_attack_name,
-                        )
-                        if self.incoming_modifiers.get(target_id):
-                            self.incoming_modifiers[target_id][-1]["reflect_flat"] = reflect_flat
-                        reduce_pct = int(round(max(0.0, reduce_percent) * 100))
-                        reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
-                        flat_text = f" und {reflect_flat} fixer Rückschaden ausgelöst werden" if reflect_flat > 0 else ""
-                        self._append_effect_event(
-                            bot_effect_events,
-                            _effect_source_text(
-                                bot_attack_name,
-                                f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert, {reflect_pct}% des verhinderten Schadens werden zurückgeworfen{flat_text}.",
+                            _outgoing_reduction_effect_text(
+                                int(actual_damage),
+                                int(reduced_damage),
+                                source=modifier_source or None,
                             ),
                         )
-                    elif eff_type == "absorb_store":
-                        percent = float(effect.get("percent", 0.0) or 0.0)
-                        max_store = effect.get("max_store")
-                        self.queue_incoming_modifier(
-                            target_id,
-                            percent=percent,
-                            store_ratio=1.0,
-                            max_store=(int(max_store) if max_store is not None else None),
-                            turns=1,
-                            source=bot_attack_name,
-                        )
-                        self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Absorption aktiv: Verhinderter Schaden wird gespeichert."))
-                    elif eff_type == "cap_damage":
-                        cap_setting = effect.get("max_damage", 0)
-                        if str(cap_setting).strip().lower() == "attack_min":
-                            self.queue_incoming_modifier(target_id, cap="attack_min", turns=1, source=bot_attack_name)
-                            self._append_effect_event(
-                                bot_effect_events,
-                                _effect_source_text(bot_attack_name, "Schadenslimit aktiv: Nächster Treffer wird auf dessen Mindestschaden begrenzt."),
-                            )
-                        else:
-                            max_damage = int(cap_setting or 0)
-                            self.queue_incoming_modifier(target_id, cap=max_damage, turns=1, source=bot_attack_name)
-                            self._append_effect_event(
-                                bot_effect_events,
-                                _effect_source_text(bot_attack_name, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nächsten Treffer."),
-                            )
-                    elif eff_type == "evade":
-                        counter = int(effect.get("counter", 0) or 0)
-                        self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1, source=bot_attack_name)
-                        self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
-                    elif eff_type == "special_lock":
-                        turns = max(1, int(effect.get("turns", 1) or 1))
-                        self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), turns)
-                        self._append_effect_event(bot_effect_events, f"Spezialfähigkeiten des Gegners sind für {turns} Runde(n) gesperrt.")
-                    elif eff_type == "blind":
-                        miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
-                        self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
-                        self._append_effect_event(bot_effect_events, f"Blendung aktiv: {int(round(miss_chance * 100))}% Verfehlchance beim nächsten Angriff.")
-                    elif eff_type == "regen":
-                        turns = int(effect.get("turns", 1) or 1)
-                        heal = int(effect.get("heal", 0) or 0)
-                        self.active_effects[target_id].append({"type": "regen", "duration": turns, "heal": heal, "applier": 0})
-                        self._append_effect_event(bot_effect_events, f"Regeneration aktiviert: +{heal} HP für {turns} Runde(n).")
-                    elif eff_type == "heal":
-                        heal_data_effect = effect.get("amount", 0)
-                        heal_amount = _random_int_from_range(heal_data_effect)
-                        healed_effect = self.heal_player(target_id, heal_amount)
-                        if healed_effect > 0:
-                            self._append_effect_event(bot_effect_events, f"Heileffekt: +{healed_effect} HP.")
-                    elif eff_type == "mix_heal_or_max":
-                        _apply_mix_heal_or_max_effect(self, target_id, effect, bot_effect_events)
-                    elif eff_type == "delayed_defense_after_next_attack":
-                        defense_mode = str(effect.get("defense", "")).strip().lower()
-                        counter = int(effect.get("counter", 0) or 0)
-                        self.queue_delayed_defense(target_id, defense_mode, counter=counter, source=bot_attack_name)
-                        self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Schutz vorbereitet: Wird nach dem nächsten eigenen Angriff aktiv."))
-                    elif eff_type == "airborne_two_phase":
-                        self.start_airborne_two_phase(
-                            target_id,
-                            effect.get("landing_damage", [20, 40]),
+                        actual_damage = reduced_damage
+                    if overflow_self_damage > 0:
+                        modifier_source = str((outgoing_modifier or {}).get("source") or "").strip()
+                        self._apply_non_heal_damage_with_event(
                             bot_effect_events,
-                            landing_attack=(effect.get("landing_attack") if isinstance(effect.get("landing_attack"), dict) else None),
-                            source_attack_index=best_index if not is_forced_bot_landing else None,
-                            cooldown_turns=int(attack.get("cooldown_turns", 0) or 0),
+                            0,
+                            overflow_self_damage,
+                            source=_overflow_recoil_source(modifier_source or None),
+                            self_damage=True,
                         )
-                # Kein separater Log – Effekte werden inline in der Angriffszeile angezeigt
-    
-                if self.battle_log_message:
-                    log_embed = self.battle_log_message.embeds[0] if self.battle_log_message.embeds else create_battle_log_embed()
-                    log_embed = update_battle_log(
-                        log_embed,
-                        self.bot_card["name"],
-                        self.player_card["name"],
-                        bot_attack_name,
+                    if actual_damage <= 0:
+                        is_critical = False
+
+                    incoming_raw_damage = int(actual_damage)
+                    absorbed_before = int(self.absorbed_damage.get(self.user_id, 0) or 0)
+                    final_damage, reflected_damage, dodged, counter_damage, incoming_modifier = self._resolve_incoming_modifiers_with_details(
+                        self.user_id,
                         actual_damage,
-                        is_critical,
-                        "Bot",
-                        interaction.user,
-                        self.round_counter,
-                        self.player_hp,
-                        attacker_remaining_hp=self.bot_hp,
-                        pre_effect_damage=pre_burn_total_player,
-                        attacker_status_icons=self._status_icons(0),
-                        defender_status_icons=self._status_icons(self.user_id),
-                        effect_events=bot_effect_events,
+                        ignore_evade=(guaranteed_hit and not self.has_airborne(self.user_id)),
+                        incoming_min_damage=min_damage,
                     )
-                    await self._safe_edit_battle_log(log_embed)
-                await self._log_mission_attack_event(
-                    attacker_user_id=0,
-                    defender_user_id=self.user_id,
-                    attacker_name=self.bot_card["name"],
-                    attack_name=bot_attack_name,
-                    actual_damage=int(actual_damage or 0),
-                    is_critical=bool(is_critical),
-                    round_number=int(self.round_counter),
-                    defender_remaining_hp=int(self.player_hp),
-                    attacker_remaining_hp=int(self.bot_hp),
-                    pre_effect_damage=int(pre_burn_total_player or 0),
-                    self_hit_damage=int(self_damage if not bot_hits_enemy and 'self_damage' in locals() else 0),
-                    effect_events=bot_effect_events,
+                    absorbed_after = int(self.absorbed_damage.get(self.user_id, 0) or 0)
+                    self._append_incoming_resolution_events(
+                        bot_effect_events,
+                        defender_name=self.player_card["name"],
+                        raw_damage=incoming_raw_damage,
+                        final_damage=int(final_damage),
+                        reflected_damage=int(reflected_damage),
+                        dodged=bool(dodged),
+                        counter_damage=int(counter_damage),
+                        modifier_details=incoming_modifier,
+                        absorbed_before=absorbed_before,
+                        absorbed_after=absorbed_after,
+                    )
+                    if dodged:
+                        readable_source = _readable_effect_source((incoming_modifier or {}).get("source"))
+                        miss_reason = f"durch {readable_source}" if readable_source else "durch Ausweichen"
+                        actual_damage = 0
+                        bot_hits_enemy = False
+                        is_critical = False
+                    else:
+                        actual_damage = max(0, int(final_damage))
+                        if actual_damage > 0:
+                            self._apply_non_heal_damage(self.user_id, actual_damage)
+                        else:
+                            is_critical = False
+                    if reflected_damage > 0:
+                        self._apply_non_heal_damage_with_event(
+                            bot_effect_events,
+                            0,
+                            reflected_damage,
+                            source="Reflexions-Rückschaden",
+                            self_damage=False,
+                        )
+                    if counter_damage > 0:
+                        self._apply_non_heal_damage_with_event(
+                            bot_effect_events,
+                            0,
+                            counter_damage,
+                            source="Konter-Rückschaden",
+                            self_damage=False,
+                        )
+                    self._guard_non_heal_damage_result(self.user_id, defender_hp_before, "mission_bot_attack")
+                if not bot_hits_enemy or int(actual_damage or 0) <= 0:
+                    is_critical = False
+
+            self_damage_value = _resolve_self_damage_value(attack.get("self_damage", 0))
+            if self_damage_value > 0:
+                self._apply_non_heal_damage_with_event(
+                    bot_effect_events,
+                    0,
+                    self_damage_value,
+                    source=f"{bot_attack_name} / Rückstoß",
+                    self_damage=True,
                 )
-                if self.airborne_pending_landing.get(self.user_id):
-                    self._consume_airborne_evade_marker(self.user_id)
-    
-                if (not is_forced_bot_landing) and (not is_bot_reload_action) and attack.get("requires_reload"):
-                    self.set_reload_needed(0, best_index, True)
-    
-                if self.special_lock_next_turn.get(0, 0) > 0:
-                    self.special_lock_next_turn[0] = max(0, self.special_lock_next_turn.get(0, 0) - 1)
-    
-                if self.player_hp <= 0:
-                    self.result = False
-                    self.stop()
-                    await self._complete_wave(
-                        interaction,
-                        message,
-                        won=False,
-                        detail_text=f"❌ **Welle {self.wave_num} verloren!** **{self.bot_card['name']}** hat dich besiegt!",
+
+            heal_data = attack.get("heal")
+            if heal_data is not None:
+                heal_chance = float(attack.get("heal_chance", 1.0) or 1.0)
+                if random.random() <= heal_chance:
+                    heal_amount = _random_int_from_range(heal_data)
+                    healed_now = self.heal_player(0, heal_amount)
+                    if healed_now > 0:
+                        self._append_effect_event(bot_effect_events, f"Heilung: +{healed_now} HP.")
+
+            lifesteal_ratio = float(attack.get("lifesteal_ratio", 0.0) or 0.0)
+            if lifesteal_ratio > 0 and bot_hits_enemy and actual_damage > 0:
+                lifesteal_heal = self.heal_player(0, int(round(actual_damage * lifesteal_ratio)))
+                if lifesteal_heal > 0:
+                    self._append_effect_event(bot_effect_events, f"Lebensraub: +{lifesteal_heal} HP.")
+
+            self.player_hp = max(0, self.player_hp)
+            self.bot_hp = max(0, self.bot_hp)
+            
+            self.round_counter += 1
+
+            if not is_bot_reload_action:
+                self.activate_delayed_defense_after_attack(
+                    0,
+                    bot_effect_events,
+                    attack_landed=bool(bot_hits_enemy and int(actual_damage or 0) > 0),
+                )
+
+            # SIDE EFFECTS: Apply new effects from bot attack
+            effects = attack.get("effects", [])
+            bot_burning_duration_for_dynamic_cooldown: int | None = None
+            for effect in effects:
+                # 70% Fix-Chance für Verwirrung
+                chance = 0.7 if effect.get('type') == 'confusion' else effect.get('chance', 1.0)
+                if random.random() >= chance:
+                    continue
+                target = effect.get("target", "enemy")
+                target_id = 0 if target == "self" else self.user_id
+                eff_type = effect.get("type")
+                if target != "self" and not bot_hits_enemy and eff_type not in {"stun"}:
+                    continue
+                if eff_type == "stealth":
+                    self.grant_stealth(target_id)
+                    self._append_effect_event(bot_effect_events, "Schutz aktiv: Der nächste gegnerische Angriff wird geblockt.")
+                elif eff_type == 'burning':
+                    duration = _random_int_from_range(effect.get("duration"), default=1)
+                    burn_damage = _effect_int(effect, "damage")
+                    new_effect: dict[str, object] = {
+                        'type': 'burning',
+                        'duration': duration,
+                        'damage': burn_damage,
+                        'applier': 0
+                    }
+                    self.active_effects[target_id].append(new_effect)
+                    if attack.get("cooldown_from_burning_plus") is not None:
+                        prev_duration = bot_burning_duration_for_dynamic_cooldown or 0
+                        bot_burning_duration_for_dynamic_cooldown = max(prev_duration, duration)
+                    self._append_effect_event(bot_effect_events, f"Verbrennung aktiv: {burn_damage} Schaden für {duration} Runden.")
+                elif eff_type == 'confusion':
+                    self.set_confusion(target_id, 0)
+                    self._append_effect_event(bot_effect_events, "Verwirrung wurde angewendet.")
+                elif eff_type == "stun":
+                    self.stunned_next_turn[target_id] = True
+                    self._append_effect_event(bot_effect_events, "Betäubung: Der Gegner setzt den nächsten Zug aus.")
+                elif eff_type == "damage_boost":
+                    amount = int(effect.get("amount", 0) or 0)
+                    uses = int(effect.get("uses", 1) or 1)
+                    self.pending_flat_bonus[target_id] = max(self.pending_flat_bonus.get(target_id, 0), amount)
+                    self.pending_flat_bonus_uses[target_id] = max(self.pending_flat_bonus_uses.get(target_id, 0), uses)
+                    self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, f"Schadensbonus aktiv: +{amount} für {uses} Angriff(e)."))
+                elif eff_type == "damage_multiplier":
+                    mult = float(effect.get("multiplier", 1.0) or 1.0)
+                    uses = int(effect.get("uses", 1) or 1)
+                    self.pending_multiplier[target_id] = max(self.pending_multiplier.get(target_id, 1.0), mult)
+                    self.pending_multiplier_uses[target_id] = max(self.pending_multiplier_uses.get(target_id, 0), uses)
+                    pct = int(round((mult - 1.0) * 100))
+                    if pct > 0:
+                        self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, f"Nächster Angriff macht +{pct}% Schaden."))
+                elif eff_type == "force_max":
+                    uses = int(effect.get("uses", 1) or 1)
+                    self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
+                    self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Nächster Angriff verursacht Maximalschaden."))
+                elif eff_type == "guaranteed_hit":
+                    uses = int(effect.get("uses", 1) or 1)
+                    self.guaranteed_hit_next[target_id] = max(self.guaranteed_hit_next.get(target_id, 0), uses)
+                    self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Nächster Angriff trifft garantiert."))
+                elif eff_type == "damage_reduction":
+                    percent = float(effect.get("percent", 0.0) or 0.0)
+                    turns = int(effect.get("turns", 1) or 1)
+                    self.queue_incoming_modifier(target_id, percent=percent, turns=turns, source=bot_attack_name)
+                    self._append_effect_event(
+                        bot_effect_events,
+                        _effect_source_text(bot_attack_name, f"Eingehender Schaden reduziert um {int(round(percent * 100))}% ({turns} Runde(n))."),
                     )
-                    return
-    
-                if not is_forced_bot_landing:
-                    # Cooldown für Bot (kartenspezifisch oder stark)
-                    dynamic_cooldown_turns = _resolve_dynamic_cooldown_from_burning(
-                        attack,
-                        bot_burning_duration_for_dynamic_cooldown,
+                elif eff_type == "damage_reduction_sequence":
+                    sequence = effect.get("sequence", [])
+                    if isinstance(sequence, list):
+                        for pct in sequence:
+                            self.queue_incoming_modifier(target_id, percent=float(pct or 0.0), turns=1, source=bot_attack_name)
+                        if sequence:
+                            seq_text = " -> ".join(f"{int(round(float(p) * 100))}%" for p in sequence)
+                            self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, f"Block-Sequenz vorbereitet: {seq_text}."))
+                elif eff_type == "damage_reduction_flat":
+                    amount = int(effect.get("amount", 0) or 0)
+                    turns = int(effect.get("turns", 1) or 1)
+                    self.queue_incoming_modifier(target_id, flat=amount, turns=turns, source=bot_attack_name)
+                    self._append_effect_event(
+                        bot_effect_events,
+                        _effect_source_text(bot_attack_name, f"Eingehender Schaden reduziert um {amount} ({turns} Runde(n))."),
                     )
-                    custom_cooldown_turns = _resolve_final_damage_cooldown_turns(attack, actual_damage)
-                    starts_after_landing = _starts_cooldown_after_landing(attack)
-                    if dynamic_cooldown_turns > 0:
-                        current_cd = self.bot_attack_cooldowns.get(best_index, 0)
-                        self.bot_attack_cooldowns[best_index] = max(current_cd, dynamic_cooldown_turns)
-                        bonus_for_dynamic_cd = max(0, int(attack.get("cooldown_from_burning_plus", 0) or 0))
+                elif eff_type == "enemy_next_attack_reduction_percent":
+                    percent = float(effect.get("percent", 0.0) or 0.0)
+                    turns = int(effect.get("turns", 1) or 1)
+                    self.queue_outgoing_attack_modifier(target_id, percent=percent, turns=turns, source=bot_attack_name)
+                    self._append_effect_event(
+                        bot_effect_events,
+                        _effect_source_text(bot_attack_name, f"Nächster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden."),
+                    )
+                elif eff_type == "enemy_next_attack_reduction_flat":
+                    amount = int(effect.get("amount", 0) or 0)
+                    turns = int(effect.get("turns", 1) or 1)
+                    self.queue_outgoing_attack_modifier(target_id, flat=amount, turns=turns, source=bot_attack_name)
+                    self._append_effect_event(
+                        bot_effect_events,
+                        _effect_source_text(bot_attack_name, f"Nächster gegnerischer Angriff: -{amount} Schaden (mit Überlauf-Rückstoß)."),
+                    )
+                elif eff_type == "reflect":
+                    reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
+                    reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
+                    reflect_flat = int(effect.get("flat", 0) or 0)
+                    self.queue_incoming_modifier(
+                        target_id,
+                        percent=reduce_percent,
+                        reflect=reflect_ratio,
+                        flat=0,
+                        turns=1,
+                        source=bot_attack_name,
+                    )
+                    if self.incoming_modifiers.get(target_id):
+                        self.incoming_modifiers[target_id][-1]["reflect_flat"] = reflect_flat
+                    reduce_pct = int(round(max(0.0, reduce_percent) * 100))
+                    reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
+                    flat_text = f" und {reflect_flat} fixer Rückschaden ausgelöst werden" if reflect_flat > 0 else ""
+                    self._append_effect_event(
+                        bot_effect_events,
+                        _effect_source_text(
+                            bot_attack_name,
+                            f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert, {reflect_pct}% des verhinderten Schadens werden zurückgeworfen{flat_text}.",
+                        ),
+                    )
+                elif eff_type == "absorb_store":
+                    percent = float(effect.get("percent", 0.0) or 0.0)
+                    max_store = effect.get("max_store")
+                    self.queue_incoming_modifier(
+                        target_id,
+                        percent=percent,
+                        store_ratio=1.0,
+                        max_store=(int(max_store) if max_store is not None else None),
+                        turns=1,
+                        source=bot_attack_name,
+                    )
+                    self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Absorption aktiv: Verhinderter Schaden wird gespeichert."))
+                elif eff_type == "cap_damage":
+                    cap_setting = effect.get("max_damage", 0)
+                    if str(cap_setting).strip().lower() == "attack_min":
+                        self.queue_incoming_modifier(target_id, cap="attack_min", turns=1, source=bot_attack_name)
                         self._append_effect_event(
                             bot_effect_events,
-                            f"Gammastrahl-Abklingzeit: {dynamic_cooldown_turns} (Effektdauer {bot_burning_duration_for_dynamic_cooldown} + {bonus_for_dynamic_cd}).",
+                            _effect_source_text(bot_attack_name, "Schadenslimit aktiv: Nächster Treffer wird auf dessen Mindestschaden begrenzt."),
                         )
-                        self.reduce_cooldowns_bot()
-                    elif (not starts_after_landing) and custom_cooldown_turns > 0:
-                        current_cd = self.bot_attack_cooldowns.get(best_index, 0)
-                        self.bot_attack_cooldowns[best_index] = max(current_cd, custom_cooldown_turns)
-                        self.reduce_cooldowns_bot()
-                    elif self.mission_is_strong_attack(damage, dmg_buff_bot):
-                        self.start_attack_cooldown_bot(best_index, 2)
-                        # Reduziere Cooldowns für den Bot direkt nach seinem Zug (entspricht /kampf)
-                        self.reduce_cooldowns_bot()
-                else:
-                    landing_cd_index = forced_bot_landing_attack.get("cooldown_attack_index")
-                    landing_cd_turns = int(forced_bot_landing_attack.get("cooldown_turns", 0) or 0)
-                    if isinstance(landing_cd_index, int) and landing_cd_index >= 0 and landing_cd_turns > 0:
-                        current_cd = self.bot_attack_cooldowns.get(landing_cd_index, 0)
-                        self.bot_attack_cooldowns[landing_cd_index] = max(current_cd, landing_cd_turns)
-                        # Reduziere Cooldowns für den Bot direkt nach seinem Zug (entspricht /kampf)
-                        self.reduce_cooldowns_bot()
+                    else:
+                        max_damage = int(cap_setting or 0)
+                        self.queue_incoming_modifier(target_id, cap=max_damage, turns=1, source=bot_attack_name)
+                        self._append_effect_event(
+                            bot_effect_events,
+                            _effect_source_text(bot_attack_name, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nächsten Treffer."),
+                        )
+                elif eff_type == "evade":
+                    counter = int(effect.get("counter", 0) or 0)
+                    self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1, source=bot_attack_name)
+                    self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
+                elif eff_type == "special_lock":
+                    turns = max(1, int(effect.get("turns", 1) or 1))
+                    self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), turns)
+                    self._append_effect_event(bot_effect_events, f"Spezialfähigkeiten des Gegners sind für {turns} Runde(n) gesperrt.")
+                elif eff_type == "blind":
+                    miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
+                    self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
+                    self._append_effect_event(bot_effect_events, f"Blendung aktiv: {int(round(miss_chance * 100))}% Verfehlchance beim nächsten Angriff.")
+                elif eff_type == "regen":
+                    turns = int(effect.get("turns", 1) or 1)
+                    heal = int(effect.get("heal", 0) or 0)
+                    self.active_effects[target_id].append({"type": "regen", "duration": turns, "heal": heal, "applier": 0})
+                    self._append_effect_event(bot_effect_events, f"Regeneration aktiviert: +{heal} HP für {turns} Runde(n).")
+                elif eff_type == "heal":
+                    heal_data_effect = effect.get("amount", 0)
+                    heal_amount = _random_int_from_range(heal_data_effect)
+                    healed_effect = self.heal_player(target_id, heal_amount)
+                    if healed_effect > 0:
+                        self._append_effect_event(bot_effect_events, f"Heileffekt: +{healed_effect} HP.")
+                elif eff_type == "mix_heal_or_max":
+                    _apply_mix_heal_or_max_effect(self, target_id, effect, bot_effect_events)
+                elif eff_type == "delayed_defense_after_next_attack":
+                    defense_mode = str(effect.get("defense", "")).strip().lower()
+                    counter = int(effect.get("counter", 0) or 0)
+                    self.queue_delayed_defense(target_id, defense_mode, counter=counter, source=bot_attack_name)
+                    self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Schutz vorbereitet: Wird nach dem nächsten eigenen Angriff aktiv."))
+                elif eff_type == "airborne_two_phase":
+                    self.start_airborne_two_phase(
+                        target_id,
+                        effect.get("landing_damage", [20, 40]),
+                        bot_effect_events,
+                        landing_attack=(effect.get("landing_attack") if isinstance(effect.get("landing_attack"), dict) else None),
+                        source_attack_index=best_index if not is_forced_bot_landing else None,
+                        cooldown_turns=int(attack.get("cooldown_turns", 0) or 0),
+                    )
+            # Kein separater Log – Effekte werden inline in der Angriffszeile angezeigt
+
+            _prepend_action_context_events(
+                bot_effect_events,
+                action_type=action_type,
+                actual_damage=int(actual_damage or 0),
+                miss_reason=miss_reason,
+                heal_amount=_extract_heal_amount_from_events(bot_effect_events),
+                is_reload_action=is_bot_reload_action,
+            )
+            
+            if self.battle_log_message:
+                log_embed = self.battle_log_message.embeds[0] if self.battle_log_message.embeds else create_battle_log_embed()
+                log_embed = update_battle_log(
+                    log_embed,
+                    self.bot_card["name"],
+                    self.player_card["name"],
+                    bot_attack_name,
+                    actual_damage,
+                    is_critical,
+                    "Bot",
+                    interaction.user,
+                    self.round_counter,
+                    self.player_hp,
+                    attacker_remaining_hp=self.bot_hp,
+                    pre_effect_damage=pre_burn_total_player,
+                    attacker_status_icons=self._status_icons(0),
+                    defender_status_icons=self._status_icons(self.user_id),
+                    effect_events=bot_effect_events,
+                )
+                await self._safe_edit_battle_log(log_embed)
+            await self._log_mission_attack_event(
+                attacker_user_id=0,
+                defender_user_id=self.user_id,
+                attacker_name=self.bot_card["name"],
+                attack_name=bot_attack_name,
+                actual_damage=int(actual_damage or 0),
+                is_critical=bool(is_critical),
+                round_number=int(self.round_counter),
+                defender_remaining_hp=int(self.player_hp),
+                attacker_remaining_hp=int(self.bot_hp),
+                pre_effect_damage=int(pre_burn_total_player or 0),
+                self_hit_damage=int(self_damage if not bot_hits_enemy and 'self_damage' in locals() else 0),
+                effect_events=bot_effect_events,
+            )
+            if self.airborne_pending_landing.get(self.user_id):
+                self._consume_airborne_evade_marker(self.user_id)
+
+            if (not is_forced_bot_landing) and (not is_bot_reload_action) and attack.get("requires_reload"):
+                self.set_reload_needed(0, best_index, True)
+
+            if self.special_lock_next_turn.get(0, 0) > 0:
+                self.special_lock_next_turn[0] = max(0, self.special_lock_next_turn.get(0, 0) - 1)
+
+            if self.player_hp <= 0:
+                self.result = False
+                self.stop()
+                await self._complete_wave(
+                    interaction,
+                    message,
+                    won=False,
+                    detail_text=f"❌ **Welle {self.wave_num} verloren!** **{self.bot_card['name']}** hat dich besiegt!",
+                )
+                return
+
+            if not is_forced_bot_landing:
+                # Cooldown für Bot (kartenspezifisch oder stark)
+                dynamic_cooldown_turns = _resolve_dynamic_cooldown_from_burning(
+                    attack,
+                    bot_burning_duration_for_dynamic_cooldown,
+                )
+                custom_cooldown_turns = _resolve_final_damage_cooldown_turns(attack, actual_damage)
+                starts_after_landing = _starts_cooldown_after_landing(attack)
+                if dynamic_cooldown_turns > 0:
+                    current_cd = self.bot_attack_cooldowns.get(best_index, 0)
+                    self.bot_attack_cooldowns[best_index] = max(current_cd, dynamic_cooldown_turns)
+                    bonus_for_dynamic_cd = max(0, int(attack.get("cooldown_from_burning_plus", 0) or 0))
+                    self._append_effect_event(
+                        bot_effect_events,
+                        f"Gammastrahl-Abklingzeit: {dynamic_cooldown_turns} (Effektdauer {bot_burning_duration_for_dynamic_cooldown} + {bonus_for_dynamic_cd}).",
+                    )
+                    self.reduce_cooldowns_bot()
+                elif (not starts_after_landing) and custom_cooldown_turns > 0:
+                    current_cd = self.bot_attack_cooldowns.get(best_index, 0)
+                    self.bot_attack_cooldowns[best_index] = max(current_cd, custom_cooldown_turns)
+                    self.reduce_cooldowns_bot()
+                elif self.mission_is_strong_attack(damage, dmg_buff_bot):
+                    self.start_attack_cooldown_bot(best_index, 2)
+                    # Reduziere Cooldowns für den Bot direkt nach seinem Zug (entspricht /kampf)
+                    self.reduce_cooldowns_bot()
+            else:
+                landing_cd_index = forced_bot_landing_attack.get("cooldown_attack_index")
+                landing_cd_turns = int(forced_bot_landing_attack.get("cooldown_turns", 0) or 0)
+                if isinstance(landing_cd_index, int) and landing_cd_index >= 0 and landing_cd_turns > 0:
+                    current_cd = self.bot_attack_cooldowns.get(landing_cd_index, 0)
+                    self.bot_attack_cooldowns[landing_cd_index] = max(current_cd, landing_cd_turns)
+                    # Reduziere Cooldowns für den Bot direkt nach seinem Zug (entspricht /kampf)
+                    self.reduce_cooldowns_bot()
     
-                # Reduce Cooldowns for User nach Bot-Zug
-                self.reduce_cooldowns_user()
+            # Reduce Cooldowns for User nach Bot-Zug
+            self.reduce_cooldowns_user()
     
-                # Update UI für nächsten Spieler-Zug
-                embed = discord.Embed(title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
-                                      description=f"Bot hat **{bot_attack_name}** verwendet! Dein HP: {self.player_hp}\nDu bist wieder an der Reihe!")
-                player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
-                bot_label = f"🟦 Bot Karte{self._status_icons(0)}"
-                embed.add_field(name=player_label, value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
-                embed.add_field(name=bot_label, value=f"{self.bot_card['name']}\nHP: {self.bot_hp}", inline=True)
-                embed.set_image(url=self.player_card["bild"])
-                embed.set_thumbnail(url=self.bot_card["bild"])
-                _add_attack_info_field(embed, self.player_card)
+            # Update UI für nächsten Spieler-Zug
+            embed = discord.Embed(title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
+                                  description=f"Bot hat **{bot_attack_name}** verwendet! Dein HP: {self.player_hp}\nDu bist wieder an der Reihe!")
+            player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
+            bot_label = f"🟦 Bot Karte{self._status_icons(0)}"
+            embed.add_field(name=player_label, value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
+            embed.add_field(name=bot_label, value=f"{self.bot_card['name']}\nHP: {self.bot_hp}", inline=True)
+            embed.set_image(url=self.player_card["bild"])
+            embed.set_thumbnail(url=self.bot_card["bild"])
+            _add_attack_info_field(embed, self.player_card)
     
-                # Update attack buttons für neuen Spieler-Zug
-                self.update_attack_buttons_mission()
+            # Update attack buttons für neuen Spieler-Zug
+            self.update_attack_buttons_mission()
     
-                if message is not None:
-                    await interaction.followup.edit_message(message.id, embed=embed, view=self)
-                    await self.persist_session(interaction.channel, status="active", battle_message=message)
-                else:
-                    await interaction.followup.send(embed=embed, view=self, ephemeral=True)
+            if message is not None:
+                await interaction.followup.edit_message(message.id, embed=embed, view=self)
+                await self.persist_session(interaction.channel, status="active", battle_message=message)
+            else:
+                await interaction.followup.send(embed=embed, view=self, ephemeral=True)
         else:
             # Bot hat keine Attacken verfügbar (alle auf Cooldown) - überspringe Bot-Zug
             if self.airborne_pending_landing.get(self.user_id):
