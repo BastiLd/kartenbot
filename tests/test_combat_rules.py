@@ -1835,8 +1835,8 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
             await self._execute_player_attack_without_buffs(view)
         full_log = view._full_battle_log_text()
         self.assertNotIn("VOLLTREFFER", full_log)
-        self.assertIn("Ausgehende Reduktion: Normal waeren 20 Schaden moeglich gewesen, durch Schwerkraft-Mine jetzt 0 Schaden.", full_log)
-        self.assertIn("Ueberlauf-Rueckstoss durch Schwerkraft-Mine: 10 Selbstschaden.", full_log)
+        self.assertIn("Ausgehende Reduktion: Normal wären 20 Schaden möglich gewesen, durch Schwerkraft-Mine jetzt 0 Schaden.", full_log)
+        self.assertIn("Überlauf-Rückstoß durch Schwerkraft-Mine: 10 Selbstschaden.", full_log)
         self.assertIn("hat jetzt noch 130 Leben", full_log)
 
     async def test_blind_miss_logs_action_type_and_reason(self) -> None:

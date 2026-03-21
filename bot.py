@@ -359,17 +359,17 @@ def _outgoing_reduction_effect_text(
     source_name = str(_effect_source_name(source)).strip() if source else ""
     if source_name:
         return (
-            f"Ausgehende Reduktion: Normal waeren {before} Schaden moeglich gewesen, "
+            f"Ausgehende Reduktion: Normal wären {before} Schaden möglich gewesen, "
             f"durch {escape_display_text(source_name, fallback='Effekt')} jetzt {after} Schaden."
         )
-    return f"Ausgehende Reduktion: Normal waeren {before} Schaden moeglich gewesen, jetzt {after} Schaden."
+    return f"Ausgehende Reduktion: Normal wären {before} Schaden möglich gewesen, jetzt {after} Schaden."
 
 
 def _overflow_recoil_source(source: object | None = None) -> str:
     source_name = str(_effect_source_name(source)).strip() if source else ""
     if source_name:
-        return f"Ueberlauf-Rueckstoss durch {escape_display_text(source_name, fallback='Effekt')}"
-    return "Ueberlauf-Rueckstoss"
+        return f"Überlauf-Rückstoß durch {escape_display_text(source_name, fallback='Effekt')}"
+    return "Überlauf-Rückstoß"
 
 
 async def _delete_message_quietly(message: discord.Message | None) -> None:
@@ -643,7 +643,7 @@ class KatabumpCommandTree(app_commands.CommandTree):
         allow_channel_bypass = False
         if command_name == "kanal-freigeben":
             allow_channel_bypass = await is_config_admin(interaction)
-        elif command_name == "konfigurieren hinzufuegen":
+        elif command_name == "konfigurieren hinzufügen":
             allow_channel_bypass = await is_config_admin(interaction)
         if interaction.type == discord.InteractionType.autocomplete:
             return channel_allowed or allow_channel_bypass
@@ -687,7 +687,7 @@ def create_bot() -> commands.Bot:
 
 ADMIN_SLASH_COMMANDS = {
     "konfigurieren",
-    "intro-zuruecksetzen",
+    "intro-zurücksetzen",
     "sammlung-ansehen",
     "test-bericht",
     "karte-geben",

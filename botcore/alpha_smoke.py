@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -12,12 +12,12 @@ EXPECTED_ALPHA_COMMANDS = {
     "eingeladen",
     "entwicklerpanel",
     "geschichte",
-    "intro-zuruecksetzen",
+    "intro-zurücksetzen",
     "kampf",
     "kanal-freigeben",
     "karte-geben",
     "konfigurieren entfernen",
-    "konfigurieren hinzufuegen",
+    "konfigurieren hinzufügen",
     "konfigurieren liste",
     "mission",
     "op-verwaltung",

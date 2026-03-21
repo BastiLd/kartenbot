@@ -117,7 +117,7 @@ def register_admin_commands(bot, module: ModuleType) -> dict[str, object]:
             content=f"\u2705 Hinzugef\u00fcgt: {getattr(interaction.channel, "mention", "#unbekannt")}",
         )
 
-    @configure_group.command(name="hinzufuegen", description="Nur f\u00fcr Admins!!!")
+    @configure_group.command(name="hinzufügen", description="Nur f\u00fcr Admins!!!")
     async def configure_add(interaction: discord.Interaction):
         if not await module.is_config_admin(interaction):
             await interaction.response.send_message("\u274c Keine Berechtigung.", ephemeral=True)
@@ -169,7 +169,7 @@ def register_admin_commands(bot, module: ModuleType) -> dict[str, object]:
             await module._send_with_visibility(
                 interaction,
                 visibility_key,
-                content="\u2139\ufe0f Es sind noch keine Kan\u00e4le erlaubt. Nutze `/konfigurieren hinzufuegen` im gew\u00fcnschten Kanal.",
+                content="\u2139\ufe0f Es sind noch keine Kan\u00e4le erlaubt. Nutze `/konfigurieren hinzufügen` im gew\u00fcnschten Kanal.",
             )
             return
         mentions = "\n".join(f"- <#{row[0]}>" for row in rows)
@@ -181,7 +181,7 @@ def register_admin_commands(bot, module: ModuleType) -> dict[str, object]:
 
     bot.tree.add_command(configure_group)
 
-    @bot.tree.command(name="intro-zuruecksetzen", description="Nur f\u00fcr Admins!!!")
+    @bot.tree.command(name="intro-zurücksetzen", description="Nur f\u00fcr Admins!!!")
     async def reset_intro(interaction: discord.Interaction):
         if not await module.is_admin(interaction):
             await interaction.response.send_message("\u274c Keine Berechtigung.", ephemeral=True)
@@ -598,7 +598,7 @@ def register_admin_commands(bot, module: ModuleType) -> dict[str, object]:
         if not await module.is_channel_allowed(interaction):
             return
         visibility_key = module.command_visibility_key_for_interaction(interaction)
-        embed = discord.Embed(title="Panel", description="Hauptmen?")
+        embed = discord.Embed(title="Panel", description="Hauptmenü")
         await module._send_with_visibility(
             interaction,
             visibility_key,
