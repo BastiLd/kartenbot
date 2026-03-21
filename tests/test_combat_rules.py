@@ -38,6 +38,23 @@ def _find_attack(card: dict, attack_name: str) -> dict:
     raise AssertionError(f"Attack not found: {card.get('name')} / {attack_name}")
 
 
+def _owned_unique_cards(limit: int) -> list[tuple[str, int]]:
+    rows: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    for card in karten:
+        base_name = str(card.get("base_name") or card.get("name") or "").strip()
+        card_name = str(card.get("name") or "").strip()
+        if not base_name or not card_name or base_name in seen:
+            continue
+        seen.add(base_name)
+        rows.append((card_name, 1))
+        if len(rows) >= limit:
+            break
+    if len(rows) < limit:
+        raise AssertionError(f"Expected at least {limit} unique cards, found {len(rows)}")
+    return rows
+
+
 class CardSpecTests(unittest.IsolatedAsyncioTestCase):
     def test_all_attacks_have_info(self) -> None:
         for card in karten:
@@ -435,13 +452,17 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
     def test_buff_select_prepends_change_card_option(self) -> None:
         card = {"name": "Iron-Man", "hp": 70, "attacks": [{"name": "Repulsor", "damage": [10, 20]}]}
         select = bot_module.BuffTypeSelect(10, "Iron-Man", card, [])
+        option_values = [str(opt.value) for opt in select.options]
         self.assertGreaterEqual(len(select.options), 2)
-        self.assertEqual(str(select.options[0].value), "change_card")
+        self.assertEqual(option_values[0], "change_card")
         self.assertEqual(str(select.options[0].label), "Held wechseln")
+        self.assertNotIn("cancel", option_values)
 
     async def test_buff_select_change_card_returns_to_card_picker(self) -> None:
-        card = {"name": "Iron-Man", "hp": 70, "attacks": [{"name": "Repulsor", "damage": [10, 20]}]}
-        select = bot_module.BuffTypeSelect(10, "Iron-Man", card, [])
+        selected_name = "Iron-Man"
+        card = await bot_module.get_karte_by_name(selected_name)
+        assert card is not None
+        select = bot_module.BuffTypeSelect(10, selected_name, card, [])
         select._values = ["change_card"]
 
         interaction = SimpleNamespace(
@@ -449,14 +470,20 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
             response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock()),
         )
 
-        with patch("bot.get_user_karten", new=AsyncMock(return_value=[("Iron-Man", 1)])):
+        with patch("bot.get_user_karten", new=AsyncMock(return_value=_owned_unique_cards(3))):
             await select.callback(interaction)
 
         interaction.response.send_message.assert_not_awaited()
         interaction.response.edit_message.assert_awaited_once()
         kwargs = interaction.response.edit_message.await_args.kwargs
-        self.assertEqual(kwargs["embed"].title, "🎯 Karte auswählen")
-        self.assertIsInstance(kwargs["view"], bot_module.FuseCardSelectView)
+        next_view = kwargs["view"]
+        self.assertIsInstance(next_view, bot_module.FuseCardSelectView)
+        self.assertEqual(next_view.mode, "root")
+        self.assertEqual(
+            [str(opt.value) for opt in next_view.action_select.options],
+            [bot_module.FUSE_CARD_ACTION_SEARCH, bot_module.FUSE_CARD_ACTION_BROWSE_ALL],
+        )
+        next_view.stop()
 
     def test_upgrade_views_include_cancel_button(self) -> None:
         card = {"name": "Iron-Man", "hp": 70, "attacks": [{"name": "Repulsor", "damage": [10, 20]}]}
@@ -473,21 +500,205 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
                     if isinstance(item, bot_module.ui.Button) and str(getattr(item, "label", "")) == "Abbrechen"
                 ]
                 self.assertEqual(len(cancel_buttons), 1)
-                self.assertEqual(str(cancel_buttons[0].style).lower(), str(bot_module.discord.ButtonStyle.danger).lower())
+                self.assertEqual(cancel_buttons[0].style, bot_module.discord.ButtonStyle.danger)
         finally:
             for view in views:
                 view.stop()
 
-    def test_upgrade_selects_offer_top_level_cancel_paths(self) -> None:
+    def test_upgrade_selects_keep_cancel_out_of_menus_when_button_exists(self) -> None:
         card = {"name": "Iron-Man", "hp": 70, "attacks": [{"name": "Repulsor", "damage": [10, 20]}]}
-        dust_select = bot_module.DustAmountSelect(10)
-        card_select = bot_module.CardSelect([("Iron-Man", 1)], 10)
-        buff_select = bot_module.BuffTypeSelect(10, "Iron-Man", card, [])
+        root_view = bot_module.FuseCardSelectView(77, 10, [("Iron-Man", 1)])
+        try:
+            dust_values = [str(opt.value) for opt in bot_module.DustAmountSelect(10).options]
+            card_values = [str(opt.value) for opt in root_view.card_select.options]
+            action_values = [str(opt.value) for opt in root_view.action_select.options]
+            buff_values = [str(opt.value) for opt in bot_module.BuffTypeSelect(10, "Iron-Man", card, []).options]
 
-        self.assertEqual(str(dust_select.options[0].value), "__cancel__")
-        self.assertEqual(str(card_select.options[0].value), "__cancel__")
-        self.assertEqual(str(buff_select.options[0].value), "change_card")
-        self.assertEqual(str(buff_select.options[1].value), "cancel")
+            self.assertNotIn("__cancel__", dust_values)
+            self.assertNotIn("__cancel__", card_values)
+            self.assertNotIn("__cancel__", action_values)
+            self.assertNotIn("cancel", buff_values)
+        finally:
+            root_view.stop()
+
+    def test_fuse_root_card_menu_keeps_all_25_real_slots(self) -> None:
+        grouped_cards = [
+            {"base_name": f"Testheld {index}", "total_amount": 1}
+            for index in range(1, 26)
+        ]
+        view = bot_module.FuseCardSelectView(77, 10, [], grouped_cards=grouped_cards)
+        try:
+            actual_values = [str(opt.value) for opt in view.card_select.options]
+
+            self.assertEqual(len(actual_values), 25)
+            self.assertEqual(actual_values, [f"Testheld {index}" for index in range(1, 26)])
+            self.assertEqual(
+                [str(opt.value) for opt in view.action_select.options],
+                [bot_module.FUSE_CARD_ACTION_SEARCH, bot_module.FUSE_CARD_ACTION_BROWSE_ALL],
+            )
+        finally:
+            view.stop()
+
+    async def test_fuse_view_owner_check_blocks_other_users_and_allows_requester(self) -> None:
+        view = bot_module.FuseCardSelectView(77, 10, [("Iron-Man", 1)])
+        try:
+            with patch.object(bot_module.RestrictedView, "interaction_check", new=AsyncMock(return_value=True)), patch(
+                "bot.send_interaction_response",
+                new=AsyncMock(),
+            ) as send_mock:
+                blocked = await view.interaction_check(SimpleNamespace(user=SimpleNamespace(id=88)))
+                allowed = await view.interaction_check(SimpleNamespace(user=SimpleNamespace(id=77)))
+
+            self.assertFalse(blocked)
+            self.assertTrue(allowed)
+            send_mock.assert_awaited_once_with(
+                ANY,
+                content=bot_module.FUSE_OWNER_LOCKED_TEXT,
+                ephemeral=True,
+            )
+        finally:
+            view.stop()
+
+    async def test_fuse_search_modal_owner_check_blocks_other_users(self) -> None:
+        parent_view = bot_module.FuseCardSelectView(77, 10, [("Iron-Man", 1)])
+        try:
+            modal = bot_module.FuseCardSearchModal(
+                77,
+                10,
+                [("Iron-Man", 1)],
+                source_message=None,
+                parent_view=parent_view,
+            )
+            with patch.object(bot_module.RestrictedModal, "interaction_check", new=AsyncMock(return_value=True)), patch(
+                "bot.send_interaction_response",
+                new=AsyncMock(),
+            ) as send_mock:
+                allowed = await modal.interaction_check(SimpleNamespace(user=SimpleNamespace(id=88)))
+
+            self.assertFalse(allowed)
+            send_mock.assert_awaited_once_with(
+                ANY,
+                content=bot_module.FUSE_OWNER_LOCKED_TEXT,
+                ephemeral=True,
+            )
+        finally:
+            parent_view.stop()
+
+    async def test_fuse_browse_all_opens_paged_browser_with_back_and_cancel(self) -> None:
+        grouped_cards = [
+            {"base_name": f"Testheld {index}", "total_amount": 1}
+            for index in range(1, 27)
+        ]
+        root_view = bot_module.FuseCardSelectView(77, 10, [])
+        interaction = SimpleNamespace(response=SimpleNamespace(edit_message=AsyncMock()))
+
+        try:
+            with patch("bot._group_owned_cards_for_current_mode", return_value=grouped_cards):
+                await root_view.handle_action_selection(interaction, bot_module.FUSE_CARD_ACTION_BROWSE_ALL)
+            kwargs = interaction.response.edit_message.await_args.kwargs
+            next_view = kwargs["view"]
+            self.assertIsInstance(next_view, bot_module.FuseCardSelectView)
+            self.assertEqual(next_view.mode, "browse")
+            self.assertEqual([str(opt.value) for opt in next_view.action_select.options], [bot_module.FUSE_CARD_ACTION_BACK])
+            self.assertEqual(len(next_view.card_select.options), 25)
+            self.assertFalse(next_view.next_button.disabled)
+            cancel_buttons = [
+                item for item in next_view.children
+                if isinstance(item, bot_module.ui.Button) and str(getattr(item, "label", "")) == "Abbrechen"
+            ]
+            self.assertEqual(len(cancel_buttons), 1)
+        finally:
+            root_view.stop()
+            if 'next_view' in locals():
+                next_view.stop()
+
+    async def test_fuse_browse_paging_and_back_return_to_root(self) -> None:
+        grouped_cards = [
+            {"base_name": f"Testheld {index}", "total_amount": 1}
+            for index in range(1, 27)
+        ]
+        browse_view = bot_module.FuseCardSelectView(77, 10, [], mode="browse", grouped_cards=grouped_cards)
+        next_interaction = SimpleNamespace(response=SimpleNamespace(edit_message=AsyncMock()))
+        back_interaction = SimpleNamespace(response=SimpleNamespace(edit_message=AsyncMock()))
+
+        try:
+            first_page_values = [str(opt.value) for opt in browse_view.card_select.options]
+            await browse_view._on_next_page(next_interaction)
+            second_page_values = [str(opt.value) for opt in browse_view.card_select.options]
+
+            self.assertEqual(browse_view.page, 1)
+            self.assertEqual(len(second_page_values), 1)
+            self.assertNotEqual(first_page_values, second_page_values)
+            self.assertFalse(browse_view.prev_button.disabled)
+            self.assertTrue(browse_view.next_button.disabled)
+
+            await browse_view.handle_action_selection(back_interaction, bot_module.FUSE_CARD_ACTION_BACK)
+            kwargs = back_interaction.response.edit_message.await_args.kwargs
+            root_view = kwargs["view"]
+            self.assertIsInstance(root_view, bot_module.FuseCardSelectView)
+            self.assertEqual(root_view.mode, "root")
+            self.assertEqual(
+                [str(opt.value) for opt in root_view.action_select.options],
+                [bot_module.FUSE_CARD_ACTION_SEARCH, bot_module.FUSE_CARD_ACTION_BROWSE_ALL],
+            )
+        finally:
+            browse_view.stop()
+            if 'root_view' in locals():
+                root_view.stop()
+
+    def test_fuse_search_helper_finds_similar_names(self) -> None:
+        matches = bot_module._search_fuse_card_groups([("Spider-Man", 1), ("Iron-Man", 1)], "spidr")
+        self.assertGreaterEqual(len(matches), 1)
+        self.assertEqual(str(matches[0].get("base_name") or ""), "Spider-Man")
+
+    async def test_fuse_search_modal_updates_results_in_place(self) -> None:
+        user_cards = [("Spider-Man", 1), ("Iron-Man", 1)]
+        parent_view = bot_module.FuseCardSelectView(77, 10, user_cards)
+        source_message = SimpleNamespace(edit=AsyncMock())
+        interaction = SimpleNamespace(response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()))
+        modal = bot_module.FuseCardSearchModal(
+            77,
+            10,
+            user_cards,
+            source_message=source_message,
+            parent_view=parent_view,
+        )
+        modal.search_input._value = "spidr"
+
+        try:
+            await modal.on_submit(interaction)
+            interaction.response.send_message.assert_not_awaited()
+            interaction.response.defer.assert_awaited_once()
+            source_message.edit.assert_awaited_once()
+            kwargs = source_message.edit.await_args.kwargs
+            result_view = kwargs["view"]
+            self.assertIsInstance(result_view, bot_module.FuseCardSelectView)
+            self.assertEqual(result_view.mode, "search")
+            self.assertEqual([str(opt.value) for opt in result_view.action_select.options], [bot_module.FUSE_CARD_ACTION_BACK])
+            self.assertIn("Spider-Man", [str(opt.value) for opt in result_view.card_select.options])
+        finally:
+            parent_view.stop()
+            if 'result_view' in locals():
+                result_view.stop()
+
+    def test_upgrade_preview_embed_shows_current_values_before_choice(self) -> None:
+        card = {
+            "name": "Testheld",
+            "hp": 70,
+            "attacks": [
+                {"name": "Treffer", "damage": [10, 20]},
+                {"name": "Schlag", "damage": [5, 15]},
+            ],
+        }
+        embed = bot_module._build_fuse_buff_type_embed(
+            "Testheld",
+            card,
+            [("health", 0, 10), ("damage", 1, 5)],
+        )
+        current_values = next(field.value for field in embed.fields if field.name == "Aktuelle Werte")
+        self.assertIn("❤️ Leben aktuell: **80 HP**", current_values)
+        self.assertIn("⚔️ Treffer — 10-25 Schaden (+5 max)", current_values)
+        self.assertIn("⚔️ Schlag — 5-15 Schaden", current_values)
 
     def test_attack_display_parts_show_heal_and_success_style(self) -> None:
         attack = {"name": "Heal", "damage": [0, 0], "heal": [10, 20]}

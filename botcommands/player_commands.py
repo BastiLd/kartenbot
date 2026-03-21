@@ -195,7 +195,7 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
             await module._send_ephemeral(interaction, embed=embed)
             return
 
-        view = module.DustAmountView(user_dust)
+        view = module.DustAmountView(interaction.user.id, user_dust)
         embed = discord.Embed(
             title="\U0001F48E Karten-Verst\u00e4rkung",
             description=(

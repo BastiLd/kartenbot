@@ -8,6 +8,7 @@ import re
 import time
 import os
 from collections import deque
+from difflib import SequenceMatcher
 from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -1350,14 +1351,19 @@ def _build_upgrade_preview_lines(
     return lines
 
 
-def _build_fuse_card_select_embed(dust_amount: int) -> discord.Embed:
+def _build_fuse_card_select_embed(
+    dust_amount: int,
+    *,
+    title: str = "🎯 Karte auswählen",
+    guidance: str = "Wähle die Karte, die du verstärken möchtest:",
+) -> discord.Embed:
     embed = discord.Embed(
-        title="🎯 Karte auswählen",
+        title=title,
         description=(
             f"Du verwendest **{dust_amount} Infinitydust**.\n"
             f"❤️ Leben: **+{FUSE_HEALTH_BONUS}** (max. {FUSE_HP_CAP})\n"
             f"⚔️ Max-Schaden: **+{FUSE_DAMAGE_MAX_BONUS}**\n\n"
-            "Wähle die Karte, die du verstärken möchtest:"
+            f"{guidance}"
         ),
         color=0x9D4EDD,
     )
@@ -6820,18 +6826,98 @@ FUSE_DUST_COST = 10
 FUSE_HEALTH_BONUS = 10
 FUSE_DAMAGE_MAX_BONUS = 5
 FUSE_HP_CAP = 200
+FUSE_CARD_ACTION_SEARCH = "search"
+FUSE_CARD_ACTION_BROWSE_ALL = "browse_all"
+FUSE_CARD_ACTION_BACK = "back"
+FUSE_CARD_EMPTY = "__none__"
+FUSE_OWNER_LOCKED_TEXT = "Nur die Person, die „/verbessern“ gestartet hat, kann dieses Menü benutzen."
+
+
+def _normalize_fuse_search_text(text: str) -> str:
+    normalized = str(text or "").strip().lower()
+    for source, target in (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss")):
+        normalized = normalized.replace(source, target)
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return " ".join(normalized.split())
+
+
+def _search_fuse_card_groups(user_karten: list[tuple[str, int]], query: str) -> list[dict[str, Any]]:
+    normalized_query = _normalize_fuse_search_text(query)
+    if not normalized_query:
+        return []
+
+    grouped_cards = _group_owned_cards_for_current_mode(list(user_karten))
+    query_tokens = normalized_query.split()
+    scored_matches: list[tuple[int, int, dict[str, Any]]] = []
+
+    for index, group in enumerate(grouped_cards):
+        base_name = str(group.get("base_name") or "")
+        group_label = _group_option_label(group)
+        searchable_values = [
+            _normalize_fuse_search_text(base_name),
+            _normalize_fuse_search_text(group_label),
+            _normalize_fuse_search_text(f"{base_name} {group_label}"),
+        ]
+
+        best_score: int | None = None
+        for value in searchable_values:
+            if not value:
+                continue
+
+            score: int | None = None
+            if value == normalized_query:
+                score = 1000
+            elif value.startswith(normalized_query):
+                score = 900
+            elif normalized_query in value:
+                score = 800
+            elif query_tokens and all(token in value for token in query_tokens):
+                score = 700
+            else:
+                ratio = SequenceMatcher(None, normalized_query, value).ratio()
+                if ratio >= 0.55:
+                    score = int(round(ratio * 100))
+
+            if score is not None:
+                best_score = score if best_score is None else max(best_score, score)
+
+        if best_score is not None:
+            scored_matches.append((best_score, index, group))
+
+    return [group for _score, _index, group in sorted(scored_matches, key=lambda item: (-item[0], item[1]))]
+
+
+class FuseFlowView(RestrictedView):
+    def __init__(self, requester_id: int, *args, **kwargs):
+        self.requester_id = int(requester_id)
+        super().__init__(*args, **kwargs)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not await super().interaction_check(interaction):
+            return False
+        if interaction.user.id != self.requester_id:
+            await send_interaction_response(interaction, content=FUSE_OWNER_LOCKED_TEXT, ephemeral=True)
+            return False
+        return True
+
+
+class FuseFlowModal(RestrictedModal):
+    def __init__(self, requester_id: int, *args, **kwargs):
+        self.requester_id = int(requester_id)
+        super().__init__(*args, **kwargs)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not await super().interaction_check(interaction):
+            return False
+        if interaction.user.id != self.requester_id:
+            await send_interaction_response(interaction, content=FUSE_OWNER_LOCKED_TEXT, ephemeral=True)
+            return False
+        return True
 
 
 class DustAmountSelect(ui.Select):
     def __init__(self, user_dust):
-        options = [
-            SelectOption(
-                label="Abbrechen",
-                value="__cancel__",
-                description="Upgrade-Menü schließen",
-                emoji="❌",
-            )
-        ]
+        options = []
         if user_dust >= FUSE_DUST_COST:
             options.append(
                 SelectOption(
@@ -6844,99 +6930,330 @@ class DustAmountSelect(ui.Select):
         super().__init__(placeholder="Wähle die Infinitydust-Menge...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        raw_value = str(self.values[0] or "")
-        if raw_value == "__cancel__":
-            if self.view is not None:
-                self.view.stop()
-            await interaction.response.edit_message(content="❌ Verstärkung abgebrochen.", embed=None, view=None)
-            return
-
-        dust_amount = int(raw_value)
+        dust_amount = int(self.values[0])
         user_karten = await get_user_karten(interaction.user.id)
         if not user_karten:
             await interaction.response.send_message("❌ Du hast keine Karten zum Verstärken!", ephemeral=True)
             return
 
-        view = FuseCardSelectView(interaction.user.id, dust_amount, user_karten)
-        embed = _build_fuse_card_select_embed(dust_amount)
-        await interaction.response.edit_message(embed=embed, view=view)
+        next_view = FuseCardSelectView(interaction.user.id, dust_amount, user_karten)
+        if self.view is not None:
+            self.view.stop()
+        await interaction.response.edit_message(embed=next_view.build_embed(), view=next_view)
 
 
 class FuseCancelButton(ui.Button):
-    def __init__(self, user_id: int):
-        super().__init__(label="Abbrechen", style=discord.ButtonStyle.danger)
-        self.user_id = int(user_id)
+    def __init__(self):
+        super().__init__(label="Abbrechen", style=discord.ButtonStyle.danger, row=2)
 
     async def callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nur der Command-User kann abbrechen!", ephemeral=True)
-            return
         if self.view is not None:
             self.view.stop()
         await interaction.response.edit_message(content="❌ Verstärkung abgebrochen.", embed=None, view=None)
 
 
-class FuseCardSelectView(RestrictedView):
-    def __init__(self, user_id, dust_amount, user_karten):
-        super().__init__(timeout=60)
-        self.user_id = int(user_id)
-        self.dust_amount = dust_amount
-        self.add_item(CardSelect(user_karten, dust_amount))
-        self.add_item(FuseCancelButton(self.user_id))
+class FuseCardActionSelect(ui.Select):
+    def __init__(self, parent_view: "FuseCardSelectView"):
+        self.parent_view = parent_view
+        super().__init__(
+            placeholder=parent_view.action_placeholder(),
+            min_values=1,
+            max_values=1,
+            options=parent_view.action_options(),
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.parent_view.handle_action_selection(interaction, str(self.values[0] or ""))
 
 
 class CardSelect(ui.Select):
-    def __init__(self, user_karten, dust_amount):
-        self.dust_amount = dust_amount
-        grouped_cards = _group_owned_cards_for_current_mode(list(user_karten))
-        options = [
+    def __init__(self, parent_view: "FuseCardSelectView"):
+        self.parent_view = parent_view
+        super().__init__(
+            placeholder=parent_view.card_placeholder(),
+            min_values=1,
+            max_values=1,
+            options=parent_view.card_options(),
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.parent_view.handle_card_selection(interaction, str(self.values[0] or ""))
+
+
+class FuseCardSearchModal(FuseFlowModal):
+    def __init__(
+        self,
+        requester_id: int,
+        dust_amount: int,
+        user_karten: list[tuple[str, int]],
+        *,
+        source_message: discord.Message | None,
+        parent_view: "FuseCardSelectView",
+    ):
+        super().__init__(requester_id, title="🔍 Held suchen")
+        self.dust_amount = int(dust_amount)
+        self.user_karten = list(user_karten)
+        self.source_message = source_message
+        self.parent_view = parent_view
+        self.search_input = ui.TextInput(
+            label="Suchbegriff",
+            placeholder="z. B. Iron, Spider oder Captain",
+            required=True,
+            max_length=50,
+        )
+        self.add_item(self.search_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        search_query = str(self.search_input.value or "").strip()
+        if not search_query:
+            await interaction.response.send_message("❌ Bitte gib einen Suchbegriff ein.", ephemeral=True)
+            return
+
+        matches = _search_fuse_card_groups(self.user_karten, search_query)
+        if not matches:
+            await interaction.response.send_message(
+                f"❌ Keine passenden Helden für „{search_query}“ gefunden.",
+                ephemeral=True,
+            )
+            return
+        if self.source_message is None:
+            await interaction.response.send_message(
+                "❌ Die Suchergebnisse konnten nicht geladen werden.",
+                ephemeral=True,
+            )
+            return
+
+        next_view = FuseCardSelectView(
+            self.requester_id,
+            self.dust_amount,
+            self.user_karten,
+            mode="search",
+            grouped_cards=matches,
+            search_query=search_query,
+            page=0,
+        )
+        self.parent_view.stop()
+        await interaction.response.defer()
+        try:
+            await self.source_message.edit(embed=next_view.build_embed(), view=next_view)
+        except Exception:
+            logging.exception("Failed to update fuse search results")
+            next_view.stop()
+            await send_interaction_response(
+                interaction,
+                content="❌ Die Suchergebnisse konnten nicht geladen werden.",
+                ephemeral=True,
+            )
+
+
+class FuseCardSelectView(FuseFlowView):
+    def __init__(
+        self,
+        requester_id: int,
+        dust_amount: int,
+        user_karten: list[tuple[str, int]],
+        *,
+        mode: str = "root",
+        grouped_cards: list[dict[str, Any]] | None = None,
+        search_query: str | None = None,
+        page: int = 0,
+    ):
+        super().__init__(requester_id, timeout=120)
+        self.dust_amount = int(dust_amount)
+        self.user_karten = list(user_karten)
+        self.mode = str(mode or "root")
+        self.search_query = str(search_query or "").strip()
+        self.grouped_cards = list(grouped_cards) if grouped_cards is not None else _group_owned_cards_for_current_mode(list(self.user_karten))
+        self.page = max(0, int(page))
+
+        self.action_select = FuseCardActionSelect(self)
+        self.card_select = CardSelect(self)
+        self.prev_button = ui.Button(label="Zurück", style=discord.ButtonStyle.secondary, row=2)
+        self.next_button = ui.Button(label="Weiter", style=discord.ButtonStyle.secondary, row=2)
+        self.prev_button.callback = self._on_prev_page
+        self.next_button.callback = self._on_next_page
+        self.cancel_button = FuseCancelButton()
+        self._render()
+
+    def _page_count(self) -> int:
+        if self.mode == "root":
+            return 1
+        return max(1, (len(self.grouped_cards) + 24) // 25)
+
+    def _visible_groups(self) -> list[dict[str, Any]]:
+        if self.mode == "root":
+            return list(self.grouped_cards[:25])
+        start = self.page * 25
+        return list(self.grouped_cards[start:start + 25])
+
+    def action_placeholder(self) -> str:
+        if self.mode == "search":
+            return "Suchoptionen"
+        if self.mode == "browse":
+            return "Browseroptionen"
+        return "Aktion wählen..."
+
+    def action_options(self) -> list[SelectOption]:
+        if self.mode == "root":
+            return [
+                SelectOption(
+                    label="Suchen",
+                    value=FUSE_CARD_ACTION_SEARCH,
+                    description="Held per Suchbegriff finden",
+                    emoji="🔍",
+                ),
+                SelectOption(
+                    label="Alle durchsuchen",
+                    value=FUSE_CARD_ACTION_BROWSE_ALL,
+                    description="Alle verfügbaren Helden anzeigen",
+                    emoji="📚",
+                ),
+            ]
+        return [
             SelectOption(
-                label="Abbrechen",
-                value="__cancel__",
-                description="Upgrade-Menü schließen",
-                emoji="❌",
+                label="Zurück",
+                value=FUSE_CARD_ACTION_BACK,
+                description="Zur normalen Held-Auswahl zurückkehren",
+                emoji="↩️",
             )
         ]
-        options.extend(
+
+    def card_placeholder(self) -> str:
+        if self.mode == "search":
+            if self._page_count() > 1:
+                return f"Suchergebnisse auswählen... (Seite {self.page + 1}/{self._page_count()})"
+            return "Suchergebnis auswählen..."
+        if self.mode == "browse":
+            if self._page_count() > 1:
+                return f"Helden auswählen... (Seite {self.page + 1}/{self._page_count()})"
+            return "Helden auswählen..."
+        return "Wähle eine Karte zum Verstärken..."
+
+    def card_options(self) -> list[SelectOption]:
+        visible_groups = self._visible_groups()
+        if not visible_groups:
+            return [SelectOption(label="Keine Karten verfügbar", value=FUSE_CARD_EMPTY)]
+        return [
             SelectOption(
                 label=_group_option_label(group)[:100],
                 value=str(group.get("base_name") or ""),
             )
-            for group in grouped_cards[:24]
-        )
-        if len(options) == 1:
-            options.append(SelectOption(label="Keine Karten verfügbar", value="__none__"))
-        super().__init__(placeholder="Wähle eine Karte zum Verstärken...", options=options)
+            for group in visible_groups
+        ]
 
-    async def callback(self, interaction: discord.Interaction):
-        selected_card = self.values[0]
-        if selected_card == "__cancel__":
-            if self.view is not None:
-                self.view.stop()
-            await interaction.response.edit_message(content="❌ Verstärkung abgebrochen.", embed=None, view=None)
+    def build_embed(self) -> discord.Embed:
+        if self.mode == "browse":
+            return _build_fuse_card_select_embed(
+                self.dust_amount,
+                title="📚 Alle Helden durchsuchen",
+                guidance=(
+                    f"Seite **{self.page + 1}** von **{self._page_count()}**.\n"
+                    "Wähle einen Helden oder nutze oben „Zurück“."
+                ),
+            )
+        if self.mode == "search":
+            guidance = (
+                f"Suchbegriff: **{self.search_query}**\n"
+                f"Treffer: **{len(self.grouped_cards)}**"
+            )
+            if self._page_count() > 1:
+                guidance += f"\nSeite **{self.page + 1}** von **{self._page_count()}**"
+            return _build_fuse_card_select_embed(
+                self.dust_amount,
+                title="🔍 Suchergebnisse",
+                guidance=guidance,
+            )
+        return _build_fuse_card_select_embed(self.dust_amount)
+
+    def _render(self) -> None:
+        self.clear_items()
+        self.action_select.options = self.action_options()
+        self.action_select.placeholder = self.action_placeholder()
+        self.card_select.options = self.card_options()
+        self.card_select.placeholder = self.card_placeholder()
+        self.add_item(self.action_select)
+        self.add_item(self.card_select)
+        if self.mode in {"browse", "search"} and self._page_count() > 1:
+            self.prev_button.disabled = self.page <= 0
+            self.next_button.disabled = self.page >= (self._page_count() - 1)
+            self.add_item(self.prev_button)
+            self.add_item(self.next_button)
+        self.add_item(self.cancel_button)
+
+    async def handle_action_selection(self, interaction: discord.Interaction, selected_value: str) -> None:
+        if selected_value == FUSE_CARD_ACTION_SEARCH:
+            modal = FuseCardSearchModal(
+                self.requester_id,
+                self.dust_amount,
+                self.user_karten,
+                source_message=_interaction_message_or_none(interaction),
+                parent_view=self,
+            )
+            await interaction.response.send_modal(modal)
             return
-        if selected_card == "__none__":
-            await interaction.response.send_message("❌ Du hast aktuell keine Karte zum Verstärken.", ephemeral=True)
+        if selected_value == FUSE_CARD_ACTION_BROWSE_ALL:
+            next_view = FuseCardSelectView(
+                self.requester_id,
+                self.dust_amount,
+                self.user_karten,
+                mode="browse",
+                grouped_cards=_group_owned_cards_for_current_mode(list(self.user_karten)),
+                page=0,
+            )
+            self.stop()
+            await interaction.response.edit_message(embed=next_view.build_embed(), view=next_view)
             return
+        if selected_value == FUSE_CARD_ACTION_BACK:
+            next_view = FuseCardSelectView(self.requester_id, self.dust_amount, self.user_karten)
+            self.stop()
+            await interaction.response.edit_message(embed=next_view.build_embed(), view=next_view)
+
+    async def handle_card_selection(self, interaction: discord.Interaction, selected_card: str) -> None:
+        if selected_card == FUSE_CARD_EMPTY:
+            await interaction.response.send_message("❌ Du hast aktuell keine Karten zum Verstärken.", ephemeral=True)
+            return
+
         karte_data = await get_karte_by_name(selected_card)
         if not karte_data:
             await interaction.response.send_message("❌ Karte nicht gefunden!", ephemeral=True)
             return
 
         user_buffs = await get_card_buffs(interaction.user.id, selected_card)
-        view = BuffTypeSelectView(interaction.user.id, self.dust_amount, selected_card, karte_data, user_buffs)
-        embed = _build_fuse_buff_type_embed(selected_card, karte_data, user_buffs)
-        await interaction.response.edit_message(embed=embed, view=view)
+        next_view = BuffTypeSelectView(
+            self.requester_id,
+            self.dust_amount,
+            selected_card,
+            karte_data,
+            user_buffs,
+        )
+        self.stop()
+        await interaction.response.edit_message(
+            embed=_build_fuse_buff_type_embed(selected_card, karte_data, user_buffs),
+            view=next_view,
+        )
+
+    async def _on_prev_page(self, interaction: discord.Interaction) -> None:
+        if self.page > 0:
+            self.page -= 1
+        self._render()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _on_next_page(self, interaction: discord.Interaction) -> None:
+        if self.page < (self._page_count() - 1):
+            self.page += 1
+        self._render()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
 
-class BuffTypeSelectView(RestrictedView):
-    def __init__(self, user_id, dust_amount, selected_card, karte_data, user_buffs):
-        super().__init__(timeout=60)
-        self.user_id = int(user_id)
-        self.dust_amount = dust_amount
+class BuffTypeSelectView(FuseFlowView):
+    def __init__(self, requester_id, dust_amount, selected_card, karte_data, user_buffs):
+        super().__init__(requester_id, timeout=60)
+        self.dust_amount = int(dust_amount)
         self.selected_card = selected_card
-        self.add_item(BuffTypeSelect(dust_amount, selected_card, karte_data, user_buffs))
-        self.add_item(FuseCancelButton(self.user_id))
+        self.add_item(BuffTypeSelect(self.dust_amount, selected_card, karte_data, user_buffs))
+        self.add_item(FuseCancelButton())
 
 
 class BuffTypeSelect(ui.Select):
@@ -6951,14 +7268,8 @@ class BuffTypeSelect(ui.Select):
             SelectOption(
                 label="Held wechseln",
                 value="change_card",
-                description="Zurück zur Helden-Auswahl",
+                description="Zurück zur Held-Auswahl",
                 emoji="🔁",
-            ),
-            SelectOption(
-                label="Abbrechen",
-                value="cancel",
-                description="Upgrade-Menü schließen",
-                emoji="❌",
             ),
             SelectOption(
                 label="Leben verstärken",
@@ -6989,22 +7300,16 @@ class BuffTypeSelect(ui.Select):
         super().__init__(placeholder="Wähle was verstärkt werden soll...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        buff_choice = self.values[0]
+        buff_choice = str(self.values[0] or "")
         if buff_choice == "change_card":
             user_karten = await get_user_karten(interaction.user.id)
             if not user_karten:
                 await interaction.response.send_message("❌ Du hast keine Karten zum Verstärken!", ephemeral=True)
                 return
             view = FuseCardSelectView(interaction.user.id, self.dust_amount, user_karten)
-            embed = _build_fuse_card_select_embed(self.dust_amount)
             if self.view is not None:
                 self.view.stop()
-            await interaction.response.edit_message(embed=embed, view=view)
-            return
-        if buff_choice == "cancel":
-            if self.view is not None:
-                self.view.stop()
-            await interaction.response.edit_message(content="❌ Verstärkung abgebrochen.", embed=None, view=None)
+            await interaction.response.edit_message(embed=view.build_embed(), view=view)
             return
 
         buff_type, attack_num = buff_choice.split("_")
@@ -7126,6 +7431,8 @@ class BuffTypeSelect(ui.Select):
             color=0x00FF00,
         )
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+        if self.view is not None:
+            self.view.stop()
         await interaction.response.edit_message(embed=embed, view=None)
 
 class InviteUserSelectView(RestrictedView):
@@ -7246,14 +7553,11 @@ class InviteUserSelect(ui.Select):
             view=None,
         )
 
-class DustAmountView(RestrictedView):
-    def __init__(self, user_id_or_dust, user_dust: int | None = None):
-        super().__init__(timeout=60)
-        resolved_user_id = None if user_dust is None else int(user_id_or_dust)
-        resolved_user_dust = int(user_id_or_dust if user_dust is None else user_dust)
-        self.add_item(DustAmountSelect(resolved_user_dust))
-        if resolved_user_id is not None:
-            self.add_item(FuseCancelButton(resolved_user_id))
+class DustAmountView(FuseFlowView):
+    def __init__(self, requester_id: int, user_dust: int):
+        super().__init__(requester_id, timeout=60)
+        self.add_item(DustAmountSelect(int(user_dust)))
+        self.add_item(FuseCancelButton())
 
 # Slash-Command: Anfang (Hauptmenü)
 class AnfangView(RestrictedView):
