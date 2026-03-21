@@ -3108,7 +3108,8 @@ class BattleView(DurableView):
         pending_landing = self.airborne_pending_landing.get(self.current_turn)
         if pending_landing:
             landing_slot = _pending_landing_slot_index(pending_landing)
-            landing_attack = pending_landing.get("attack") if isinstance(pending_landing.get("attack"), dict) else {}
+            raw_landing_attack = pending_landing.get("attack")
+            landing_attack = raw_landing_attack if isinstance(raw_landing_attack, dict) else {}
             landing_damage = pending_landing.get("damage", [20, 40])
             if isinstance(landing_damage, list) and len(landing_damage) == 2:
                 dmg_text = f"{int(landing_damage[0])}-{int(landing_damage[1])}"
@@ -8832,7 +8833,8 @@ class MissionBattleView(DurableView):
         pending_landing = self.airborne_pending_landing.get(self.user_id)
         if pending_landing:
             landing_slot = _pending_landing_slot_index(pending_landing)
-            landing_attack = pending_landing.get("attack") if isinstance(pending_landing.get("attack"), dict) else {}
+            raw_landing_attack = pending_landing.get("attack")
+            landing_attack = raw_landing_attack if isinstance(raw_landing_attack, dict) else {}
             landing_damage = pending_landing.get("damage", [20, 40])
             if isinstance(landing_damage, list) and len(landing_damage) == 2:
                 dmg_text = f"{int(landing_damage[0])}-{int(landing_damage[1])}"
@@ -8873,17 +8875,17 @@ class MissionBattleView(DurableView):
                     min_dmg, max_dmg = _attack_total_damage_range(attack, max_only_bonus=dmg_max_bonus, flat_bonus=0)
                     damage_text = f"[{min_dmg}, {max_dmg}]"
                     effects = attack.get("effects", [])
-                    effect_icons: list[str] = []
+                    locked_effect_icons: list[str] = []
                     for eff in effects:
                         t = eff.get("type")
-                        if t == "burning" and "🔥" not in effect_icons:
-                            effect_icons.append("🔥")
-                        elif t == "confusion" and "🌀" not in effect_icons:
-                            effect_icons.append("🌀")
-                        elif t == "stealth" and "🥷" not in effect_icons:
-                            effect_icons.append("🥷")
-                        elif t == "stun" and "🛑" not in effect_icons:
-                            effect_icons.append("🛑")
+                        if t == "burning" and "🔥" not in locked_effect_icons:
+                            locked_effect_icons.append("🔥")
+                        elif t == "confusion" and "🌀" not in locked_effect_icons:
+                            locked_effect_icons.append("🌀")
+                        elif t == "stealth" and "🥷" not in locked_effect_icons:
+                            locked_effect_icons.append("🥷")
+                        elif t == "stun" and "🛑" not in locked_effect_icons:
+                            locked_effect_icons.append("🛑")
                         elif t in {
                             "damage_reduction",
                             "damage_reduction_flat",
@@ -8893,20 +8895,20 @@ class MissionBattleView(DurableView):
                             "absorb_store",
                             "cap_damage",
                             "delayed_defense_after_next_attack",
-                        } and "🛡️" not in effect_icons:
-                            effect_icons.append("🛡️")
-                        elif t == "airborne_two_phase" and "✈️" not in effect_icons:
-                            effect_icons.append("✈️")
-                        elif t in {"damage_boost", "damage_multiplier"} and "⚡" not in effect_icons:
-                            effect_icons.append("⚡")
-                        elif t in {"force_max", "mix_heal_or_max", "guaranteed_hit"} and "🎯" not in effect_icons:
-                            effect_icons.append("🎯")
-                        elif t in {"heal", "regen"} and "❤️" not in effect_icons:
-                            effect_icons.append("❤️")
+                        } and "🛡️" not in locked_effect_icons:
+                            locked_effect_icons.append("🛡️")
+                        elif t == "airborne_two_phase" and "✈️" not in locked_effect_icons:
+                            locked_effect_icons.append("✈️")
+                        elif t in {"damage_boost", "damage_multiplier"} and "⚡" not in locked_effect_icons:
+                            locked_effect_icons.append("⚡")
+                        elif t in {"force_max", "mix_heal_or_max", "guaranteed_hit"} and "🎯" not in locked_effect_icons:
+                            locked_effect_icons.append("🎯")
+                        elif t in {"heal", "regen"} and "❤️" not in locked_effect_icons:
+                            locked_effect_icons.append("❤️")
                     heal_label = _heal_label_for_attack(attack)
-                    if heal_label and "❤️" not in effect_icons:
-                        effect_icons.append("❤️")
-                    effects_label = f" {' '.join(effect_icons)}" if effect_icons else ""
+                    if heal_label and "❤️" not in locked_effect_icons:
+                        locked_effect_icons.append("❤️")
+                    effects_label = f" {' '.join(locked_effect_icons)}" if locked_effect_icons else ""
                     is_on_cooldown = self.is_attack_on_cooldown_user(i)
                     is_reload_action = bool(attack.get("requires_reload") and self.is_reload_needed(self.user_id, i))
                     if is_on_cooldown:
@@ -9147,7 +9149,7 @@ class MissionBattleView(DurableView):
             is_reload_action=is_reload_action,
             is_forced_landing=is_forced_landing,
         )
-        miss_reason: str | None = None
+        player_miss_reason: str | None = None
         dmg_buff = 0
         damage_max_bonus = self.damage_bonuses.get(attack_index + 1, 0)
         if is_forced_landing:
@@ -9239,7 +9241,7 @@ class MissionBattleView(DurableView):
                 self.blind_next_attack[self.user_id] = 0.0
                 blind_miss = random.random() < blind_chance
             if blind_miss:
-                miss_reason = f"durch Blendung ({int(round(blind_chance * 100))}% Verfehlchance)"
+                player_miss_reason = f"durch Blendung ({int(round(blind_chance * 100))}% Verfehlchance)"
                 actual_damage, is_critical = 0, False
                 hits_enemy = False
                 if self.confused_next_turn.get(self.user_id, False):
@@ -9258,7 +9260,7 @@ class MissionBattleView(DurableView):
                         source="Verwirrung",
                         self_damage=True,
                     )
-                    miss_reason = "durch Verwirrung, stattdessen Selbsttreffer"
+                    player_miss_reason = "durch Verwirrung, stattdessen Selbsttreffer"
                     actual_damage, is_critical = 0, False
                     hits_enemy = False
                 else:
@@ -9275,7 +9277,7 @@ class MissionBattleView(DurableView):
                         actual_damage = 0
                         is_critical = False
                         hits_enemy = False
-                        miss_reason = "durch Tarnung"
+                        player_miss_reason = "durch Tarnung"
                         self.consume_stealth(0)
                     elif defender_has_stealth:
                         self.consume_stealth(0)
@@ -9299,7 +9301,7 @@ class MissionBattleView(DurableView):
                     actual_damage = 0
                     is_critical = False
                     hits_enemy = False
-                    miss_reason = "durch Tarnung"
+                    player_miss_reason = "durch Tarnung"
                     self.consume_stealth(0)
                 elif defender_has_stealth:
                     self.consume_stealth(0)
@@ -9359,7 +9361,7 @@ class MissionBattleView(DurableView):
                 )
                 if dodged:
                     readable_source = _readable_effect_source((incoming_modifier or {}).get("source"))
-                    miss_reason = f"durch {readable_source}" if readable_source else "durch Ausweichen"
+                    player_miss_reason = f"durch {readable_source}" if readable_source else "durch Ausweichen"
                     actual_damage = 0
                     hits_enemy = False
                     is_critical = False
@@ -9619,7 +9621,7 @@ class MissionBattleView(DurableView):
             effect_events,
             action_type=action_type,
             actual_damage=int(actual_damage or 0),
-            miss_reason=miss_reason,
+            miss_reason=player_miss_reason,
             heal_amount=_extract_heal_amount_from_events(effect_events),
             is_reload_action=is_reload_action,
         )
