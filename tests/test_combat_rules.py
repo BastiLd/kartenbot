@@ -711,9 +711,29 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
     def test_attack_display_parts_show_heal_and_success_style(self) -> None:
         attack = {"name": "Heal", "damage": [0, 0], "heal": [10, 20]}
         label, style, summary = bot_module._attack_display_parts(attack)
-        self.assertEqual(label, "Heal (+10-20) ❤️")
+        self.assertEqual(label, "Heal (Heilt 10-20 HP) ❤️")
         self.assertEqual(style, bot_module.discord.ButtonStyle.success)
-        self.assertEqual(summary, "Heal — +10-20 Heilung ❤️")
+        self.assertEqual(summary, "Heal — Heilt 10-20 HP ❤️")
+
+    def test_attack_display_parts_show_fixed_heal_as_up_to_amount(self) -> None:
+        attack = {"name": "Inspiration", "damage": [0, 0], "heal": 25}
+        label, style, summary = bot_module._attack_display_parts(attack)
+        self.assertEqual(label, "Inspiration (Heilt bis zu 25 HP) ❤️")
+        self.assertEqual(style, bot_module.discord.ButtonStyle.success)
+        self.assertEqual(summary, "Inspiration — Heilt bis zu 25 HP ❤️")
+
+    def test_attack_display_parts_show_regen_as_future_heal(self) -> None:
+        attack = {
+            "name": "Heilfaktor",
+            "damage": [0, 0],
+            "effects": [{"type": "regen", "target": "self", "turns": 3, "heal": 10}],
+        }
+        label, style, summary = bot_module._attack_display_parts(attack)
+        self.assertEqual(label, "Heilfaktor (Heilt 10 HP für 3 Runden) ❤️")
+        self.assertEqual(style, bot_module.discord.ButtonStyle.success)
+        self.assertEqual(summary, "Heilfaktor — Heilt 10 HP für 3 Runden ❤️")
+        self.assertNotIn("+10", label)
+        self.assertNotIn("+10", summary)
 
     def test_resolve_self_damage_value_supports_ranges(self) -> None:
         with patch("bot.random.randint", return_value=13) as randint_mock:
@@ -822,8 +842,15 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
             ],
         }
         lines = bot_module._build_attack_info_lines(card)
-        self.assertIn("• Heal — +10-20 Heilung ❤️: Heilt dich.", lines)
+        self.assertIn("• Heal — Heilt 10-20 HP ❤️: Heilt dich.", lines)
         self.assertIn("• Hit — 10-20 Schaden: Schaden.", lines)
+
+    def test_build_attack_info_lines_describe_wolverine_regen_without_static_plus_heal(self) -> None:
+        wolverine = _find_card("Wolverine")
+        lines = bot_module._build_attack_info_lines(wolverine)
+        heal_line = next(line for line in lines if "Heilfaktor" in line)
+        self.assertIn("Heilt 10 HP für 3 Runden", heal_line)
+        self.assertNotIn("+10x3", heal_line)
 
     async def test_get_card_buffs_removes_invalid_damage_buffs(self) -> None:
         rows = [
@@ -1061,6 +1088,33 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
             effect_events=["Heilung: +17 HP."],
         )
         self.assertIn("+17 HP Heilung", summary)
+        self.assertNotIn("0 Schaden", summary)
+
+    def test_recent_summary_uses_actual_healed_hp_for_fixed_heal(self) -> None:
+        class _User:
+            def __init__(self, name: str):
+                self.display_name = name
+                self.mention = name
+
+        _entry, summary = build_battle_log_entry(
+            "Captain America",
+            "Spider-Man",
+            "Inspiration",
+            0,
+            False,
+            _User("Bot"),
+            _User("Benni"),
+            6,
+            100,
+            attacker_remaining_hp=125,
+            effect_events=[
+                "Aktionstyp: Heilfähigkeit.",
+                "Ausführung: erfolgreich geheilt (+25 HP).",
+                "Heilung: +25 HP.",
+            ],
+        )
+        self.assertIn("+25 HP Heilung", summary)
+        self.assertNotIn("+50 HP Heilung", summary)
         self.assertNotIn("0 Schaden", summary)
 
     def test_regen_setup_does_not_count_as_immediate_heal_in_action_context(self) -> None:

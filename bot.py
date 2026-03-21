@@ -936,9 +936,37 @@ def _format_amount_for_label(value) -> str | None:
         return None
     return str(parsed)
 
+
+def _describe_direct_heal_amount(value: object) -> str | None:
+    if isinstance(value, list) and len(value) == 2:
+        min_value = _maybe_int(value[0])
+        max_value = _maybe_int(value[1])
+        if min_value is None or max_value is None:
+            return None
+        return f"Heilt {min_value}-{max_value} HP"
+    parsed = _maybe_int(value)
+    if parsed is None:
+        return None
+    return f"Heilt bis zu {parsed} HP"
+
+
+def _describe_regen_amount(value: object, *, turns: int) -> str | None:
+    round_label = "Runde" if turns == 1 else "Runden"
+    if isinstance(value, list) and len(value) == 2:
+        min_value = _maybe_int(value[0])
+        max_value = _maybe_int(value[1])
+        if min_value is None or max_value is None:
+            return None
+        return f"Heilt {min_value}-{max_value} HP für {turns} {round_label}"
+    parsed = _maybe_int(value)
+    if parsed is None:
+        return None
+    return f"Heilt {parsed} HP für {turns} {round_label}"
+
+
 def _heal_label_for_attack(attack: dict) -> str | None:
     heal_data = attack.get("heal")
-    heal_text = _format_amount_for_label(heal_data)
+    heal_text = _describe_direct_heal_amount(heal_data)
     if heal_text:
         return heal_text
 
@@ -949,24 +977,24 @@ def _heal_label_for_attack(attack: dict) -> str | None:
         except Exception:
             pct = 0
         if pct > 0:
-            return f"{pct}% LS"
+            return f"{pct}% Lebensraub"
 
     for effect in attack.get("effects", []):
         effect_type = effect.get("type")
         if effect_type == "regen":
-            regen_text = _format_amount_for_label(effect.get("heal"))
             turns = max(1, _maybe_int(effect.get("turns", 1) or 1) or 1)
+            regen_text = _describe_regen_amount(effect.get("heal"), turns=turns)
             if regen_text:
-                return f"{regen_text}x{turns}" if turns > 1 else regen_text
+                return regen_text
         elif effect_type == "heal":
-            direct_heal = _format_amount_for_label(effect.get("amount"))
+            direct_heal = _describe_direct_heal_amount(effect.get("amount"))
             if direct_heal:
                 return direct_heal
         elif effect_type == "mix_heal_or_max":
-            mix_heal = _format_amount_for_label(effect.get("heal"))
+            mix_heal = _describe_direct_heal_amount(effect.get("heal"))
             if mix_heal:
-                return f"{mix_heal}/MAX"
-            return "MAX"
+                return f"{mix_heal} oder Maximalschaden"
+            return "Heilung oder Maximalschaden"
     return None
 
 
@@ -1301,15 +1329,19 @@ def _attack_effect_icons(attack: dict) -> list[str]:
     return effect_icons
 
 
+def _attack_effects_label(attack: dict) -> str:
+    effect_icons = _attack_effect_icons(attack)
+    return f" {' '.join(effect_icons)}" if effect_icons else ""
+
+
 def _attack_display_parts(attack: dict, *, max_only_bonus: int = 0) -> tuple[str, discord.ButtonStyle, str]:
     attack_name = str(attack.get("name") or "Attacke")
-    effect_icons = _attack_effect_icons(attack)
-    effects_label = f" {' '.join(effect_icons)}" if effect_icons else ""
+    effects_label = _attack_effects_label(attack)
     heal_label = _heal_label_for_attack(attack)
     if heal_label is not None:
-        label = f"{attack_name} (+{heal_label}){effects_label}"
+        label = f"{attack_name} ({heal_label}){effects_label}"
         style = _resolve_attack_button_style(attack, discord.ButtonStyle.success)
-        summary = f"{attack_name} — +{heal_label} Heilung{effects_label}"
+        summary = f"{attack_name} — {heal_label}{effects_label}"
         return label, style, summary
     min_dmg, max_dmg = _attack_total_damage_range(attack, max_only_bonus=max_only_bonus, flat_bonus=0)
     damage_text = f"{min_dmg}-{max_dmg}"
@@ -3224,58 +3256,14 @@ class BattleView(DurableView):
                     continue
                 attack = attacks[i]
                 if i == standard_idx:
-                    base_damage = attack["damage"]
                     damage_max_bonus = 0
                     for buff_type, attack_number, buff_amount in card_buffs:
                         if buff_type == "damage" and attack_number == (i + 1):
                             damage_max_bonus += buff_amount
-                    min_dmg, max_dmg = _attack_total_damage_range(attack, max_only_bonus=damage_max_bonus, flat_bonus=0)
-                    damage_text = f"{min_dmg}-{max_dmg}"
-                    buff_text = f" (+{damage_max_bonus} max)" if damage_max_bonus > 0 else ""
-                    effects = attack.get("effects", [])
-                    effect_icons = []
-                    for eff in effects:
-                        eff_type = eff.get("type")
-                        if eff_type == "burning":
-                            if "🔥" not in effect_icons:
-                                effect_icons.append("🔥")
-                        elif eff_type == "confusion":
-                            if "🌀" not in effect_icons:
-                                effect_icons.append("🌀")
-                        elif eff_type == "stealth":
-                            if "🥷" not in effect_icons:
-                                effect_icons.append("🥷")
-                        elif eff_type == "stun":
-                            if "🛑" not in effect_icons:
-                                effect_icons.append("🛑")
-                        elif eff_type in {
-                            "damage_reduction",
-                            "damage_reduction_flat",
-                            "enemy_next_attack_reduction_percent",
-                            "enemy_next_attack_reduction_flat",
-                            "reflect",
-                            "absorb_store",
-                            "cap_damage",
-                            "delayed_defense_after_next_attack",
-                        }:
-                            if "🛡️" not in effect_icons:
-                                effect_icons.append("🛡️")
-                        elif eff_type == "airborne_two_phase":
-                            if "✈️" not in effect_icons:
-                                effect_icons.append("✈️")
-                        elif eff_type in {"damage_boost", "damage_multiplier"}:
-                            if "⚡" not in effect_icons:
-                                effect_icons.append("⚡")
-                        elif eff_type in {"force_max", "mix_heal_or_max", "guaranteed_hit"}:
-                            if "🎯" not in effect_icons:
-                                effect_icons.append("🎯")
-                        elif eff_type in {"heal", "regen"}:
-                            if "❤️" not in effect_icons:
-                                effect_icons.append("❤️")
-                    heal_label = _heal_label_for_attack(attack)
-                    if heal_label and "❤️" not in effect_icons:
-                        effect_icons.append("❤️")
-                    effects_label = f" {' '.join(effect_icons)}" if effect_icons else ""
+                    display_label, display_style, _ = _attack_display_parts(
+                        attack,
+                        max_only_bonus=damage_max_bonus,
+                    )
                     is_on_cooldown = self.is_attack_on_cooldown(self.current_turn, i)
                     is_reload_action = bool(attack.get("requires_reload") and self.is_reload_needed(self.current_turn, i))
                     if is_on_cooldown:
@@ -3283,16 +3271,12 @@ class BattleView(DurableView):
                         button.label = f"{attack['name']} ({_format_cooldown_label(attack, cooldown_turns)})"
                         button.disabled = True
                     else:
-                        if heal_label is not None:
-                            default_style = discord.ButtonStyle.success
-                            button.label = f"{attack['name']} (+{heal_label}){effects_label}"
-                        elif is_reload_action:
-                            default_style = discord.ButtonStyle.primary
+                        if is_reload_action:
+                            button.style = discord.ButtonStyle.primary
                             button.label = str(attack.get("reload_name") or "Nachladen")
                         else:
-                            default_style = discord.ButtonStyle.danger
-                            button.label = f"{attack['name']} ({damage_text}{buff_text}){effects_label}"
-                        button.style = _resolve_attack_button_style(attack, default_style)
+                            button.style = display_style
+                            button.label = display_label
                         button.disabled = False
                     continue
                 attack_name = str(attack.get("name") or f"Angriff {i+1}")
@@ -3306,73 +3290,18 @@ class BattleView(DurableView):
         
         for i, attack in enumerate(attacks[:4]):
             if i < len(attack_buttons):
-                # Weisen wir die Buttons strikt in Reihenfolge zu
                 button = attack_buttons[i]
-                base_damage = attack["damage"]
                 damage_max_bonus = 0
-                
-                # Berechne Buff für diese Attacke
                 for buff_type, attack_number, buff_amount in card_buffs:
                     if buff_type == "damage" and attack_number == (i + 1):
                         damage_max_bonus += buff_amount
-                
-                # Berechne Schadenbereich mit Buffs
-                min_dmg, max_dmg = _attack_total_damage_range(attack, max_only_bonus=damage_max_bonus, flat_bonus=0)
-                damage_text = f"{min_dmg}-{max_dmg}"
-                
-                buff_text = f" (+{damage_max_bonus} max)" if damage_max_bonus > 0 else ""
-                # Effekte-Label (🔥 Verbrennung, 🌀 Verwirrung)
-                effects = attack.get("effects", [])
-                effect_icons = []
-                for eff in effects:
-                    eff_type = eff.get("type")
-                    if eff_type == "burning":
-                        if "🔥" not in effect_icons:
-                            effect_icons.append("🔥")
-                    elif eff_type == "confusion":
-                        if "🌀" not in effect_icons:
-                            effect_icons.append("🌀")
-                    elif eff_type == "stealth":
-                        if "🥷" not in effect_icons:
-                            effect_icons.append("🥷")
-                    elif eff_type == "stun":
-                        if "🛑" not in effect_icons:
-                            effect_icons.append("🛑")
-                    elif eff_type in {
-                        "damage_reduction",
-                        "damage_reduction_flat",
-                        "enemy_next_attack_reduction_percent",
-                        "enemy_next_attack_reduction_flat",
-                        "reflect",
-                        "absorb_store",
-                        "cap_damage",
-                        "delayed_defense_after_next_attack",
-                    }:
-                        if "🛡️" not in effect_icons:
-                            effect_icons.append("🛡️")
-                    elif eff_type == "airborne_two_phase":
-                        if "✈️" not in effect_icons:
-                            effect_icons.append("✈️")
-                    elif eff_type in {"damage_boost", "damage_multiplier"}:
-                        if "⚡" not in effect_icons:
-                            effect_icons.append("⚡")
-                    elif eff_type in {"force_max", "mix_heal_or_max", "guaranteed_hit"}:
-                        if "🎯" not in effect_icons:
-                            effect_icons.append("🎯")
-                    elif eff_type in {"heal", "regen"}:
-                        if "❤️" not in effect_icons:
-                            effect_icons.append("❤️")
-                heal_label = _heal_label_for_attack(attack)
-                if heal_label and "❤️" not in effect_icons:
-                    effect_icons.append("❤️")
-                effects_label = f" {' '.join(effect_icons)}" if effect_icons else ""
-                
-                # COOLDOWN-SYSTEM: Prüfe ob Attacke auf Cooldown ist (nur für aktuellen Spieler)
+                display_label, display_style, _ = _attack_display_parts(
+                    attack,
+                    max_only_bonus=damage_max_bonus,
+                )
                 is_on_cooldown = self.is_attack_on_cooldown(self.current_turn, i)
                 is_reload_action = bool(attack.get("requires_reload") and self.is_reload_needed(self.current_turn, i))
-                
                 if is_on_cooldown:
-                    # Grau für Cooldown beim aktuellen Spieler
                     button.style = discord.ButtonStyle.secondary
                     cooldown_turns = self.attack_cooldowns[self.current_turn][i]
                     button.label = f"{attack['name']} ({_format_cooldown_label(attack, cooldown_turns)})"
@@ -3382,14 +3311,8 @@ class BattleView(DurableView):
                     button.label = str(attack.get("reload_name") or "Nachladen")
                     button.disabled = False
                 else:
-                    if heal_label is not None:
-                        default_style = discord.ButtonStyle.success
-                        button.label = f"{attack['name']} (+{heal_label}){effects_label}"
-                    else:
-                        # Rot für normale Attacken
-                        default_style = discord.ButtonStyle.danger
-                        button.label = f"{attack['name']} ({damage_text}{buff_text}){effects_label}"
-                    button.style = _resolve_attack_button_style(attack, default_style)
+                    button.style = display_style
+                    button.label = display_label
                     button.disabled = False
 
         # Deaktiviere restliche Buttons, falls die aktuelle Karte weniger als 4 Attacken hat
@@ -9310,43 +9233,10 @@ class MissionBattleView(DurableView):
                 attack = self.attacks[i]
                 if i == standard_idx:
                     dmg_max_bonus = self.damage_bonuses.get(i + 1, 0)
-                    min_dmg, max_dmg = _attack_total_damage_range(attack, max_only_bonus=dmg_max_bonus, flat_bonus=0)
-                    damage_text = f"[{min_dmg}, {max_dmg}]"
-                    effects = attack.get("effects", [])
-                    locked_effect_icons: list[str] = []
-                    for eff in effects:
-                        t = eff.get("type")
-                        if t == "burning" and "🔥" not in locked_effect_icons:
-                            locked_effect_icons.append("🔥")
-                        elif t == "confusion" and "🌀" not in locked_effect_icons:
-                            locked_effect_icons.append("🌀")
-                        elif t == "stealth" and "🥷" not in locked_effect_icons:
-                            locked_effect_icons.append("🥷")
-                        elif t == "stun" and "🛑" not in locked_effect_icons:
-                            locked_effect_icons.append("🛑")
-                        elif t in {
-                            "damage_reduction",
-                            "damage_reduction_flat",
-                            "enemy_next_attack_reduction_percent",
-                            "enemy_next_attack_reduction_flat",
-                            "reflect",
-                            "absorb_store",
-                            "cap_damage",
-                            "delayed_defense_after_next_attack",
-                        } and "🛡️" not in locked_effect_icons:
-                            locked_effect_icons.append("🛡️")
-                        elif t == "airborne_two_phase" and "✈️" not in locked_effect_icons:
-                            locked_effect_icons.append("✈️")
-                        elif t in {"damage_boost", "damage_multiplier"} and "⚡" not in locked_effect_icons:
-                            locked_effect_icons.append("⚡")
-                        elif t in {"force_max", "mix_heal_or_max", "guaranteed_hit"} and "🎯" not in locked_effect_icons:
-                            locked_effect_icons.append("🎯")
-                        elif t in {"heal", "regen"} and "❤️" not in locked_effect_icons:
-                            locked_effect_icons.append("❤️")
-                    heal_label = _heal_label_for_attack(attack)
-                    if heal_label and "❤️" not in locked_effect_icons:
-                        locked_effect_icons.append("❤️")
-                    effects_label = f" {' '.join(locked_effect_icons)}" if locked_effect_icons else ""
+                    display_label, display_style, _ = _attack_display_parts(
+                        attack,
+                        max_only_bonus=dmg_max_bonus,
+                    )
                     is_on_cooldown = self.is_attack_on_cooldown_user(i)
                     is_reload_action = bool(attack.get("requires_reload") and self.is_reload_needed(self.user_id, i))
                     if is_on_cooldown:
@@ -9358,13 +9248,8 @@ class MissionBattleView(DurableView):
                         button.label = str(attack.get("reload_name") or "Nachladen")
                         button.disabled = False
                     else:
-                        if heal_label is not None:
-                            default_style = discord.ButtonStyle.success
-                            button.label = f"{attack['name']} (+{heal_label}){effects_label}"
-                        else:
-                            default_style = discord.ButtonStyle.danger
-                            button.label = f"{attack['name']} ({damage_text}){effects_label}"
-                        button.style = _resolve_attack_button_style(attack, default_style)
+                        button.style = display_style
+                        button.label = display_label
                         button.disabled = False
                     continue
                 attack_name = str(attack.get("name") or f"Angriff {i+1}")
@@ -9379,56 +9264,14 @@ class MissionBattleView(DurableView):
         for i, button in enumerate(attack_buttons):
             if i < len(self.attacks):
                 attack = self.attacks[i]
-                base_damage = attack["damage"]
                 dmg_max_bonus = self.damage_bonuses.get(i + 1, 0)
-                
-                # Berechne Damage-Text
-                min_dmg, max_dmg = _attack_total_damage_range(attack, max_only_bonus=dmg_max_bonus, flat_bonus=0)
-                damage_text = f"[{min_dmg}, {max_dmg}]"
-                
-                # Effekte-Label (🔥/🌀)
-                effects = attack.get("effects", [])
-                effect_icons: list[str] = []
-                for eff in effects:
-                    t = eff.get("type")
-                    if t == "burning" and "🔥" not in effect_icons:
-                        effect_icons.append("🔥")
-                    elif t == "confusion" and "🌀" not in effect_icons:
-                        effect_icons.append("🌀")
-                    elif t == "stealth" and "🥷" not in effect_icons:
-                        effect_icons.append("🥷")
-                    elif t == "stun" and "🛑" not in effect_icons:
-                        effect_icons.append("🛑")
-                    elif t in {
-                        "damage_reduction",
-                        "damage_reduction_flat",
-                        "enemy_next_attack_reduction_percent",
-                        "enemy_next_attack_reduction_flat",
-                        "reflect",
-                        "absorb_store",
-                        "cap_damage",
-                        "delayed_defense_after_next_attack",
-                    } and "🛡️" not in effect_icons:
-                        effect_icons.append("🛡️")
-                    elif t == "airborne_two_phase" and "✈️" not in effect_icons:
-                        effect_icons.append("✈️")
-                    elif t in {"damage_boost", "damage_multiplier"} and "⚡" not in effect_icons:
-                        effect_icons.append("⚡")
-                    elif t in {"force_max", "mix_heal_or_max", "guaranteed_hit"} and "🎯" not in effect_icons:
-                        effect_icons.append("🎯")
-                    elif t in {"heal", "regen"} and "❤️" not in effect_icons:
-                        effect_icons.append("❤️")
-                heal_label = _heal_label_for_attack(attack)
-                if heal_label and "❤️" not in effect_icons:
-                    effect_icons.append("❤️")
-                effects_label = f" {' '.join(effect_icons)}" if effect_icons else ""
-
-                # Prüfe Cooldown (nur für Spieler)
+                display_label, display_style, _ = _attack_display_parts(
+                    attack,
+                    max_only_bonus=dmg_max_bonus,
+                )
                 is_on_cooldown = self.is_attack_on_cooldown_user(i)
                 is_reload_action = bool(attack.get("requires_reload") and self.is_reload_needed(self.user_id, i))
-                
                 if is_on_cooldown:
-                    # Grau für Cooldown
                     button.style = discord.ButtonStyle.secondary
                     cooldown_turns = self.user_attack_cooldowns[i]
                     button.label = f"{attack['name']} ({_format_cooldown_label(attack, cooldown_turns)})"
@@ -9438,14 +9281,8 @@ class MissionBattleView(DurableView):
                     button.label = str(attack.get("reload_name") or "Nachladen")
                     button.disabled = False
                 else:
-                    if heal_label is not None:
-                        default_style = discord.ButtonStyle.success
-                        button.label = f"{attack['name']} (+{heal_label}){effects_label}"
-                    else:
-                        # Rot für normale Attacken
-                        default_style = discord.ButtonStyle.danger
-                        button.label = f"{attack['name']} ({damage_text}){effects_label}"
-                    button.style = _resolve_attack_button_style(attack, default_style)
+                    button.style = display_style
+                    button.label = display_label
                     button.disabled = False
             else:
                 button.label = f"Angriff {i+1}"
