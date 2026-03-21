@@ -333,7 +333,7 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
                 {"name": "Treffer", "damage": [10, 20]},
             ],
         }
-        select = bot_module.BuffTypeSelect(10, "Testkarte", karte)
+        select = bot_module.BuffTypeSelect(10, "Testkarte", karte, [])
         option_values = {str(opt.value) for opt in select.options}
         self.assertIn("health_0", option_values)
         self.assertNotIn("damage_1", option_values)
@@ -373,7 +373,7 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
 
     def test_buff_select_builds_valid_options_for_all_cards(self) -> None:
         for card in karten:
-            select = bot_module.BuffTypeSelect(10, str(card.get("name") or ""), card)
+            select = bot_module.BuffTypeSelect(10, str(card.get("name") or ""), card, [])
             option_values = {str(opt.value) for opt in select.options}
             self.assertIn("health_0", option_values, f"Missing health option for {card.get('name')}")
 
@@ -395,7 +395,7 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_buff_select_refunds_dust_when_upgrade_write_fails(self) -> None:
         card = {"name": "Iron-Man", "hp": 70, "attacks": [{"name": "Repulsor", "damage": [10, 20]}]}
-        select = bot_module.BuffTypeSelect(10, "Iron-Man", card)
+        select = bot_module.BuffTypeSelect(10, "Iron-Man", card, [])
         select._values = ["health_0"]
 
         interaction = SimpleNamespace(
@@ -431,6 +431,63 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
             ephemeral=True,
         )
         interaction.response.edit_message.assert_not_awaited()
+
+    def test_buff_select_prepends_change_card_option(self) -> None:
+        card = {"name": "Iron-Man", "hp": 70, "attacks": [{"name": "Repulsor", "damage": [10, 20]}]}
+        select = bot_module.BuffTypeSelect(10, "Iron-Man", card, [])
+        self.assertGreaterEqual(len(select.options), 2)
+        self.assertEqual(str(select.options[0].value), "change_card")
+        self.assertEqual(str(select.options[0].label), "Held wechseln")
+
+    async def test_buff_select_change_card_returns_to_card_picker(self) -> None:
+        card = {"name": "Iron-Man", "hp": 70, "attacks": [{"name": "Repulsor", "damage": [10, 20]}]}
+        select = bot_module.BuffTypeSelect(10, "Iron-Man", card, [])
+        select._values = ["change_card"]
+
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=77),
+            response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock()),
+        )
+
+        with patch("bot.get_user_karten", new=AsyncMock(return_value=[("Iron-Man", 1)])):
+            await select.callback(interaction)
+
+        interaction.response.send_message.assert_not_awaited()
+        interaction.response.edit_message.assert_awaited_once()
+        kwargs = interaction.response.edit_message.await_args.kwargs
+        self.assertEqual(kwargs["embed"].title, "🎯 Karte auswählen")
+        self.assertIsInstance(kwargs["view"], bot_module.FuseCardSelectView)
+
+    def test_upgrade_views_include_cancel_button(self) -> None:
+        card = {"name": "Iron-Man", "hp": 70, "attacks": [{"name": "Repulsor", "damage": [10, 20]}]}
+        views = [
+            bot_module.DustAmountView(77, 10),
+            bot_module.FuseCardSelectView(77, 10, [("Iron-Man", 1)]),
+            bot_module.BuffTypeSelectView(77, 10, "Iron-Man", card, []),
+        ]
+
+        try:
+            for view in views:
+                cancel_buttons = [
+                    item for item in view.children
+                    if isinstance(item, bot_module.ui.Button) and str(getattr(item, "label", "")) == "Abbrechen"
+                ]
+                self.assertEqual(len(cancel_buttons), 1)
+                self.assertEqual(str(cancel_buttons[0].style).lower(), str(bot_module.discord.ButtonStyle.danger).lower())
+        finally:
+            for view in views:
+                view.stop()
+
+    def test_upgrade_selects_offer_top_level_cancel_paths(self) -> None:
+        card = {"name": "Iron-Man", "hp": 70, "attacks": [{"name": "Repulsor", "damage": [10, 20]}]}
+        dust_select = bot_module.DustAmountSelect(10)
+        card_select = bot_module.CardSelect([("Iron-Man", 1)], 10)
+        buff_select = bot_module.BuffTypeSelect(10, "Iron-Man", card, [])
+
+        self.assertEqual(str(dust_select.options[0].value), "__cancel__")
+        self.assertEqual(str(card_select.options[0].value), "__cancel__")
+        self.assertEqual(str(buff_select.options[0].value), "change_card")
+        self.assertEqual(str(buff_select.options[1].value), "cancel")
 
     def test_attack_display_parts_show_heal_and_success_style(self) -> None:
         attack = {"name": "Heal", "damage": [0, 0], "heal": [10, 20]}

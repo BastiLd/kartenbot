@@ -1350,6 +1350,48 @@ def _build_upgrade_preview_lines(
     return lines
 
 
+def _build_fuse_card_select_embed(dust_amount: int) -> discord.Embed:
+    embed = discord.Embed(
+        title="🎯 Karte auswählen",
+        description=(
+            f"Du verwendest **{dust_amount} Infinitydust**.\n"
+            f"❤️ Leben: **+{FUSE_HEALTH_BONUS}** (max. {FUSE_HP_CAP})\n"
+            f"⚔️ Max-Schaden: **+{FUSE_DAMAGE_MAX_BONUS}**\n\n"
+            "Wähle die Karte, die du verstärken möchtest:"
+        ),
+        color=0x9D4EDD,
+    )
+    embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+    return embed
+
+
+def _build_fuse_buff_type_embed(
+    selected_card: str,
+    karte_data: dict[str, Any],
+    user_buffs: list[tuple[str, int, int]],
+) -> discord.Embed:
+    current_values = "\n".join(_build_upgrade_preview_lines(karte_data, user_buffs))
+    embed = discord.Embed(
+        title="⚡ Verstärkung wählen",
+        description=(
+            f"Karte: **{selected_card}**\n\n"
+            "Was möchtest du verstärken?"
+        ),
+        color=0x9D4EDD,
+    )
+    embed.add_field(name="Aktuelle Werte", value=current_values[:1024], inline=False)
+    embed.add_field(
+        name="Nächste Verstärkung",
+        value=(
+            f"❤️ Leben: **+{FUSE_HEALTH_BONUS}**\n"
+            f"⚔️ Max-Schaden: **+{FUSE_DAMAGE_MAX_BONUS}** (min bleibt gleich)"
+        ),
+        inline=False,
+    )
+    embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+    return embed
+
+
 def _starts_cooldown_after_landing(attack: dict) -> bool:
     for effect in attack.get("effects", []):
         if str(effect.get("type") or "").strip().lower() == "airborne_two_phase":
@@ -6782,7 +6824,14 @@ FUSE_HP_CAP = 200
 
 class DustAmountSelect(ui.Select):
     def __init__(self, user_dust):
-        options = []
+        options = [
+            SelectOption(
+                label="Abbrechen",
+                value="__cancel__",
+                description="Upgrade-Menü schließen",
+                emoji="❌",
+            )
+        ]
         if user_dust >= FUSE_DUST_COST:
             options.append(
                 SelectOption(
@@ -6795,32 +6844,45 @@ class DustAmountSelect(ui.Select):
         super().__init__(placeholder="Wähle die Infinitydust-Menge...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        dust_amount = int(self.values[0])
+        raw_value = str(self.values[0] or "")
+        if raw_value == "__cancel__":
+            if self.view is not None:
+                self.view.stop()
+            await interaction.response.edit_message(content="❌ Verstärkung abgebrochen.", embed=None, view=None)
+            return
+
+        dust_amount = int(raw_value)
         user_karten = await get_user_karten(interaction.user.id)
         if not user_karten:
             await interaction.response.send_message("❌ Du hast keine Karten zum Verstärken!", ephemeral=True)
             return
 
-        view = FuseCardSelectView(dust_amount, user_karten)
-        embed = discord.Embed(
-            title="🎯 Karte auswählen",
-            description=(
-                f"Du verwendest **{dust_amount} Infinitydust**.\n"
-                f"❤️ Leben: **+{FUSE_HEALTH_BONUS}** (max. {FUSE_HP_CAP})\n"
-                f"⚔️ Max-Schaden: **+{FUSE_DAMAGE_MAX_BONUS}**\n\n"
-                "Wähle die Karte, die du verstärken möchtest:"
-            ),
-            color=0x9D4EDD,
-        )
-        embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+        view = FuseCardSelectView(interaction.user.id, dust_amount, user_karten)
+        embed = _build_fuse_card_select_embed(dust_amount)
         await interaction.response.edit_message(embed=embed, view=view)
 
 
+class FuseCancelButton(ui.Button):
+    def __init__(self, user_id: int):
+        super().__init__(label="Abbrechen", style=discord.ButtonStyle.danger)
+        self.user_id = int(user_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Nur der Command-User kann abbrechen!", ephemeral=True)
+            return
+        if self.view is not None:
+            self.view.stop()
+        await interaction.response.edit_message(content="❌ Verstärkung abgebrochen.", embed=None, view=None)
+
+
 class FuseCardSelectView(RestrictedView):
-    def __init__(self, dust_amount, user_karten):
+    def __init__(self, user_id, dust_amount, user_karten):
         super().__init__(timeout=60)
+        self.user_id = int(user_id)
         self.dust_amount = dust_amount
         self.add_item(CardSelect(user_karten, dust_amount))
+        self.add_item(FuseCancelButton(self.user_id))
 
 
 class CardSelect(ui.Select):
@@ -6829,17 +6891,30 @@ class CardSelect(ui.Select):
         grouped_cards = _group_owned_cards_for_current_mode(list(user_karten))
         options = [
             SelectOption(
+                label="Abbrechen",
+                value="__cancel__",
+                description="Upgrade-Menü schließen",
+                emoji="❌",
+            )
+        ]
+        options.extend(
+            SelectOption(
                 label=_group_option_label(group)[:100],
                 value=str(group.get("base_name") or ""),
             )
-            for group in grouped_cards[:25]
-        ]
-        if not options:
-            options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
+            for group in grouped_cards[:24]
+        )
+        if len(options) == 1:
+            options.append(SelectOption(label="Keine Karten verfügbar", value="__none__"))
         super().__init__(placeholder="Wähle eine Karte zum Verstärken...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
         selected_card = self.values[0]
+        if selected_card == "__cancel__":
+            if self.view is not None:
+                self.view.stop()
+            await interaction.response.edit_message(content="❌ Verstärkung abgebrochen.", embed=None, view=None)
+            return
         if selected_card == "__none__":
             await interaction.response.send_message("❌ Du hast aktuell keine Karte zum Verstärken.", ephemeral=True)
             return
@@ -6849,35 +6924,19 @@ class CardSelect(ui.Select):
             return
 
         user_buffs = await get_card_buffs(interaction.user.id, selected_card)
-        view = BuffTypeSelectView(self.dust_amount, selected_card, karte_data, user_buffs)
-        current_values = "\n".join(_build_upgrade_preview_lines(karte_data, user_buffs))
-        embed = discord.Embed(
-            title="⚡ Verstärkung wählen",
-            description=(
-                f"Karte: **{selected_card}**\n\n"
-                "Was möchtest du verstärken?"
-            ),
-            color=0x9D4EDD,
-        )
-        embed.add_field(name="Aktuelle Werte", value=current_values[:1024], inline=False)
-        embed.add_field(
-            name="Nächste Verstärkung",
-            value=(
-                f"❤️ Leben: **+{FUSE_HEALTH_BONUS}**\n"
-                f"⚔️ Max-Schaden: **+{FUSE_DAMAGE_MAX_BONUS}** (min bleibt gleich)"
-            ),
-            inline=False,
-        )
-        embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+        view = BuffTypeSelectView(interaction.user.id, self.dust_amount, selected_card, karte_data, user_buffs)
+        embed = _build_fuse_buff_type_embed(selected_card, karte_data, user_buffs)
         await interaction.response.edit_message(embed=embed, view=view)
 
 
 class BuffTypeSelectView(RestrictedView):
-    def __init__(self, dust_amount, selected_card, karte_data, user_buffs):
+    def __init__(self, user_id, dust_amount, selected_card, karte_data, user_buffs):
         super().__init__(timeout=60)
+        self.user_id = int(user_id)
         self.dust_amount = dust_amount
         self.selected_card = selected_card
         self.add_item(BuffTypeSelect(dust_amount, selected_card, karte_data, user_buffs))
+        self.add_item(FuseCancelButton(self.user_id))
 
 
 class BuffTypeSelect(ui.Select):
@@ -6889,6 +6948,18 @@ class BuffTypeSelect(ui.Select):
         current_hp = base_hp + total_health
 
         options = [
+            SelectOption(
+                label="Held wechseln",
+                value="change_card",
+                description="Zurück zur Helden-Auswahl",
+                emoji="🔁",
+            ),
+            SelectOption(
+                label="Abbrechen",
+                value="cancel",
+                description="Upgrade-Menü schließen",
+                emoji="❌",
+            ),
             SelectOption(
                 label="Leben verstärken",
                 value="health_0",
@@ -6919,6 +6990,23 @@ class BuffTypeSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         buff_choice = self.values[0]
+        if buff_choice == "change_card":
+            user_karten = await get_user_karten(interaction.user.id)
+            if not user_karten:
+                await interaction.response.send_message("❌ Du hast keine Karten zum Verstärken!", ephemeral=True)
+                return
+            view = FuseCardSelectView(interaction.user.id, self.dust_amount, user_karten)
+            embed = _build_fuse_card_select_embed(self.dust_amount)
+            if self.view is not None:
+                self.view.stop()
+            await interaction.response.edit_message(embed=embed, view=view)
+            return
+        if buff_choice == "cancel":
+            if self.view is not None:
+                self.view.stop()
+            await interaction.response.edit_message(content="❌ Verstärkung abgebrochen.", embed=None, view=None)
+            return
+
         buff_type, attack_num = buff_choice.split("_")
         attack_number = int(attack_num)
 
@@ -7159,9 +7247,13 @@ class InviteUserSelect(ui.Select):
         )
 
 class DustAmountView(RestrictedView):
-    def __init__(self, user_dust):
+    def __init__(self, user_id_or_dust, user_dust: int | None = None):
         super().__init__(timeout=60)
-        self.add_item(DustAmountSelect(user_dust))
+        resolved_user_id = None if user_dust is None else int(user_id_or_dust)
+        resolved_user_dust = int(user_id_or_dust if user_dust is None else user_dust)
+        self.add_item(DustAmountSelect(resolved_user_dust))
+        if resolved_user_id is not None:
+            self.add_item(FuseCancelButton(resolved_user_id))
 
 # Slash-Command: Anfang (Hauptmenü)
 class AnfangView(RestrictedView):
