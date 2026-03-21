@@ -1331,6 +1331,25 @@ def _add_attack_info_field(embed: discord.Embed, card: dict, *, field_name: str 
     embed.add_field(name=field_name, value=value, inline=False)
 
 
+def _build_upgrade_preview_lines(
+    card: dict,
+    buffs: list[tuple[str, int, int]],
+    *,
+    max_attacks: int = 4,
+) -> list[str]:
+    total_health, damage_map = battle_state.summarize_card_buffs(buffs)
+    base_hp = int(card.get("hp", 100) or 100)
+    lines = [f"❤️ Leben aktuell: **{base_hp + total_health} HP**"]
+    attacks = card.get("attacks", [])
+    for idx, attack in enumerate(attacks[:max_attacks], start=1):
+        _label, _style, attack_summary = _attack_display_parts(
+            attack,
+            max_only_bonus=damage_map.get(idx, 0),
+        )
+        lines.append(f"⚔️ {attack_summary}")
+    return lines
+
+
 def _starts_cooldown_after_landing(attack: dict) -> bool:
     for effect in attack.get("effects", []):
         if str(effect.get("type") or "").strip().lower() == "airborne_two_phase":
@@ -6829,39 +6848,51 @@ class CardSelect(ui.Select):
             await interaction.response.send_message("❌ Karte nicht gefunden!", ephemeral=True)
             return
 
-        view = BuffTypeSelectView(self.dust_amount, selected_card, karte_data)
+        user_buffs = await get_card_buffs(interaction.user.id, selected_card)
+        view = BuffTypeSelectView(self.dust_amount, selected_card, karte_data, user_buffs)
+        current_values = "\n".join(_build_upgrade_preview_lines(karte_data, user_buffs))
         embed = discord.Embed(
             title="⚡ Verstärkung wählen",
             description=(
                 f"Karte: **{selected_card}**\n\n"
-                f"❤️ Leben: **+{FUSE_HEALTH_BONUS}**\n"
-                f"⚔️ Max-Schaden: **+{FUSE_DAMAGE_MAX_BONUS}** (min bleibt gleich)\n\n"
                 "Was möchtest du verstärken?"
             ),
             color=0x9D4EDD,
+        )
+        embed.add_field(name="Aktuelle Werte", value=current_values[:1024], inline=False)
+        embed.add_field(
+            name="Nächste Verstärkung",
+            value=(
+                f"❤️ Leben: **+{FUSE_HEALTH_BONUS}**\n"
+                f"⚔️ Max-Schaden: **+{FUSE_DAMAGE_MAX_BONUS}** (min bleibt gleich)"
+            ),
+            inline=False,
         )
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
         await interaction.response.edit_message(embed=embed, view=view)
 
 
 class BuffTypeSelectView(RestrictedView):
-    def __init__(self, dust_amount, selected_card, karte_data):
+    def __init__(self, dust_amount, selected_card, karte_data, user_buffs):
         super().__init__(timeout=60)
         self.dust_amount = dust_amount
         self.selected_card = selected_card
-        self.add_item(BuffTypeSelect(dust_amount, selected_card, karte_data))
+        self.add_item(BuffTypeSelect(dust_amount, selected_card, karte_data, user_buffs))
 
 
 class BuffTypeSelect(ui.Select):
-    def __init__(self, dust_amount, selected_card, karte_data):
+    def __init__(self, dust_amount, selected_card, karte_data, user_buffs):
         self.dust_amount = dust_amount
         self.selected_card = selected_card
+        total_health, damage_map = battle_state.summarize_card_buffs(user_buffs)
+        base_hp = int(karte_data.get("hp", 100) or 100)
+        current_hp = base_hp + total_health
 
         options = [
             SelectOption(
                 label="Leben verstärken",
                 value="health_0",
-                description=f"+{FUSE_HEALTH_BONUS} Lebenspunkte (bis {FUSE_HP_CAP})",
+                description=f"Aktuell {current_hp} HP, +{FUSE_HEALTH_BONUS} Lebenspunkte",
                 emoji="❤️",
             )
         ]
@@ -6871,15 +6902,15 @@ class BuffTypeSelect(ui.Select):
             if not _attack_is_damage_upgradeable(attack):
                 continue
             attack_name = str(attack.get("name") or f"Attacke {i + 1}")
-            attack_damage = attack.get("damage", [0, 0])
-            _min_dmg, max_dmg = _damage_range_with_max_bonus(attack_damage, max_only_bonus=0, flat_bonus=0)
+            current_bonus = damage_map.get(i + 1, 0)
+            min_dmg, max_dmg = _attack_total_damage_range(attack, max_only_bonus=current_bonus, flat_bonus=0)
             if max_dmg + FUSE_DAMAGE_MAX_BONUS > MAX_ATTACK_DAMAGE_PER_HIT:
                 continue
             options.append(
                 SelectOption(
                     label=f"{attack_name} verstärken",
                     value=f"damage_{i + 1}",
-                    description=f"+{FUSE_DAMAGE_MAX_BONUS} Max-Schaden (bis {MAX_ATTACK_DAMAGE_PER_HIT})",
+                    description=f"Aktuell {min_dmg}-{max_dmg} Schaden, +{FUSE_DAMAGE_MAX_BONUS} Max-Schaden",
                     emoji="⚔️",
                 )
             )
