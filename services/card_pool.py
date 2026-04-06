@@ -93,10 +93,8 @@ def alpha_playable_cards(cards: Iterable[CardData]) -> list[CardData]:
 
 
 def gameplay_cards(cards: Iterable[CardData], *, alpha_enabled: bool) -> list[CardData]:
-    items = list(cards)
-    if not alpha_enabled:
-        return items
-    return alpha_playable_cards(items)
+    _ = alpha_enabled
+    return list(cards)
 
 
 def filter_owned_cards_for_gameplay(
@@ -104,10 +102,8 @@ def filter_owned_cards_for_gameplay(
     *,
     alpha_enabled: bool,
 ) -> list[tuple[str, int]]:
-    items = [(canonical_card_name(name), int(amount)) for name, amount in owned_cards]
-    if not alpha_enabled:
-        return items
-    return [(name, amount) for name, amount in items if card_is_alpha_playable(name)]
+    _ = alpha_enabled
+    return [(canonical_card_name(name), int(amount)) for name, amount in owned_cards]
 
 
 def random_gameplay_card(cards: Iterable[CardData], *, alpha_enabled: bool) -> CardData:

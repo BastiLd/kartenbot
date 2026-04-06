@@ -13,6 +13,7 @@ BattleBoolMap: TypeAlias = dict[int, bool]
 BattleIntMap: TypeAlias = dict[int, int]
 BattleFloatMap: TypeAlias = dict[int, float]
 BattlePendingLandingMap: TypeAlias = dict[int, BattleEntry | None]
+BattleEntryMap: TypeAlias = dict[int, BattleEntry | None]
 DamageInput = DamageValue
 
 
@@ -35,6 +36,7 @@ class BattleRuntimeMaps(TypedDict):
     absorbed_damage: BattleIntMap
     delayed_defense_queue: BattleEffectsMap
     airborne_pending_landing: BattlePendingLandingMap
+    last_special_attack: BattleEntryMap
 
 
 def build_battle_runtime_maps(player_ids: tuple[int, int]) -> BattleRuntimeMaps:
@@ -58,6 +60,7 @@ def build_battle_runtime_maps(player_ids: tuple[int, int]) -> BattleRuntimeMaps:
         "absorbed_damage": {player_a: 0, player_b: 0},
         "delayed_defense_queue": {player_a: [], player_b: []},
         "airborne_pending_landing": {player_a: None, player_b: None},
+        "last_special_attack": {player_a: None, player_b: None},
     }
 
 
@@ -78,12 +81,18 @@ def status_icons(active_effects: BattleEffectsMap, player_id: int) -> str:
     icons = []
     if any(effect.get("type") == "burning" for effect in effects):
         icons.append("\U0001f525")
+    if any(effect.get("type") == "poison" for effect in effects):
+        icons.append("☠️")
+    if any(effect.get("type") == "bleeding" for effect in effects):
+        icons.append("🩸")
     if any(effect.get("type") == "confusion" for effect in effects):
         icons.append("\U0001f300")
     if any(effect.get("type") == "stealth" for effect in effects):
         icons.append("\U0001f977")
     if any(effect.get("type") == "airborne" for effect in effects):
         icons.append("\u2708\ufe0f")
+    if any(effect.get("type") == "shield" for effect in effects):
+        icons.append("\U0001f6e1\ufe0f")
     return f" {' '.join(icons)}" if icons else ""
 
 
@@ -500,11 +509,14 @@ def resolve_incoming_modifiers(
     raw_damage: int,
     *,
     ignore_evade: bool = False,
+    ignore_all_defense: bool = False,
     incoming_min_damage: int | None = None,
 ) -> tuple[int, int, bool, int, BattleEntry | None]:
     if raw_damage <= 0 or not incoming_modifiers.get(defender_id):
         return raw_damage, 0, False, 0, None
     modifier = incoming_modifiers[defender_id].pop(0)
+    if ignore_all_defense:
+        return max(0, int(raw_damage)), 0, False, 0, modifier
     if modifier.get("evade") and not ignore_evade:
         return 0, 0, True, int(modifier.get("counter", 0) or 0), modifier
 

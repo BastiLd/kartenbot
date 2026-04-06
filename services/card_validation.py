@@ -4,6 +4,7 @@ ALLOWED_EFFECT_TYPES = frozenset(
         "airborne_two_phase",
         "blind",
         "burning",
+        "bleeding",
         "cap_damage",
         "damage_boost",
         "damage_reduction",
@@ -17,7 +18,29 @@ ALLOWED_EFFECT_TYPES = frozenset(
         "force_max",
         "guaranteed_hit",
         "heal",
+        "heal_curse",
+        "heal_from_target_dot",
+        "increase_last_enemy_special_cooldown",
+        "increase_random_enemy_cooldown",
+        "incoming_damage_bonus",
+        "interrupt_enemy_standard_or_heal_self",
         "mix_heal_or_max",
+        "next_attack_flat_penalty",
+        "reset_own_cooldown",
+        "enemy_force_min_damage",
+        "enemy_next_special_self_damage",
+        "enemy_special_self_damage",
+        "enemy_attack_self_damage",
+        "shield",
+        "standard_lock",
+        "status_immunity",
+        "disable_enemy_evade_and_block",
+        "burn_multiplier",
+        "copy_last_enemy_special",
+        "reactive_evolution",
+        "finisher_below_hp",
+        "disable_enemy_heal_if_bleeding",
+        "poison",
         "reflect",
         "regen",
         "special_lock",
@@ -172,7 +195,7 @@ def _validate_effect(effect, path: str, issues: list[str]) -> None:
     if chance is not None:
         _validate_probability(chance, path, "chance", issues)
 
-    if effect_type == "burning":
+    if effect_type in {"burning", "poison", "bleeding"}:
         _validate_amount_range(effect.get("duration"), path, "duration", issues, minimum=1)
         _validate_int(effect.get("damage"), path, "damage", issues, minimum=1)
     elif effect_type == "damage_multiplier":
@@ -225,6 +248,31 @@ def _validate_effect(effect, path: str, issues: list[str]) -> None:
             issues.append(f"{path}: max_damage fehlt")
     elif effect_type == "airborne_two_phase":
         _validate_amount_range(effect.get("landing_damage"), path, "landing_damage", issues, minimum=0)
+    elif effect_type == "shield":
+        _validate_int(effect.get("hp"), path, "hp", issues, minimum=1)
+        break_counter = effect.get("break_counter")
+        if break_counter is not None:
+            _validate_int(break_counter, path, "break_counter", issues, minimum=0)
+    elif effect_type in {"enemy_attack_self_damage", "enemy_special_self_damage", "enemy_next_special_self_damage", "heal_curse"}:
+        _validate_int(effect.get("amount") or effect.get("damage"), path, "amount", issues, minimum=0)
+        turns = effect.get("turns")
+        if turns is not None:
+            _validate_int(turns, path, "turns", issues, minimum=1)
+    elif effect_type in {"increase_last_enemy_special_cooldown", "increase_random_enemy_cooldown"}:
+        _validate_int(effect.get("amount"), path, "amount", issues, minimum=1)
+    elif effect_type == "incoming_damage_bonus":
+        _validate_int(effect.get("amount"), path, "amount", issues, minimum=1)
+        _validate_int(effect.get("turns"), path, "turns", issues, minimum=1)
+    elif effect_type == "next_attack_flat_penalty":
+        _validate_int(effect.get("amount"), path, "amount", issues, minimum=1)
+    elif effect_type == "burn_multiplier":
+        _validate_number(effect.get("multiplier"), path, "multiplier", issues, minimum=1.0)
+        _validate_int(effect.get("uses"), path, "uses", issues, minimum=1)
+    elif effect_type == "finisher_below_hp":
+        _validate_int(effect.get("threshold"), path, "threshold", issues, minimum=0)
+    elif effect_type == "heal_from_target_dot":
+        if str(effect.get("dot_type") or "").strip() not in {"burning", "poison", "bleeding"}:
+            issues.append(f"{path}: dot_type ist ungueltig")
 
 
 def _validate_attack(attack, path: str, issues: list[str], seen_attack_names: dict[str, str]) -> None:

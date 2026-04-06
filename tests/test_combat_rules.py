@@ -81,7 +81,7 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(e.get("type") == "force_max" for e in effects))
         self.assertIn("Maximalschaden", str(treffsicherheit.get("info") or ""))
 
-        standard_pfeil = _find_attack(hawkeye, "Pfeil")
+        standard_pfeil = _find_attack(hawkeye, "Flammen Pfeil")
         self.assertTrue(bool(standard_pfeil.get("is_standard_attack")))
 
         triple = _find_attack(hawkeye, "Triple Arrow")
@@ -196,9 +196,19 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         missing = configured_types.difference(EFFECT_TYPES_WITH_EFFECT_LOGS)
         self.assertFalse(missing, f"Missing effect-log coverage for: {sorted(missing)}")
 
-    def test_alpha_pool_contains_only_original_14_cards(self) -> None:
+    def test_alpha_pool_definition_keeps_original_14_cards_for_legacy_uses(self) -> None:
         pool = alpha_playable_cards(karten)
         self.assertEqual([card.get("name") for card in pool], list(ALPHA_PLAYABLE_CARD_NAMES))
+
+    def test_gameplay_pool_includes_all_beta_cards(self) -> None:
+        pool = bot_module.gameplay_cards(karten, alpha_enabled=True)
+        pool_names = {str(card.get("name") or "") for card in pool}
+        self.assertIn("Loki", pool_names)
+        self.assertIn("Ultron", pool_names)
+        self.assertIn("Scarlet Witch", pool_names)
+        self.assertIn("Deadpool", pool_names)
+        self.assertIn("Carnage", pool_names)
+        self.assertGreater(len(pool_names), len(ALPHA_PLAYABLE_CARD_NAMES))
 
     def test_new_non_rare_cards_use_new_placeholder_image(self) -> None:
         expected_names = {
@@ -217,6 +227,11 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
             "The Thing",
             "Human Torch",
             "Cyclops",
+            "Loki",
+            "Ultron",
+            "Scarlet Witch",
+            "Deadpool",
+            "Carnage",
         }
         placeholder = "https://i.imgur.com/4mxNv2c.png"
         found_names = {card.get("name") for card in karten if card.get("bild") == placeholder}
@@ -411,7 +426,11 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
                     max_only_bonus=0,
                     flat_bonus=0,
                 )
-                if max_dmg + bot_module.FUSE_DAMAGE_MAX_BONUS > MAX_ATTACK_DAMAGE_PER_HIT:
+                upgrade_step = bot_module._attack_upgrade_step(attack)
+                upgrade_cap = bot_module._attack_upgrade_max_bonus(attack)
+                if upgrade_cap <= 0:
+                    continue
+                if max_dmg + upgrade_step > MAX_ATTACK_DAMAGE_PER_HIT:
                     continue
                 expected_damage_options.add(f"damage_{index}")
 
@@ -1968,8 +1987,8 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
             False,
         )
         self.assertLessEqual(damage, MAX_ATTACK_DAMAGE_PER_HIT)
-        self.assertEqual(damage, MAX_ATTACK_DAMAGE_PER_HIT)
-        self.assertEqual(max_damage, MAX_ATTACK_DAMAGE_PER_HIT)
+        self.assertEqual(damage, min(80, MAX_ATTACK_DAMAGE_PER_HIT))
+        self.assertEqual(max_damage, min(80, MAX_ATTACK_DAMAGE_PER_HIT))
 
     async def test_battle_execute_attack_uses_followup_after_defer_for_cooldown(self) -> None:
         player_card = {
@@ -2047,8 +2066,8 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
             True,
             False,
         )
-        self.assertEqual(damage, MAX_ATTACK_DAMAGE_PER_HIT)
-        self.assertEqual(max_damage, MAX_ATTACK_DAMAGE_PER_HIT)
+        self.assertEqual(damage, min(100, MAX_ATTACK_DAMAGE_PER_HIT))
+        self.assertEqual(max_damage, min(100, MAX_ATTACK_DAMAGE_PER_HIT))
 
     async def test_update_attack_buttons_show_max_only_damage_buff(self) -> None:
         player_card = {
@@ -2538,7 +2557,7 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(dmg, 33)
         self.assertLessEqual(dmg, MAX_ATTACK_DAMAGE_PER_HIT)
         self.assertEqual(min_dmg, 33)
-        self.assertEqual(max_dmg, MAX_ATTACK_DAMAGE_PER_HIT)
+        self.assertEqual(max_dmg, min(66, MAX_ATTACK_DAMAGE_PER_HIT))
 
     async def test_battle_view_multi_hit_logs_roll_details(self) -> None:
         player_card = {
@@ -2819,9 +2838,9 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         attack_buttons = [c for c in view.children if hasattr(c, "row") and c.row in (0, 1)][:4]
         self.assertIn("Flammen Pfeil", str(attack_buttons[0].label))
-        self.assertTrue(bool(attack_buttons[0].disabled))
+        self.assertFalse(bool(attack_buttons[0].disabled))
         self.assertIn("Pfeil", str(attack_buttons[1].label))
-        self.assertFalse(bool(attack_buttons[1].disabled))
+        self.assertTrue(bool(attack_buttons[1].disabled))
         self.assertTrue(all(bool(btn.disabled) for btn in (attack_buttons[2], attack_buttons[3])))
 
     async def test_hawkeye_treffsicherheit_makes_triple_arrow_max_damage(self) -> None:
@@ -2968,8 +2987,8 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
             False,
             False,
         )
-        self.assertEqual(dmg, MAX_ATTACK_DAMAGE_PER_HIT)
-        self.assertEqual(max_dmg, MAX_ATTACK_DAMAGE_PER_HIT)
+        self.assertEqual(dmg, min(120, MAX_ATTACK_DAMAGE_PER_HIT))
+        self.assertEqual(max_dmg, min(120, MAX_ATTACK_DAMAGE_PER_HIT))
 
     async def test_mission_execute_attack_uses_followup_after_defer_for_cooldown(self) -> None:
         player_card = {
@@ -3250,9 +3269,9 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         view.update_attack_buttons_mission()
         attack_buttons = [c for c in view.children if hasattr(c, "row") and c.row in (0, 1)][:4]
         self.assertIn("Flammen Pfeil", str(attack_buttons[0].label))
-        self.assertTrue(bool(attack_buttons[0].disabled))
+        self.assertFalse(bool(attack_buttons[0].disabled))
         self.assertIn("Pfeil", str(attack_buttons[1].label))
-        self.assertFalse(bool(attack_buttons[1].disabled))
+        self.assertTrue(bool(attack_buttons[1].disabled))
         self.assertTrue(all(bool(btn.disabled) for btn in (attack_buttons[2], attack_buttons[3])))
 
     async def test_mission_hawkeye_treffsicherheit_makes_triple_arrow_max_damage(self) -> None:
@@ -3348,19 +3367,19 @@ class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/mission", text)
         self.assertIn("/geschichte", text)
 
-    async def test_anfang_view_hides_mission_and_story_buttons_in_alpha(self) -> None:
+    async def test_anfang_view_keeps_mission_and_story_buttons_in_alpha(self) -> None:
         with patch.object(bot_module, "ALPHA_PHASE_ENABLED", True):
             view = bot_module.AnfangView()
         custom_ids = {getattr(child, "custom_id", None) for child in view.children}
-        self.assertNotIn("anfang:mission", custom_ids)
-        self.assertNotIn("anfang:story", custom_ids)
+        self.assertIn("anfang:mission", custom_ids)
+        self.assertIn("anfang:story", custom_ids)
 
-    async def test_anfang_view_hides_mission_and_story_buttons_when_alpha_disabled(self) -> None:
+    async def test_anfang_view_keeps_mission_and_story_buttons_when_alpha_disabled(self) -> None:
         with patch.object(bot_module, "ALPHA_PHASE_ENABLED", False):
             view = bot_module.AnfangView()
         custom_ids = {getattr(child, "custom_id", None) for child in view.children}
-        self.assertNotIn("anfang:mission", custom_ids)
-        self.assertNotIn("anfang:story", custom_ids)
+        self.assertIn("anfang:mission", custom_ids)
+        self.assertIn("anfang:story", custom_ids)
 
     def test_alpha_hides_set_mission_from_dev_and_visibility_lists(self) -> None:
         has_dev_action = ("Set mission reset", "set_mission") in bot_module.DEV_ACTION_OPTIONS
@@ -3372,14 +3391,14 @@ class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(has_dev_action)
             self.assertTrue(has_visibility_item)
 
-    async def test_resend_pending_requests_skips_missions_in_alpha(self) -> None:
+    async def test_resend_pending_requests_keeps_missions_active_even_when_alpha_flag_is_true(self) -> None:
         with (
             patch.object(bot_module, "ALPHA_PHASE_ENABLED", True),
             patch.object(bot_module, "get_pending_fight_requests", new=AsyncMock(return_value=[])),
             patch.object(bot_module, "get_pending_mission_requests", new=AsyncMock(return_value=[])) as mission_mock,
         ):
             await bot_module.resend_pending_requests()
-        mission_mock.assert_not_awaited()
+        mission_mock.assert_awaited_once()
 
 
 class PersistentFlowRegressionTests(unittest.IsolatedAsyncioTestCase):

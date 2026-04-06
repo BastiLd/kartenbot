@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 from types import ModuleType
@@ -200,9 +200,11 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
             title="\U0001F48E Karten-Verst\u00e4rkung",
             description=(
                 f"Du hast **{user_dust} Infinitydust**\n\n"
-                "W\u00e4hle die Menge f\u00fcr die Verst\u00e4rkung:\n\n"
-                f"\U0001F48E **{module.FUSE_DUST_COST} Dust** = +{module.FUSE_HEALTH_BONUS} Leben "
-                f"oder +{module.FUSE_DAMAGE_MAX_BONUS} Max-Schaden"
+                "Wähle die Menge für die Verstärkung:\n\n"
+                f"💎 **{module.FUSE_DUST_COST} Dust** = +{module.FUSE_HEALTH_BONUS} Leben\n"
+                f"⚔️ Standard: {module.STANDARD_DAMAGE_UPGRADE_MAX_TIMES}x +{module.STANDARD_DAMAGE_UPGRADE_STEP} Max-Schaden\n"
+                f"⚔️ Spezial: {module.SPECIAL_DAMAGE_UPGRADE_MAX_TIMES}x +{module.SPECIAL_DAMAGE_UPGRADE_STEP} Max-Schaden\n"
+                "Min-Schaden bleibt gleich."
             ),
             color=0x9D4EDD,
         )
@@ -386,3 +388,6 @@ def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
         "vault": vault,
         "anfang": anfang,
     }
+
+
+

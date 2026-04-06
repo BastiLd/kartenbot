@@ -609,7 +609,11 @@ def create_battle_embed(
             seen.add(effect_type)
             duration = int(effect.get("duration", 0) or 0)
             if effect_type == "burning":
-                labels.append(f"🔥 Brennen({duration})" if duration > 0 else "🔥 Brennen")
+                labels.append(f"🔥 Brand({duration})" if duration > 0 else "🔥 Brand")
+            elif effect_type == "poison":
+                labels.append(f"☠️ Gift({duration})" if duration > 0 else "☠️ Gift")
+            elif effect_type == "bleeding":
+                labels.append(f"🩸 Blutung({duration})" if duration > 0 else "🩸 Blutung")
             elif effect_type == "confusion":
                 labels.append(f"🌀 Verwirrt({duration})" if duration > 0 else "🌀 Verwirrt")
             elif effect_type == "stealth":

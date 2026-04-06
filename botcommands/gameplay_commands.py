@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 import random
@@ -13,9 +13,6 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
         description="Schicke dein Team auf eine Mission und erhalte eine Belohnung",
     )
     async def mission(interaction: discord.Interaction):
-        if module.ALPHA_PHASE_ENABLED:
-            await module._send_alpha_feature_blocked(interaction)
-            return
         if not await module.is_channel_allowed(interaction):
             return
         await interaction.response.defer(ephemeral=True)
@@ -79,9 +76,6 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
 
     @bot.tree.command(name="geschichte", description="Starte eine interaktive Story")
     async def story(interaction: discord.Interaction):
-        if module.ALPHA_PHASE_ENABLED:
-            await module._send_alpha_feature_blocked(interaction)
-            return
         if not await module.is_channel_allowed(interaction):
             return
         visibility_key = module.command_visibility_key_for_interaction(interaction)
@@ -265,3 +259,4 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
         "story": story,
         "fight": fight,
     }
+

@@ -1,6 +1,19 @@
 COMMON = "Gewöhnlich"
+RARE = "Selten"
 DEFAULT_HP = 140
 NEW_CARD_IMAGE = "https://i.imgur.com/4mxNv2c.png"
+
+# Zentraler Konfig-Block für spätere Balance-Anpassungen.
+DIRECT_DAMAGE_CAP = 999
+STANDARD_DAMAGE_UPGRADE_STEP = 4
+STANDARD_DAMAGE_UPGRADE_MAX_TIMES = 2
+SPECIAL_DAMAGE_UPGRADE_STEP = 3
+SPECIAL_DAMAGE_UPGRADE_MAX_TIMES = 5
+DOT_TYPE_DEFAULTS = {
+    "burning": {"label": "Brand", "icon": "🔥", "max_damage": 999},
+    "poison": {"label": "Gift", "icon": "☠️", "max_damage": 999},
+    "bleeding": {"label": "Blutung", "icon": "🩸", "max_damage": 999},
+}
 
 
 karten = [
@@ -500,8 +513,8 @@ karten = [
                 "name": "Wirbelsturm-Kick",
                 "damage": [15, 15],
                 "cooldown_turns": 5,
-                "future_effect": "disable_enemy_standard_attack",
-                "info": "Verursacht 15 Schaden. Der Spezialeffekt zum Sperren des Standardangriffs ist für die nächste Phase vorbereitet.",
+                "effects": [{"type": "standard_lock", "target": "enemy", "turns": 1, "chance": 1.0}],
+                "info": "Verursacht 15 Schaden und sperrt den nächsten gegnerischen Standardangriff.",
             },
         ],
     },
@@ -532,8 +545,8 @@ karten = [
                 "name": "Pym-Partikel-Wurf",
                 "damage": [15, 15],
                 "cooldown_turns": 4,
-                "future_effect": "random_shrink_or_enlarge_enemy",
-                "info": "Verursacht 15 Schaden. Die Zufallsvariante für Schrumpfen/Vergrößern ist für die nächste Phase vorgemerkt.",
+                "effects": [{"type": "incoming_damage_bonus", "target": "enemy", "amount": 5, "turns": 2, "chance": 1.0}],
+                "info": "Verursacht 15 Schaden und macht den Gegner 2 Runden lang anfälliger für Schaden.",
             },
         ],
     },
@@ -549,7 +562,7 @@ karten = [
                 "name": "Venom Blast",
                 "damage": [15, 20],
                 "cooldown_turns": 4,
-                "future_effect": {"type": "enemy_attack_self_damage", "amount": 5, "turns": 1},
+                "effects": [{"type": "enemy_attack_self_damage", "target": "enemy", "amount": 5, "turns": 1, "chance": 1.0}],
                 "info": "Verursacht 15-20 Schaden. Der Gegner soll beim nächsten Angriff 5 Selbstschaden erhalten.",
             },
             {
@@ -580,8 +593,8 @@ karten = [
                 "name": "Ruf des Ozeans",
                 "damage": [10, 10],
                 "cooldown_turns": 4,
-                "future_effect": {"type": "status_immunity", "turns": 1},
-                "info": "Verursacht 10 Schaden. Der Immunitätseffekt gegen negative Zustände ist für die nächste Phase vorgemerkt.",
+                "effects": [{"type": "status_immunity", "target": "self", "turns": 1, "chance": 1.0}],
+                "info": "Verursacht 10 Schaden und macht Namor für die nächste gegnerische Runde immun gegen negative Zustände.",
             },
             {
                 "name": "Flug der Knöchelflügel",
@@ -682,8 +695,8 @@ karten = [
                 "name": "Beweisaufnahme",
                 "damage": [15, 15],
                 "cooldown_turns": 4,
-                "future_effect": "disable_enemy_evade_and_block",
-                "info": "Verursacht 15 Schaden. Der Effekt gegen Ausweichen und Blocken ist für die nächste Phase vorgemerkt.",
+                "effects": [{"type": "disable_enemy_evade_and_block", "target": "enemy", "turns": 1, "chance": 1.0}],
+                "info": "Verursacht 15 Schaden und deaktiviert kurzzeitig gegnerisches Ausweichen und Blocken.",
             },
             {
                 "name": "Einspruch!",
@@ -707,9 +720,8 @@ karten = [
                 "name": "Unsichtbarer Schutz",
                 "damage": [0, 0],
                 "cooldown_turns": 6,
-                "effects": [{"type": "damage_reduction_flat", "target": "self", "amount": 25, "turns": 1, "chance": 1.0}],
-                "future_effect": {"type": "shield_break_counter", "amount": 10},
-                "info": "Absorbiert beim nächsten Angriff bis zu 25 Schaden. Der Rückstoß beim Zerbrechen ist vorbereitet.",
+                "effects": [{"type": "shield", "target": "self", "hp": 25, "break_counter": 10, "max_hits": 1, "chance": 1.0}],
+                "info": "Absorbiert beim nächsten Angriff bis zu 25 Schaden und verursacht beim Zerbrechen 10 Rückschaden.",
             },
             {
                 "name": "Kraftfeld-Infiltration",
@@ -740,8 +752,8 @@ karten = [
                 "name": "Ruf des Donners",
                 "damage": [15, 15],
                 "cooldown_turns": 4,
-                "future_effect": {"type": "enemy_special_self_damage", "amount": 10, "turns": 1},
-                "info": "Verursacht 15 Schaden. Der Schockeffekt auf Spezialfähigkeiten ist für die nächste Phase vorgemerkt.",
+                "effects": [{"type": "enemy_special_self_damage", "target": "enemy", "amount": 10, "turns": 1, "chance": 1.0}],
+                "info": "Verursacht 15 Schaden. Die nächste gegnerische Spezialfähigkeit verursacht zusätzlich 10 Selbstschaden.",
             },
             {
                 "name": "Gott des Donners",
@@ -782,8 +794,8 @@ karten = [
                 "effects": [
                     {"type": "blind", "target": "enemy", "miss_chance": 0.5, "chance": 1.0},
                     {"type": "damage_boost", "target": "self", "amount": 20, "uses": 1, "chance": 1.0},
+                    {"type": "increase_random_enemy_cooldown", "target": "enemy", "amount": 1, "chance": 1.0},
                 ],
-                "future_effect": {"type": "increase_random_enemy_cooldown", "amount": 1},
                 "info": "Der nächste gegnerische Angriff hat 50% Verfehlchance und Reeds nächster Angriff macht +20 Schaden.",
             },
             {
@@ -814,8 +826,8 @@ karten = [
                 "name": "Felsenhaut",
                 "damage": [0, 0],
                 "cooldown_turns": 6,
-                "future_effect": {"type": "shield", "hp": 40, "stun_immunity": True},
-                "info": "Verleiht ein Schild mit 40 HP. Die Betäubungsimmunität ist für die nächste Phase vorgemerkt.",
+                "effects": [{"type": "shield", "target": "self", "hp": 40, "stun_immunity": True, "chance": 1.0}],
+                "info": "Verleiht ein Schild mit 40 HP und schützt solange vor Betäubung.",
             },
             {
                 "name": "Clobberin' Time",
@@ -844,15 +856,15 @@ karten = [
                 "name": "Flammenwand",
                 "damage": [0, 0],
                 "cooldown_turns": 5,
-                "future_effect": {"type": "interrupt_enemy_standard_or_heal_self", "damage": 15, "heal": 10},
-                "info": "Der Unterbrechungs-/Heileffekt ist für die nächste Phase vorgemerkt.",
+                "effects": [{"type": "interrupt_enemy_standard_or_heal_self", "target": "enemy", "damage": 15, "heal": 10, "turns": 1, "chance": 1.0}],
+                "info": "Die nächste gegnerische Aktion wird abgefangen: Standardangriff wird unterbrochen oder Human Torch heilt sich.",
             },
             {
                 "name": "Supernova-Ladung",
                 "damage": [0, 0],
                 "cooldown_turns": 4,
-                "future_effect": {"type": "burn_multiplier", "multiplier": 2.0, "uses": 1},
-                "info": "Bereitet doppelten Brandschaden für den nächsten Angriff vor.",
+                "effects": [{"type": "burn_multiplier", "target": "self", "multiplier": 2.0, "uses": 1, "chance": 1.0}],
+                "info": "Verdoppelt den Brandschaden des nächsten eigenen Brand-Effekts.",
             },
             {
                 "name": "FLAMME AN!",
@@ -875,9 +887,11 @@ karten = [
                 "name": "Taktisches Manöver",
                 "damage": [0, 0],
                 "cooldown_turns": 5,
-                "effects": [{"type": "evade", "target": "self", "counter": 0, "chance": 1.0}],
-                "future_effect": {"type": "enemy_incoming_flat_bonus", "amount": 5, "turns": 2},
-                "info": "Cyclops weicht dem nächsten Angriff aus. Der Verteidigungsbruch für 2 Runden ist vorbereitet.",
+                "effects": [
+                    {"type": "evade", "target": "self", "counter": 0, "chance": 1.0},
+                    {"type": "incoming_damage_bonus", "target": "enemy", "amount": 5, "turns": 2, "chance": 1.0},
+                ],
+                "info": "Cyclops weicht dem nächsten Angriff aus und erhöht 2 Runden lang den eingehenden Schaden des Gegners.",
             },
             {
                 "name": "Visier-Anpassung",
@@ -893,3 +907,189 @@ karten = [
         ],
     },
 ]
+
+
+karten.extend(
+    [
+        {
+            "name": "Loki",
+            "beschreibung": "Täuschung, Ausweichen und gestohlene Kräfte.",
+            "bild": NEW_CARD_IMAGE,
+            "seltenheit": RARE,
+            "hp": DEFAULT_HP,
+            "attacks": [
+                {"name": "Täuschungs-Dolch", "damage": [12, 16], "info": "Schneller Standardangriff."},
+                {
+                    "name": "Illusion",
+                    "damage": [0, 0],
+                    "cooldown_turns": 5,
+                    "effects": [
+                        {"type": "evade", "target": "self", "counter": 0, "chance": 1.0},
+                        {"type": "increase_last_enemy_special_cooldown", "target": "enemy", "amount": 1, "chance": 1.0},
+                    ],
+                    "info": "Weicht dem nächsten Angriff aus. Falls möglich, wird die zuletzt benutzte gegnerische Spezialfähigkeit um 1 Runde verlängert.",
+                },
+                {
+                    "name": "Gedankenkontrolle",
+                    "damage": [15, 15],
+                    "cooldown_turns": 6,
+                    "effects": [{"type": "copy_last_enemy_special", "target": "enemy", "fallback_damage": 15, "chance": 1.0}],
+                    "info": "Kopiert die zuletzt benutzte gegnerische Spezialfähigkeit. Falls nichts kopierbar ist, macht Loki 15 Schaden.",
+                },
+                {
+                    "name": "Zepter-Stoß",
+                    "damage": [30, 40],
+                    "cooldown_turns": 5,
+                    "effects": [{"type": "enemy_next_special_self_damage", "target": "enemy", "amount": 15, "turns": 1, "chance": 1.0}],
+                    "info": "Starker Treffer. Die nächste gegnerische Spezialfähigkeit kostet den Gegner 15 HP.",
+                },
+            ],
+        },
+        {
+            "name": "Ultron",
+            "beschreibung": "Drohnen, Anpassung und kalte Optimierung.",
+            "bild": NEW_CARD_IMAGE,
+            "seltenheit": RARE,
+            "hp": DEFAULT_HP,
+            "attacks": [
+                {"name": "Encephalon-Strahl", "damage": [13, 17], "info": "Präziser Standardstrahl."},
+                {
+                    "name": "Drohnen-Schwarm",
+                    "damage": [0, 0],
+                    "cooldown_turns": 5,
+                    "effects": [{"type": "bleeding", "target": "enemy", "duration": [3, 3], "damage": 6, "chance": 1.0}],
+                    "info": "Drei Runden lang verursachen Drohnen passiv je 6 Schaden.",
+                },
+                {
+                    "name": "Reaktive Evolution",
+                    "damage": [0, 0],
+                    "cooldown_turns": 6,
+                    "effects": [{"type": "reactive_evolution", "target": "self", "amount": 2, "max_stacks": 3, "chance": 1.0}],
+                    "info": "Ultron nimmt dauerhaft 2 Schaden weniger vom zuletzt analysierten Angriffstyp.",
+                },
+                {
+                    "name": "System-Optimierung",
+                    "damage": [35, 45],
+                    "cooldown_turns": 6,
+                    "cooldown_overrides_by_final_damage": [{"threshold": 55, "turns": 7}],
+                    "heal_if_self_hp_below_pct": 0.5,
+                    "heal_if_condition": 15,
+                    "info": "Starker Treffer. Unter 50% HP heilt Ultron sich zusätzlich um 15 HP.",
+                },
+            ],
+        },
+        {
+            "name": "Scarlet Witch",
+            "beschreibung": "Chaosmagie mit Fluch und Cooldown-Kontrolle.",
+            "bild": NEW_CARD_IMAGE,
+            "seltenheit": RARE,
+            "hp": DEFAULT_HP,
+            "attacks": [
+                {"name": "Chaos-Energie", "damage": [11, 19], "info": "Unberechenbarer Standardangriff."},
+                {
+                    "name": "Wahrscheinlichkeits-Verzerrung",
+                    "damage": [0, 0],
+                    "cooldown_turns": 4,
+                    "effects": [{"type": "enemy_force_min_damage", "target": "enemy", "turns": 1, "chance": 1.0}],
+                    "info": "Der nächste gegnerische Angriff verursacht nur seinen Minimalwert.",
+                },
+                {
+                    "name": "Realitäts-Shift",
+                    "damage": [0, 0],
+                    "cooldown_turns": 7,
+                    "effects": [{"type": "reset_own_cooldown", "target": "self", "chance": 1.0}],
+                    "info": "Setzt eine bereits genutzte eigene Fähigkeit sofort auf Cooldown 0 zurück.",
+                },
+                {
+                    "name": "Hex-Fluch",
+                    "damage": [32, 42],
+                    "cooldown_turns": 5,
+                    "effects": [{"type": "heal_curse", "target": "enemy", "damage": 15, "turns": 2, "chance": 1.0}],
+                    "info": "Starker Chaosangriff. In den nächsten 2 Runden nimmt der Gegner 15 Schaden, wenn er heilen will.",
+                },
+            ],
+        },
+        {
+            "name": "Deadpool",
+            "beschreibung": "Chaos, Selbstschaden und Finisher-Logik.",
+            "bild": NEW_CARD_IMAGE,
+            "seltenheit": RARE,
+            "hp": DEFAULT_HP,
+            "attacks": [
+                {"name": "Katanas & Knarren", "damage": [13, 18], "info": "Deadpools Standardangriff."},
+                {
+                    "name": "4. Wand brechen",
+                    "damage": [0, 0],
+                    "heal": [20, 30],
+                    "cooldown_turns": 5,
+                    "effects": [{"type": "next_attack_flat_penalty", "target": "self", "amount": 5, "turns": 1, "chance": 1.0}],
+                    "info": "Heilt 20-30 HP, aber der nächste eigene Angriff macht 5 Schaden weniger.",
+                },
+                {
+                    "name": "Maximum Effort",
+                    "damage": [0, 0],
+                    "self_damage": 10,
+                    "cooldown_turns": 4,
+                    "effects": [{"type": "damage_boost", "target": "self", "amount": 20, "uses": 1, "chance": 1.0}],
+                    "info": "Deadpool nimmt 10 Selbstschaden und erhält +20 Schaden auf den nächsten Angriff.",
+                },
+                {
+                    "name": "Hex-Fluch",
+                    "damage": [35, 50],
+                    "cooldown_turns": 6,
+                    "cooldown_overrides_by_final_damage": [{"threshold": 55, "turns": 7}],
+                    "effects": [{"type": "finisher_below_hp", "target": "enemy", "threshold": 20, "chance": 1.0}],
+                    "info": "Finisher. Bringt der Treffer den Gegner unter 20 HP, wird er sofort besiegt.",
+                },
+            ],
+        },
+        {
+            "name": "Carnage",
+            "beschreibung": "Blutung, Heilung und brutale Finisher.",
+            "bild": NEW_CARD_IMAGE,
+            "seltenheit": RARE,
+            "hp": DEFAULT_HP,
+            "attacks": [
+                {"name": "Symbionten-Sicheln", "damage": [14, 19], "info": "Carnages Standardangriff."},
+                {
+                    "name": "Blut-Massaker",
+                    "damage": [18, 24],
+                    "cooldown_turns": 5,
+                    "effects": [
+                        {"type": "bleeding", "target": "enemy", "duration": [3, 3], "damage": 6, "chance": 1.0},
+                        {"type": "heal_from_target_dot", "target": "enemy", "dot_type": "bleeding", "chance": 1.0},
+                    ],
+                    "info": "Verursacht Blutung für 3 Runden. Carnage heilt sich um den Blutungsschaden des Gegners.",
+                },
+                {
+                    "name": "Wahnsinniger Ausbruch",
+                    "damage": [35, 35],
+                    "self_damage": 15,
+                    "cooldown_turns": 4,
+                    "unblockable": True,
+                    "info": "Opfert 15 eigene HP für 35 unblockbaren Schaden.",
+                },
+                {
+                    "name": "Chaos-Sturm",
+                    "damage": [40, 50],
+                    "cooldown_turns": 6,
+                    "cooldown_overrides_by_final_damage": [{"threshold": 55, "turns": 7}],
+                    "effects": [{"type": "disable_enemy_heal_if_bleeding", "target": "enemy", "turns": 3, "chance": 1.0}],
+                    "info": "Massiver Angriff. Bluten Gegner bereits, ist deren Heilung 3 Runden lang deaktiviert.",
+                },
+            ],
+        },
+    ]
+)
+
+for card in karten:
+    attacks = list(card.get("attacks", []))
+    if not attacks:
+        continue
+    if card.get("name") == "Hawkeye":
+        for attack in attacks:
+            attack.pop("is_standard_attack", None)
+        attacks[0]["is_standard_attack"] = True
+        continue
+    if not any(bool(attack.get("is_standard_attack")) for attack in attacks[:4]):
+        attacks[0]["is_standard_attack"] = True
