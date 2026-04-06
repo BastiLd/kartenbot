@@ -10,7 +10,7 @@ async def main() -> None:
         commands = bot.tree.get_commands()
         print(f"Verfuegbare Commands: {len(commands)}")
         for cmd in commands:
-            print(f"- /{cmd.name}: {cmd.description}")
+            print(f"- /{cmd.name}: {getattr(cmd, 'description', '')}")
     finally:
         await bot.close()
         await close_db()

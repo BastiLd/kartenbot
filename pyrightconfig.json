@@ -4,8 +4,11 @@
     "venv": ".venv",
     "exclude": [
         ".venv",
+        "node_modules",
         "__pycache__",
-        ".pycache_tmp"
+        ".pycache_tmp",
+        "archiv_altlasten",
+        "release"
     ],
     "reportAny": "none",
     "reportDeprecated": "none",

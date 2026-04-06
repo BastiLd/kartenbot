@@ -19,8 +19,19 @@ async def _ensure_analytics_schema() -> None:
 
 
 def _as_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip() or "0")
+        except ValueError:
+            return 0
     try:
-        return int(value or 0)
+        return int(str(value or "0").strip() or "0")
     except (TypeError, ValueError):
         return 0
 

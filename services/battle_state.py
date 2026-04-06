@@ -17,6 +17,34 @@ BattleEntryMap: TypeAlias = dict[int, BattleEntry | None]
 DamageInput = DamageValue
 
 
+def _safe_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip() or str(default))
+        except ValueError:
+            return default
+    return default
+
+
+def _safe_float(value: object, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip() or str(default))
+        except ValueError:
+            return default
+    return default
+
+
 class BattleRuntimeMaps(TypedDict):
     cooldowns_by_player: BattleCooldownsMap
     active_effects: BattleEffectsMap
@@ -189,14 +217,14 @@ def consume_confusion_if_any(
 
 def get_attack_max_damage(attack_damage, damage_buff: int = 0) -> int:
     if isinstance(attack_damage, list) and len(attack_damage) == 2:
-        return int(attack_damage[1]) + int(damage_buff or 0)
-    return int(attack_damage) + int(damage_buff or 0)
+        return _safe_int(attack_damage[1]) + int(damage_buff or 0)
+    return _safe_int(attack_damage) + int(damage_buff or 0)
 
 
 def get_attack_min_damage(attack_damage, damage_buff: int = 0) -> int:
     if isinstance(attack_damage, list) and len(attack_damage) == 2:
-        return int(attack_damage[0]) + int(damage_buff or 0)
-    return int(attack_damage) + int(damage_buff or 0)
+        return _safe_int(attack_damage[0]) + int(damage_buff or 0)
+    return _safe_int(attack_damage) + int(damage_buff or 0)
 
 
 def is_strong_attack(attack_damage, damage_buff: int = 0) -> bool:
@@ -293,7 +321,7 @@ def activate_delayed_defense_after_attack(
         source = str(entry.get("source") or "").strip()
         source_prefix = f"{source}: " if source else ""
         if defense_mode == "evade":
-            counter = int(entry.get("counter", 0) or 0)
+            counter = _safe_int(entry.get("counter", 0))
             queue_incoming_modifier(
                 incoming_modifiers,
                 player_id,
@@ -487,8 +515,8 @@ def apply_outgoing_attack_modifiers(
     modifier = outgoing_attack_modifiers[attacker_id].pop(0)
     final_damage, overflow = apply_outgoing_attack_modifier(
         raw_damage,
-        percent=float(modifier.get("percent", 0.0) or 0.0),
-        flat=int(modifier.get("flat", 0) or 0),
+        percent=_safe_float(modifier.get("percent", 0.0)),
+        flat=_safe_int(modifier.get("flat", 0)),
     )
     return final_damage, overflow, modifier
 

@@ -11,6 +11,34 @@ DamageInput = DamageValue
 MultiHitDetails = MultiHitRollDetails
 
 
+def _safe_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip() or str(default))
+        except ValueError:
+            return default
+    return default
+
+
+def _safe_float(value: object, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip() or str(default))
+        except ValueError:
+            return default
+    return default
+
+
 @overload
 def resolve_multi_hit_damage(
     multi_hit: MultiHitConfig,
@@ -45,7 +73,7 @@ def resolve_multi_hit_damage(
     return_details: bool = False,
 ):
     """Resolve multi-hit damage and return (damage, min_possible, max_possible[, details])."""
-    hits = max(0, int(multi_hit.get("hits", 0) or 0))
+    hits = max(0, _safe_int(multi_hit.get("hits", 0)))
     details: MultiHitDetails = {
         "hits": hits,
         "landed_hits": 0,
@@ -68,13 +96,13 @@ def resolve_multi_hit_damage(
     hit_min = max(0, hit_min)
     hit_max = max(hit_min, hit_max)
 
-    chance = float(multi_hit.get("hit_chance", 0.0) or 0.0)
+    chance = _safe_float(multi_hit.get("hit_chance", 0.0))
     chance = max(0.0, min(1.0, chance))
 
     guaranteed_min_per_hit = hit_min
     if guaranteed_hit and not force_max:
         try:
-            guaranteed_min_per_hit = max(hit_min, int(multi_hit.get("guaranteed_min_per_hit", hit_min) or hit_min))
+            guaranteed_min_per_hit = max(hit_min, _safe_int(multi_hit.get("guaranteed_min_per_hit", hit_min), hit_min))
         except Exception:
             guaranteed_min_per_hit = hit_min
 
@@ -162,8 +190,8 @@ def calculate_damage(attack_damage: DamageInput, buff_amount: int = 0) -> tuple[
     else:
         min_damage = max_damage = attack_damage
 
-    min_damage = int(min_damage) + int(buff_amount)
-    max_damage = int(max_damage) + int(buff_amount)
+    min_damage = _safe_int(min_damage) + int(buff_amount)
+    max_damage = _safe_int(max_damage) + int(buff_amount)
     min_damage = max(0, min_damage)
     max_damage = max(0, max_damage)
     if min_damage > max_damage:

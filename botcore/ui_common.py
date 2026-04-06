@@ -1,4 +1,4 @@
-import discord
+﻿import discord
 from discord import SelectOption, ui
 
 from botcore.interaction_utils import defer_interaction, send_interaction_response
@@ -25,12 +25,12 @@ def _presence_priority(member) -> int:
 def _status_circle(member) -> str:
     status = getattr(member, "status", discord.Status.offline)
     if status == discord.Status.online:
-        return "🟢"
+        return "\U0001f7e2"
     if status == discord.Status.idle:
-        return "🟡"
+        return "\U0001f7e1"
     if status == discord.Status.dnd:
-        return "🔴"
-    return "⚫"
+        return "\U0001f534"
+    return "\u26ab"
 
 
 class RestrictedView(ui.View):
@@ -94,12 +94,12 @@ class ShowAllMembersPager(ui.View):
         self.add_item(self.next_btn)
 
     def _placeholder(self) -> str:
-        return f"Seite {self.page_index + 1}/{len(self.pages)} – Nutzer wählen..."
+        return f"Seite {self.page_index + 1}/{len(self.pages)} - Nutzer wählen..."
 
     def _build_options_for_current_page(self) -> list[SelectOption]:
         options: list[SelectOption] = []
         if self.include_bot_option and self.page_index == 0:
-            options.append(SelectOption(label="🤖 Bot", value="bot"))
+            options.append(SelectOption(label="\U0001f916 Bot", value="bot"))
         for member in self.pages[self.page_index]:
             label = f"{_status_circle(member)} {str(getattr(member, 'display_name', 'Unbekannt'))[:100]}"
             options.append(SelectOption(label=label, value=str(getattr(member, 'id'))))
@@ -114,12 +114,12 @@ class ShowAllMembersPager(ui.View):
 
         choice = self.select.values[0]
         if choice == "none":
-            await send_interaction_response(interaction, content="❌ Keine Nutzer verfügbar!", ephemeral=True)
+            await send_interaction_response(interaction, content="\u274c Keine Nutzer verfügbar!", ephemeral=True)
             return
 
         if self.parent_view is not None:
             if hasattr(self.parent_view, "value"):
-                self.parent_view.value = choice
+                setattr(self.parent_view, "value", choice)
             if hasattr(self.parent_view, "stop"):
                 self.parent_view.stop()
         self.stop()

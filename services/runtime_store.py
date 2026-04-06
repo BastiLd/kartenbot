@@ -110,7 +110,7 @@ async def save_active_session(
                 ),
             )
             await db.commit()
-            return int(cursor.lastrowid)
+            return int(cursor.lastrowid or 0)
 
         await db.execute(
             """
@@ -133,7 +133,7 @@ async def save_active_session(
             ),
         )
         await db.commit()
-    return int(session_id)
+    return int(session_id or 0)
 
 
 async def get_active_session(session_id: int) -> dict[str, Any] | None:

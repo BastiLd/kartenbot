@@ -40,7 +40,7 @@ async def create_fight_request(
             ),
         )
         await db.commit()
-        return int(cursor.lastrowid)
+        return int(cursor.lastrowid or 0)
 
 
 async def update_fight_request_message(request_id: int, message_id: int | None, message_channel_id: int | None = None) -> None:
@@ -99,7 +99,7 @@ async def create_mission_request(
             ),
         )
         await db.commit()
-        return int(cursor.lastrowid)
+        return int(cursor.lastrowid or 0)
 
 
 async def update_mission_request_message(request_id: int, message_id: int | None, channel_id: int | None = None) -> None:

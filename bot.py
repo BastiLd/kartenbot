@@ -367,17 +367,17 @@ def _outgoing_reduction_effect_text(
     source_name = str(_effect_source_name(source)).strip() if source else ""
     if source_name:
         return (
-            f"Ausgehende Reduktion: Normal wÃ¤ren {before} Schaden mÃ¶glich gewesen, "
+            f"Ausgehende Reduktion: Normal wären {before} Schaden möglich gewesen, "
             f"durch {escape_display_text(source_name, fallback='Effekt')} jetzt {after} Schaden."
         )
-    return f"Ausgehende Reduktion: Normal wÃ¤ren {before} Schaden mÃ¶glich gewesen, jetzt {after} Schaden."
+    return f"Ausgehende Reduktion: Normal wären {before} Schaden möglich gewesen, jetzt {after} Schaden."
 
 
 def _overflow_recoil_source(source: object | None = None) -> str:
     source_name = str(_effect_source_name(source)).strip() if source else ""
     if source_name:
-        return f"Ãœberlauf-RÃ¼ckstoÃŸ durch {escape_display_text(source_name, fallback='Effekt')}"
-    return "Ãœberlauf-RÃ¼ckstoÃŸ"
+        return f"Überlauf-Rückstoß durch {escape_display_text(source_name, fallback='Effekt')}"
+    return "Überlauf-Rückstoß"
 
 
 async def _delete_message_quietly(message: discord.Message | None) -> None:
@@ -639,7 +639,7 @@ def _apply_dot_ticks_for_applier(
     *,
     target_id: int,
     applier_id: int,
-    damage_callback: Callable[[int], None],
+    damage_callback: Callable[[int], object],
 ) -> tuple[int, list[str]]:
     remove: list[dict[str, object]] = []
     total_damage = 0
@@ -842,8 +842,11 @@ def _consume_shield_damage(
     shield["hp"] = max(0, shield_hp - absorbed)
     hits_left = shield.get("max_hits")
     if hits_left is not None:
-        shield["max_hits"] = max(0, int(hits_left or 0) - 1)
-    broke = int(shield.get("hp", 0) or 0) <= 0 or int(shield.get("max_hits", 1) or 0) <= 0
+        resolved_hits_left = _maybe_int(hits_left) or 0
+        shield["max_hits"] = max(0, resolved_hits_left - 1)
+    shield_hp_left = _effect_int(shield, "hp", 0)
+    shield_hits_left = _effect_int(shield, "max_hits", 1)
+    broke = shield_hp_left <= 0 or shield_hits_left <= 0
     break_counter = 0
     if broke:
         break_counter = max(0, _effect_int(shield, "break_counter", 0))
@@ -1428,11 +1431,11 @@ def _describe_regen_amount(value: object, *, turns: int) -> str | None:
         max_value = _maybe_int(value[1])
         if min_value is None or max_value is None:
             return None
-        return f"Heilt {min_value}-{max_value} HP fÃ¼r {turns} {round_label}"
+        return f"Heilt {min_value}-{max_value} HP für {turns} {round_label}"
     parsed = _maybe_int(value)
     if parsed is None:
         return None
-    return f"Heilt {parsed} HP fÃ¼r {turns} {round_label}"
+    return f"Heilt {parsed} HP für {turns} {round_label}"
 
 
 def _heal_label_for_attack(attack: dict) -> str | None:
@@ -1563,7 +1566,7 @@ def _apply_mix_heal_or_max_effect(
         owner._append_effect_event(effect_events, f"Awesome Mix: +{healed_mix} HP.")
         return
     owner.force_max_next[target_id] = max(owner.force_max_next.get(target_id, 0), 1)
-    owner._append_effect_event(effect_events, "Awesome Mix: NÃ¤chster Angriff verursacht Maximalschaden.")
+    owner._append_effect_event(effect_events, "Awesome Mix: Nächster Angriff verursacht Maximalschaden.")
 
 
 def _damage_text_for_attack(attack: dict) -> str:
@@ -1659,8 +1662,8 @@ def _attack_kind_label(
     if _is_standard_attack(attacks, attack_index):
         return "Standardangriff"
     if _attack_has_heal_component(attack) and not _attack_has_direct_damage(attack):
-        return "HeilfÃ¤higkeit"
-    return "FÃ¤higkeit"
+        return "Heilfähigkeit"
+    return "Fähigkeit"
 
 
 def _extract_heal_amount_from_events(effect_events: list[str] | None) -> int:
@@ -1710,7 +1713,7 @@ def _prepend_action_context_events(
     else:
         outcome_text = "erfolgreich ohne direkten Schaden eingesetzt"
     if outcome_text:
-        effect_events.insert(0, f"AusfÃ¼hrung: {outcome_text}.")
+        effect_events.insert(0, f"Ausführung: {outcome_text}.")
     if action_text:
         effect_events.insert(0, f"Aktionstyp: {action_text}.")
 
@@ -1759,23 +1762,23 @@ def _attack_effect_icons(attack: dict) -> list[str]:
     for eff in attack.get("effects", []):
         eff_type = str(eff.get("type") or "").strip().lower()
         if eff_type == "burning":
-            if "ðŸ”¥" not in effect_icons:
-                effect_icons.append("ðŸ”¥")
+            if "🔥" not in effect_icons:
+                effect_icons.append("🔥")
         elif eff_type == "poison":
-            if "â˜ ï¸" not in effect_icons:
-                effect_icons.append("â˜ ï¸")
+            if "☠️" not in effect_icons:
+                effect_icons.append("☠️")
         elif eff_type == "bleeding":
-            if "ðŸ©¸" not in effect_icons:
-                effect_icons.append("ðŸ©¸")
+            if "🩸" not in effect_icons:
+                effect_icons.append("🩸")
         elif eff_type == "confusion":
-            if "ðŸŒ€" not in effect_icons:
-                effect_icons.append("ðŸŒ€")
+            if "🌀" not in effect_icons:
+                effect_icons.append("🌀")
         elif eff_type == "stealth":
-            if "ðŸ¥·" not in effect_icons:
-                effect_icons.append("ðŸ¥·")
+            if "🥷" not in effect_icons:
+                effect_icons.append("🥷")
         elif eff_type == "stun":
-            if "ðŸ›‘" not in effect_icons:
-                effect_icons.append("ðŸ›‘")
+            if "🛑" not in effect_icons:
+                effect_icons.append("🛑")
         elif eff_type in {
             "damage_reduction",
             "damage_reduction_flat",
@@ -1786,23 +1789,23 @@ def _attack_effect_icons(attack: dict) -> list[str]:
             "cap_damage",
             "delayed_defense_after_next_attack",
         }:
-            if "ðŸ›¡ï¸" not in effect_icons:
-                effect_icons.append("ðŸ›¡ï¸")
+            if "🛡️" not in effect_icons:
+                effect_icons.append("🛡️")
         elif eff_type == "airborne_two_phase":
-            if "âœˆï¸" not in effect_icons:
-                effect_icons.append("âœˆï¸")
+            if "✈️" not in effect_icons:
+                effect_icons.append("✈️")
         elif eff_type in {"damage_boost", "damage_multiplier"}:
-            if "âš¡" not in effect_icons:
-                effect_icons.append("âš¡")
+            if "⚡" not in effect_icons:
+                effect_icons.append("⚡")
         elif eff_type in {"force_max", "mix_heal_or_max", "guaranteed_hit"}:
-            if "ðŸŽ¯" not in effect_icons:
-                effect_icons.append("ðŸŽ¯")
+            if "🎯" not in effect_icons:
+                effect_icons.append("🎯")
         elif eff_type in {"heal", "regen"}:
-            if "â¤ï¸" not in effect_icons:
-                effect_icons.append("â¤ï¸")
+            if "❤️" not in effect_icons:
+                effect_icons.append("❤️")
     heal_label = _heal_label_for_attack(attack)
-    if heal_label and "â¤ï¸" not in effect_icons:
-        effect_icons.append("â¤ï¸")
+    if heal_label and "❤️" not in effect_icons:
+        effect_icons.append("❤️")
     return effect_icons
 
 
@@ -1818,14 +1821,14 @@ def _attack_display_parts(attack: dict, *, max_only_bonus: int = 0) -> tuple[str
     if heal_label is not None:
         label = f"{attack_name} ({heal_label}){effects_label}"
         style = _resolve_attack_button_style(attack, discord.ButtonStyle.success)
-        summary = f"{attack_name} â€” {heal_label}{effects_label}"
+        summary = f"{attack_name} — {heal_label}{effects_label}"
         return label, style, summary
     min_dmg, max_dmg = _attack_total_damage_range(attack, max_only_bonus=max_only_bonus, flat_bonus=0)
     damage_text = f"{min_dmg}-{max_dmg}"
     buff_text = f" (+{max_only_bonus} max)" if max_only_bonus > 0 else ""
     label = f"{attack_name} ({damage_text}{buff_text}){effects_label}"
     style = _resolve_attack_button_style(attack, discord.ButtonStyle.danger)
-    summary = f"{attack_name} â€” {damage_text} Schaden{buff_text}{effects_label}"
+    summary = f"{attack_name} — {damage_text} Schaden{buff_text}{effects_label}"
     return label, style, summary
 
 
@@ -1836,13 +1839,13 @@ def _build_attack_info_lines(card: dict, *, max_attacks: int = 4) -> list[str]:
         _label, _style, attack_summary = _attack_display_parts(attack)
         info_text = str(attack.get("info") or "").strip()
         if info_text:
-            lines.append(f"â€¢ {attack_summary}: {info_text}")
+            lines.append(f"• {attack_summary}: {info_text}")
         else:
-            lines.append(f"â€¢ {attack_summary}")
+            lines.append(f"• {attack_summary}")
     return lines
 
 
-def _add_attack_info_field(embed: discord.Embed, card: dict, *, field_name: str = "FÃ¤higkeiten") -> None:
+def _add_attack_info_field(embed: discord.Embed, card: dict, *, field_name: str = "Fähigkeiten") -> None:
     lines = _build_attack_info_lines(card)
     if not lines:
         return
@@ -1860,30 +1863,30 @@ def _build_upgrade_preview_lines(
 ) -> list[str]:
     total_health, damage_map = battle_state.summarize_card_buffs(buffs)
     base_hp = int(card.get("hp", 100) or 100)
-    lines = [f"â¤ï¸ Leben aktuell: **{base_hp + total_health} HP**"]
+    lines = [f"❤️ Leben aktuell: **{base_hp + total_health} HP**"]
     attacks = card.get("attacks", [])
     for idx, attack in enumerate(attacks[:max_attacks], start=1):
         _label, _style, attack_summary = _attack_display_parts(
             attack,
             max_only_bonus=damage_map.get(idx, 0),
         )
-        lines.append(f"âš”ï¸ {attack_summary}")
+        lines.append(f"⚔️ {attack_summary}")
     return lines
 
 
 def _build_fuse_card_select_embed(
     dust_amount: int,
     *,
-    title: str = "ðŸŽ¯ Karte auswÃ¤hlen",
-    guidance: str = "WÃ¤hle die Karte, die du verstÃ¤rken mÃ¶chtest:",
+    title: str = "🎯 Karte auswählen",
+    guidance: str = "Wähle die Karte, die du verstärken möchtest:",
 ) -> discord.Embed:
     embed = discord.Embed(
         title=title,
         description=(
             f"Du verwendest **{dust_amount} Infinitydust**.\n"
-            f"â¤ï¸ Leben: **+{FUSE_HEALTH_BONUS}** (max. {FUSE_HP_CAP})\n"
-            f"âš”ï¸ Standard: **{STANDARD_DAMAGE_UPGRADE_MAX_TIMES}x +{STANDARD_DAMAGE_UPGRADE_STEP} Max-Schaden**\n"
-            f"âš”ï¸ Spezial: **{SPECIAL_DAMAGE_UPGRADE_MAX_TIMES}x +{SPECIAL_DAMAGE_UPGRADE_STEP} Max-Schaden**\n\n"
+            f"❤️ Leben: **+{FUSE_HEALTH_BONUS}** (max. {FUSE_HP_CAP})\n"
+            f"⚔️ Standard: **{STANDARD_DAMAGE_UPGRADE_MAX_TIMES}x +{STANDARD_DAMAGE_UPGRADE_STEP} Max-Schaden**\n"
+            f"⚔️ Spezial: **{SPECIAL_DAMAGE_UPGRADE_MAX_TIMES}x +{SPECIAL_DAMAGE_UPGRADE_STEP} Max-Schaden**\n\n"
             f"{guidance}"
         ),
         color=0x9D4EDD,
@@ -1899,21 +1902,21 @@ def _build_fuse_buff_type_embed(
 ) -> discord.Embed:
     current_values = "\n".join(_build_upgrade_preview_lines(karte_data, user_buffs))
     embed = discord.Embed(
-        title="âš¡ VerstÃ¤rkung wÃ¤hlen",
+        title="⚡ Verstärkung wählen",
         description=(
             f"Karte: **{selected_card}**\n\n"
-            "Was mÃ¶chtest du verstÃ¤rken?"
+            "Was möchtest du verstärken?"
         ),
         color=0x9D4EDD,
     )
     embed.add_field(name="Aktuelle Werte", value=current_values[:1024], inline=False)
     embed.add_field(
-        name="NÃ¤chste VerstÃ¤rkung",
+        name="Nächste Verstärkung",
         value=(
-            f"â¤ï¸ Leben: **+{FUSE_HEALTH_BONUS}**\n"
-            f"âš”ï¸ Standard: **+{STANDARD_DAMAGE_UPGRADE_STEP} Max-Schaden** pro Upgrade "
+            f"❤️ Leben: **+{FUSE_HEALTH_BONUS}**\n"
+            f"⚔️ Standard: **+{STANDARD_DAMAGE_UPGRADE_STEP} Max-Schaden** pro Upgrade "
             f"(max. {STANDARD_DAMAGE_UPGRADE_MAX_TIMES}x)\n"
-            f"âš”ï¸ Spezial: **+{SPECIAL_DAMAGE_UPGRADE_STEP} Max-Schaden** pro Upgrade "
+            f"⚔️ Spezial: **+{SPECIAL_DAMAGE_UPGRADE_STEP} Max-Schaden** pro Upgrade "
             f"(max. {SPECIAL_DAMAGE_UPGRADE_MAX_TIMES}x)\n"
             "min bleibt gleich"
         ),
@@ -3401,7 +3404,7 @@ class BattleView(DurableView):
         modifier_source = str((modifier_details or {}).get("source") or "").strip()
         source_suffix = f" durch {_effect_source_name(modifier_source)}" if modifier_source else ""
         if dodged:
-            self._append_effect_event(effect_events, f"Ausweichen{source_suffix}: Angriff vollstÃ¤ndig verfehlt.")
+            self._append_effect_event(effect_events, f"Ausweichen{source_suffix}: Angriff vollständig verfehlt.")
         elif final_damage < raw_damage:
             self._append_effect_event(
                 effect_events,
@@ -3418,12 +3421,12 @@ class BattleView(DurableView):
             if not modifier_source:
                 self._append_effect_event(
                     effect_events,
-                    f"{reflect_prefix} durch {defender}: {int(reflected_damage)} Schaden zurÃ¼ckgeworfen.",
+                    f"{reflect_prefix} durch {defender}: {int(reflected_damage)} Schaden zurückgeworfen.",
                 )
             else:
                 self._append_effect_event(
                     effect_events,
-                    f"Reflexion{source_suffix} durch {defender}: {int(reflected_damage)} Schaden zurÃ¼ckgeworfen.",
+                    f"Reflexion{source_suffix} durch {defender}: {int(reflected_damage)} Schaden zurückgeworfen.",
                 )
         if counter_damage > 0:
             self._append_effect_event(effect_events, f"Konter{source_suffix} durch {defender}: {int(counter_damage)} Schaden.")
@@ -3515,13 +3518,13 @@ class BattleView(DurableView):
         attacker_max_hp = self._max_hp_for(0)
         defender_max_hp = self._max_hp_for(self.player1_id)
 
-        conditional_self_pct = attack.get("bonus_if_self_hp_below_pct")
-        conditional_self_bonus = int(attack.get("bonus_damage_if_condition", 0) or 0)
-        if conditional_self_pct is not None and attacker_hp <= int(attacker_max_hp * float(conditional_self_pct)):
+        conditional_self_pct = _maybe_float(attack.get("bonus_if_self_hp_below_pct"))
+        conditional_self_bonus = _maybe_int(attack.get("bonus_damage_if_condition", 0)) or 0
+        if conditional_self_pct is not None and attacker_hp <= int(attacker_max_hp * conditional_self_pct):
             damage_buff += conditional_self_bonus
 
-        conditional_enemy_pct = attack.get("conditional_enemy_hp_below_pct")
-        if conditional_enemy_pct is not None and defender_hp <= int(defender_max_hp * float(conditional_enemy_pct)):
+        conditional_enemy_pct = _maybe_float(attack.get("conditional_enemy_hp_below_pct"))
+        if conditional_enemy_pct is not None and defender_hp <= int(defender_max_hp * conditional_enemy_pct):
             damage_if_condition = attack.get("damage_if_condition")
             attack_for_estimate["damage"] = _coerce_damage_input(damage_if_condition, default=0)
 
@@ -3899,7 +3902,7 @@ class BattleView(DurableView):
                 recent_log_lines=self._recent_log_lines,
                 highlight_tone=self._last_highlight_tone,
             )
-            battle_embed.description = (battle_embed.description or "") + "\n\nðŸ›‘ Der Gegner war betÃ¤ubt und hat seinen Zug ausgesetzt."
+            battle_embed.description = (battle_embed.description or "") + "\n\n🛑 Der Gegner war betäubt und hat seinen Zug ausgesetzt."
             if message is not None:
                 try:
                     await message.edit(embed=battle_embed, view=self)
@@ -4072,14 +4075,14 @@ class BattleView(DurableView):
         defender_hp = self._hp_for(defender_id)
         defender_max_hp = self._max_hp_for(defender_id)
 
-        conditional_self_pct = attack.get("bonus_if_self_hp_below_pct")
-        conditional_self_bonus = int(attack.get("bonus_damage_if_condition", 0) or 0)
-        if conditional_self_pct is not None and attacker_hp <= int(attacker_max_hp * float(conditional_self_pct)):
+        conditional_self_pct = _maybe_float(attack.get("bonus_if_self_hp_below_pct"))
+        conditional_self_bonus = _maybe_int(attack.get("bonus_damage_if_condition", 0)) or 0
+        if conditional_self_pct is not None and attacker_hp <= int(attacker_max_hp * conditional_self_pct):
             damage_buff += conditional_self_bonus
 
         conditional_enemy_triggered = False
-        conditional_enemy_pct = attack.get("conditional_enemy_hp_below_pct")
-        if conditional_enemy_pct is not None and defender_hp <= int(defender_max_hp * float(conditional_enemy_pct)):
+        conditional_enemy_pct = _maybe_float(attack.get("conditional_enemy_hp_below_pct"))
+        if conditional_enemy_pct is not None and defender_hp <= int(defender_max_hp * conditional_enemy_pct):
             conditional_enemy_triggered = True
             damage_if_condition = attack.get("damage_if_condition")
             base_damage = _coerce_damage_input(damage_if_condition, default=0)
@@ -4369,7 +4372,7 @@ class BattleView(DurableView):
                         effect_events,
                         self.current_turn,
                         counter_damage,
-                        source="Konter-RÃ¼ckschaden",
+                        source="Konter-Rückschaden",
                         self_damage=False,
                     )
                 self._guard_non_heal_damage_result(defender_id, defender_hp_before, "pvp_player_attack")
@@ -4410,14 +4413,14 @@ class BattleView(DurableView):
             if healing_disabled:
                 self._append_effect_event(effect_events, "Heilung blockiert: Blutung verhindert diesen Effekt.")
             else:
-                heal_chance = float(attack.get("heal_chance", 1.0) or 1.0)
+                heal_chance = _maybe_float(attack.get("heal_chance", 1.0)) or 1.0
                 if random.random() <= heal_chance:
                     heal_amount = _random_int_from_range(heal_data)
                     healed_now = self.heal_player(self.current_turn, heal_amount)
                     if healed_now > 0:
                         self._append_effect_event(effect_events, f"Heilung: +{healed_now} HP.")
 
-        lifesteal_ratio = float(attack.get("lifesteal_ratio", 0.0) or 0.0)
+        lifesteal_ratio = _maybe_float(attack.get("lifesteal_ratio", 0.0)) or 0.0
         if lifesteal_ratio > 0 and attack_hits_enemy and actual_damage > 0 and not healing_disabled:
             lifesteal_heal = self.heal_player(self.current_turn, int(round(actual_damage * lifesteal_ratio)))
             if lifesteal_heal > 0:
@@ -4438,12 +4441,15 @@ class BattleView(DurableView):
             )
 
         # SIDE EFFECTS: Apply new effects from attack
-        effects = attack.get("effects", [])
+        raw_effects = attack.get("effects", [])
+        effects = raw_effects if isinstance(raw_effects, list) else []
         confusion_applied = False
         burning_duration_for_dynamic_cooldown: int | None = None
         for effect in effects:
+            if not isinstance(effect, dict):
+                continue
             # 70% Fix-Chance fÃ¼r Verwirrung
-            chance = 0.7 if effect.get('type') == 'confusion' else effect.get('chance', 1.0)
+            chance = 0.7 if effect.get('type') == 'confusion' else (_maybe_float(effect.get('chance', 1.0)) or 1.0)
             if random.random() >= chance:
                 continue
             target = effect.get("target", "enemy")
@@ -4497,15 +4503,15 @@ class BattleView(DurableView):
                 self.pending_multiplier_uses[target_id] = max(self.pending_multiplier_uses.get(target_id, 0), uses)
                 pct = int(round((mult - 1.0) * 100))
                 if pct > 0:
-                    self._append_effect_event(effect_events, _effect_source_text(attack_name, f"NÃ¤chster Angriff macht +{pct}% Schaden."))
+                    self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Nächster Angriff macht +{pct}% Schaden."))
             elif eff_type == "force_max":
                 uses = int(effect.get("uses", 1) or 1)
                 self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, _effect_source_text(attack_name, "NÃ¤chster Angriff verursacht Maximalschaden."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Nächster Angriff verursacht Maximalschaden."))
             elif eff_type == "guaranteed_hit":
                 uses = int(effect.get("uses", 1) or 1)
                 self.guaranteed_hit_next[target_id] = max(self.guaranteed_hit_next.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, _effect_source_text(attack_name, "NÃ¤chster Angriff trifft garantiert."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Nächster Angriff trifft garantiert."))
             elif eff_type == "standard_lock":
                 turns = max(1, int(effect.get("turns", 1) or 1))
                 _append_active_effect(self.active_effects, target_id, "standard_lock", self.current_turn, turns=turns, source=attack_name)
@@ -4549,11 +4555,11 @@ class BattleView(DurableView):
                     self._append_effect_event(effect_events, f"Cooldown erhÃ¶ht: {target_name} ist jetzt {new_cd} Runde(n) gesperrt.")
             elif eff_type == "increase_last_enemy_special_cooldown":
                 if isinstance(last_enemy_special_entry, dict):
-                    last_index = int(last_enemy_special_entry.get("attack_index", -1) or -1)
+                    last_index = _maybe_int(last_enemy_special_entry.get("attack_index", -1)) or -1
                     if last_index >= 0:
-                        bonus = max(1, int(effect.get("amount", 1) or 1))
+                        bonus = max(1, _maybe_int(effect.get("amount", 1)) or 1)
                         self.attack_cooldowns[defender_id][last_index] = max(0, int(self.attack_cooldowns[defender_id].get(last_index, 0) or 0)) + bonus
-                        self._append_effect_event(effect_events, f"Cooldown verlÃ¤ngert: {str(last_enemy_special_entry.get('attack_name') or 'letzte SpezialfÃ¤higkeit')} +{bonus}.")
+                        self._append_effect_event(effect_events, f"Cooldown verlängert: {str(last_enemy_special_entry.get('attack_name') or 'letzte Spezialfähigkeit')} +{bonus}.")
             elif eff_type == "incoming_damage_bonus":
                 turns = max(1, int(effect.get("turns", 1) or 1))
                 amount = max(0, int(effect.get("amount", 0) or 0))
@@ -4736,7 +4742,7 @@ class BattleView(DurableView):
             elif eff_type == "special_lock":
                 turns = max(1, int(effect.get("turns", 1) or 1))
                 self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), turns)
-                self._append_effect_event(effect_events, f"SpezialfÃ¤higkeiten des Gegners sind fÃ¼r {turns} Runde(n) gesperrt.")
+                self._append_effect_event(effect_events, f"Spezialfähigkeiten des Gegners sind für {turns} Runde(n) gesperrt.")
             elif eff_type == "blind":
                 miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
                 self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
@@ -4766,7 +4772,7 @@ class BattleView(DurableView):
                     effect_events,
                     landing_attack=(effect.get("landing_attack") if isinstance(effect.get("landing_attack"), dict) else None),
                     source_attack_index=attack_index if not is_forced_landing else None,
-                    cooldown_turns=int(attack.get("cooldown_turns", 0) or 0),
+                    cooldown_turns=_maybe_int(attack.get("cooldown_turns", 0)) or 0,
                 )
 
             # Kein separater Log-Eintrag mehr â€“ Effekt wird in der Angriffszeile signalisiert
@@ -4813,7 +4819,7 @@ class BattleView(DurableView):
                 previous_turn = self.current_turn
                 current_cd = self.attack_cooldowns[previous_turn].get(attack_index, 0)
                 self.attack_cooldowns[previous_turn][attack_index] = max(current_cd, dynamic_cooldown_turns)
-                bonus_for_dynamic_cd = max(0, int(attack.get("cooldown_from_burning_plus", 0) or 0))
+                bonus_for_dynamic_cd = max(0, _maybe_int(attack.get("cooldown_from_burning_plus", 0)) or 0)
                 self._append_effect_event(
                     effect_events,
                     f"Gammastrahl-Abklingzeit: {dynamic_cooldown_turns} (Effektdauer {burning_duration_for_dynamic_cooldown} + {bonus_for_dynamic_cd}).",
@@ -4827,9 +4833,10 @@ class BattleView(DurableView):
                 previous_turn = self.current_turn
                 self.start_attack_cooldown(previous_turn, attack_index)
         else:
-            landing_cd_index = forced_landing_attack.get("cooldown_attack_index")
-            landing_cd_turns = int(forced_landing_attack.get("cooldown_turns", 0) or 0)
-            if isinstance(landing_cd_index, int) and landing_cd_index >= 0 and landing_cd_turns > 0:
+            forced_landing = cast(dict[str, object], forced_landing_attack)
+            landing_cd_index = _maybe_int(forced_landing.get("cooldown_attack_index"))
+            landing_cd_turns = _maybe_int(forced_landing.get("cooldown_turns", 0)) or 0
+            if landing_cd_index is not None and landing_cd_index >= 0 and landing_cd_turns > 0:
                 previous_turn = self.current_turn
                 current_cd = self.attack_cooldowns[previous_turn].get(landing_cd_index, 0)
                 self.attack_cooldowns[previous_turn][landing_cd_index] = max(current_cd, landing_cd_turns)
@@ -5033,7 +5040,7 @@ class BattleView(DurableView):
                 recent_log_lines=self._recent_log_lines,
                 highlight_tone=self._last_highlight_tone,
             )
-            battle_embed.description = (battle_embed.description or "") + "\n\nðŸ›‘ Bot war betÃ¤ubt und hat seinen Zug ausgesetzt."
+            battle_embed.description = (battle_embed.description or "") + "\n\n🛑 Bot war betäubt und hat seinen Zug ausgesetzt."
             await message.edit(embed=battle_embed, view=self)
             return
 
@@ -5102,6 +5109,8 @@ class BattleView(DurableView):
             if self.force_max_next.get(0, 0) > 0:
                 force_max_damage = True
                 self.force_max_next[0] -= 1
+        is_reload_action = bool((not is_forced_landing) and attack.get("requires_reload") and self.is_reload_needed(0, attack_index))
+        attack_name = str(attack.get("reload_name") or "Nachladen") if is_reload_action else attack["name"]
         guaranteed_hit = bool(attack.get("guaranteed_hit_if_condition") and conditional_enemy_triggered)
         force_min_damage = _force_min_damage_active(self.active_effects, self.current_turn)
         attack_cancelled_by_heal_curse = False
@@ -5123,28 +5132,6 @@ class BattleView(DurableView):
                     self_damage=True,
                 )
             self._append_effect_event(effect_events, "Heilung wurde blockiert. Diese Attacke verbraucht keinen Cooldown.")
-        force_min_damage = _force_min_damage_active(self.active_effects, self.current_turn)
-        attack_cancelled_by_heal_curse = False
-        heal_curse_effect = _find_active_effect(self.active_effects, self.current_turn, "heal_curse")
-        if (not is_reload_action) and heal_curse_effect is not None and _attack_has_heal_component(attack):
-            attack_cancelled_by_heal_curse = True
-            curse_damage = max(0, _effect_int(heal_curse_effect, "damage", 0))
-            curse_source = str(heal_curse_effect.get("source") or "Hex-Fluch")
-            turns_left = max(0, _effect_int(heal_curse_effect, "turns", 1) - 1)
-            heal_curse_effect["turns"] = turns_left
-            if turns_left <= 0:
-                _remove_active_effect(self.active_effects, self.current_turn, heal_curse_effect)
-            if curse_damage > 0:
-                self._apply_non_heal_damage_with_event(
-                    effect_events,
-                    self.current_turn,
-                    curse_damage,
-                    source=curse_source,
-                    self_damage=True,
-                )
-            self._append_effect_event(effect_events, "Heilung wurde blockiert. Diese Attacke verbraucht keinen Cooldown.")
-        is_reload_action = bool((not is_forced_landing) and attack.get("requires_reload") and self.is_reload_needed(0, attack_index))
-        attack_name = str(attack.get("reload_name") or "Nachladen") if is_reload_action else attack["name"]
         action_type = _attack_kind_label(
             attack,
             attacks=attacks,
@@ -5329,7 +5316,7 @@ class BattleView(DurableView):
                         effect_events,
                         0,
                         counter_damage,
-                        source="Konter-RÃ¼ckschaden",
+                        source="Konter-Rückschaden",
                         self_damage=False,
                     )
                 self._guard_non_heal_damage_result(self.player1_id, defender_hp_before, "pvp_bot_attack")
@@ -5425,15 +5412,15 @@ class BattleView(DurableView):
                 self.pending_multiplier_uses[target_id] = max(self.pending_multiplier_uses.get(target_id, 0), uses)
                 pct = int(round((mult - 1.0) * 100))
                 if pct > 0:
-                    self._append_effect_event(effect_events, _effect_source_text(attack_name, f"NÃ¤chster Angriff macht +{pct}% Schaden."))
+                    self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Nächster Angriff macht +{pct}% Schaden."))
             elif eff_type == "force_max":
                 uses = int(effect.get("uses", 1) or 1)
                 self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, _effect_source_text(attack_name, "NÃ¤chster Angriff verursacht Maximalschaden."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Nächster Angriff verursacht Maximalschaden."))
             elif eff_type == "guaranteed_hit":
                 uses = int(effect.get("uses", 1) or 1)
                 self.guaranteed_hit_next[target_id] = max(self.guaranteed_hit_next.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, _effect_source_text(attack_name, "NÃ¤chster Angriff trifft garantiert."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Nächster Angriff trifft garantiert."))
             elif eff_type == "damage_reduction":
                 percent = float(effect.get("percent", 0.0) or 0.0)
                 turns = int(effect.get("turns", 1) or 1)
@@ -5827,7 +5814,7 @@ class FightCardSelectView(DurableView):
                 )
                 for variant_name, amount in variant_rows[:25]
             ]
-        elif not attack_cancelled_by_heal_curse:
+        else:
             options = [
                 SelectOption(label=_group_option_label(group)[:100], value=str(group.get("base_name") or ""))
                 for group in grouped_cards[:25]
@@ -6240,12 +6227,12 @@ class DustMultiUserSelectView(RestrictedView):
     def _placeholder(self) -> str:
         selected_count = len(self.selected_user_ids)
         if selected_count <= 0:
-            return "WÃ¤hle Nutzer oder suche oben..."
-        return f"WÃ¤hle weitere Nutzer... ({selected_count} ausgewÃ¤hlt)"
+            return "Wähle Nutzer oder suche oben..."
+        return f"Wähle weitere Nutzer... ({selected_count} ausgewählt)"
 
     def _selected_summary(self) -> str:
         if not self.selected_user_ids:
-            return "Noch niemand ausgewÃ¤hlt."
+            return "Noch niemand ausgewählt."
         names: list[str] = []
         for user_id in self.selected_user_ids:
             member = self.guild.get_member(user_id)
@@ -6255,21 +6242,21 @@ class DustMultiUserSelectView(RestrictedView):
     def _summary_embed(self) -> discord.Embed:
         available_count = len(self._available_members())
         selected_count = len(self.selected_user_ids)
-        title = f"ðŸ’Ž Multi-Auswahl fÃ¼r {self.item_label}" if self.item_label == "Infinitydust" else f"Multi-Auswahl fÃ¼r {self.item_label}"
+        title = f"💎 Multi-Auswahl für {self.item_label}" if self.item_label == "Infinitydust" else f"Multi-Auswahl für {self.item_label}"
         embed = discord.Embed(
             title=title,
-            description="Speichere mehrere Nutzer und drÃ¼cke danach auf **Fertig**.",
+            description="Speichere mehrere Nutzer und drücke danach auf **Fertig**.",
             color=0x3498DB,
         )
-        embed.add_field(name="AusgewÃ¤hlt", value=str(selected_count), inline=True)
-        embed.add_field(name="Noch verfÃ¼gbar", value=str(available_count), inline=True)
-        embed.add_field(name="GewÃ¤hlte Nutzer", value=self._selected_summary(), inline=False)
+        embed.add_field(name="Ausgewählt", value=str(selected_count), inline=True)
+        embed.add_field(name="Noch verfügbar", value=str(available_count), inline=True)
+        embed.add_field(name="Gewählte Nutzer", value=self._selected_summary(), inline=False)
         return embed
 
     def _build_options(self) -> list[SelectOption]:
         options: list[SelectOption] = [
-            SelectOption(label="ðŸ” Nach Name suchen", value="search"),
-            SelectOption(label="âœ… Fertig", value="done"),
+            SelectOption(label="🔍 Nach Name suchen", value="search"),
+            SelectOption(label="✅ Fertig", value="done"),
         ]
         for member in self._available_members()[:23]:
             options.append(
@@ -6296,14 +6283,14 @@ class DustMultiUserSelectView(RestrictedView):
         try:
             user_id = int(raw_value)
         except (TypeError, ValueError):
-            await interaction.response.send_message("âŒ UngÃ¼ltiger Nutzer.", ephemeral=True)
+            await interaction.response.send_message("❌ Ungültiger Nutzer.", ephemeral=True)
             return
         if user_id in self.selected_user_ids:
-            await interaction.response.send_message("Dieser Nutzer ist bereits ausgewÃ¤hlt.", ephemeral=True)
+            await interaction.response.send_message("Dieser Nutzer ist bereits ausgewählt.", ephemeral=True)
             return
         member = self.guild.get_member(user_id)
         if member is None or member.bot:
-            await interaction.response.send_message("âŒ Nutzer nicht gefunden.", ephemeral=True)
+            await interaction.response.send_message("❌ Nutzer nicht gefunden.", ephemeral=True)
             return
         self.selected_user_ids.append(user_id)
         self.select.options = self._build_options()
@@ -6313,7 +6300,7 @@ class DustMultiUserSelectView(RestrictedView):
             return
         await self._refresh_origin_message()
         await interaction.response.send_message(
-            f"âœ… {safe_display_name(member, fallback=f'<@{user_id}>')} hinzugefÃ¼gt.",
+            f"✅ {safe_display_name(member, fallback=f'<@{user_id}>')} hinzugefügt.",
             ephemeral=True,
         )
 
@@ -7201,7 +7188,7 @@ class FightFeedbackView(DurableView):
             },
         )
         await interaction.response.send_message(
-            content=f"ðŸž {actor_name} hat **Es gab einen Bug** gewÃ¤hlt. Bitte fÃ¼lle dieses Formular aus:",
+            content=f"🐞 {actor_name} hat **Es gab einen Bug** gewählt. Bitte fülle dieses Formular aus:",
             view=BugReportLinkView(),
             ephemeral=False,
         )
@@ -7218,15 +7205,15 @@ class FightFeedbackView(DurableView):
             await interaction.response.send_message("Ich habe dir den Kampf-Log bereits per DM geschickt.", ephemeral=False)
             return
         if not self.battle_log_text:
-            await interaction.response.send_message("FÃ¼r diesen Kampf ist kein Log verfÃ¼gbar.", ephemeral=False)
+            await interaction.response.send_message("Für diesen Kampf ist kein Log verfügbar.", ephemeral=False)
             return
         chunks = self._split_log_for_dm(self.battle_log_text)
         if not chunks:
-            await interaction.response.send_message("FÃ¼r diesen Kampf ist kein Log verfÃ¼gbar.", ephemeral=False)
+            await interaction.response.send_message("Für diesen Kampf ist kein Log verfügbar.", ephemeral=False)
             return
         try:
             for idx, chunk in enumerate(chunks, start=1):
-                title = "VollstÃ¤ndiger Kampf-Log" if len(chunks) == 1 else f"VollstÃ¤ndiger Kampf-Log ({idx}/{len(chunks)})"
+                title = "Vollständiger Kampf-Log" if len(chunks) == 1 else f"Vollständiger Kampf-Log ({idx}/{len(chunks)})"
                 dm_embed = discord.Embed(title=title, description=chunk, color=0x2F3136)
                 await interaction.user.send(embed=dm_embed)
         except discord.Forbidden:
@@ -7251,7 +7238,7 @@ class FightFeedbackView(DurableView):
             },
         )
         await interaction.response.send_message(
-            f"ðŸ“© {actor_name} hat **Kampf-Log per DM** gewÃ¤hlt. Der vollstÃ¤ndige Log wurde per DM gesendet.",
+            f"📩 {actor_name} hat **Kampf-Log per DM** gewählt. Der vollständige Log wurde per DM gesendet.",
             ephemeral=False,
         )
 
@@ -7281,7 +7268,7 @@ class FightFeedbackView(DurableView):
             payload={"action": "no_bug", "actor_name": actor_name},
         )
         await interaction.response.send_message(
-            f"âœ… {actor_name} hat **Es gab keinen Bug** gewÃ¤hlt. Danke fÃ¼r das Feedback!",
+            f"✅ {actor_name} hat **Es gab keinen Bug** gewählt. Danke für das Feedback!",
             ephemeral=False,
         )
 
@@ -7384,6 +7371,10 @@ async def require_owner_or_dev(interaction: discord.Interaction) -> bool:
 def _normalize_rarity_key(raw_value: str | None) -> str:
     value = str(raw_value or "").strip().lower()
     replacements = {
+        "ä": "ae",
+        "ö": "oe",
+        "ü": "ue",
+        "ß": "ss",
         "Ã¤": "ae",
         "Ã¶": "oe",
         "Ã¼": "ue",
@@ -7397,6 +7388,7 @@ def _normalize_rarity_key(raw_value: str | None) -> str:
     alias_map = {
         "common": "common",
         "normal": "common",
+        "gewöhnlich": "common",
         "gewoehnlich": "common",
         "gewohnlich": "common",
         "rare": "rare",
@@ -7722,7 +7714,7 @@ class FuseCancelButton(ui.Button):
     async def callback(self, interaction: discord.Interaction):
         if self.view is not None:
             self.view.stop()
-        await interaction.response.edit_message(content="âŒ VerstÃ¤rkung abgebrochen.", embed=None, view=None)
+        await interaction.response.edit_message(content="❌ Verstärkung abgebrochen.", embed=None, view=None)
 
 
 class FuseCardActionSelect(ui.Select):
@@ -8186,7 +8178,7 @@ class BuffTypeSelect(ui.Select):
             logging.exception("Failed to apply card buff for %s", self.selected_card)
             await add_infinitydust(interaction.user.id, self.dust_amount)
             await interaction.response.send_message(
-                "âŒ Die VerstÃ¤rkung ist fehlgeschlagen. Dein Infinitydust wurde zurÃ¼ckerstattet.",
+                "❌ Die Verstärkung ist fehlgeschlagen. Dein Infinitydust wurde zurückerstattet.",
                 ephemeral=True,
             )
             return
@@ -8208,7 +8200,7 @@ class BuffTypeSelect(ui.Select):
         )
 
         embed = discord.Embed(
-            title="âœ… VerstÃ¤rkung erfolgreich!",
+            title="✅ Verstärkung erfolgreich!",
             description=(
                 f"ðŸƒ **{self.selected_card}**\n"
                 f"{emoji} {buff_text}\n\n"
@@ -9991,7 +9983,7 @@ class MissionBattleView(DurableView):
         modifier_source = str((modifier_details or {}).get("source") or "").strip()
         source_suffix = f" durch {_effect_source_name(modifier_source)}" if modifier_source else ""
         if dodged:
-            self._append_effect_event(effect_events, f"Ausweichen{source_suffix}: Angriff vollstÃ¤ndig verfehlt.")
+            self._append_effect_event(effect_events, f"Ausweichen{source_suffix}: Angriff vollständig verfehlt.")
         elif final_damage < raw_damage:
             self._append_effect_event(
                 effect_events,
@@ -10007,12 +9999,12 @@ class MissionBattleView(DurableView):
             if modifier_source:
                 self._append_effect_event(
                     effect_events,
-                    f"Reflexion{source_suffix} durch {defender}: {int(reflected_damage)} Schaden zurÃ¼ckgeworfen.",
+                    f"Reflexion{source_suffix} durch {defender}: {int(reflected_damage)} Schaden zurückgeworfen.",
                 )
             else:
                 self._append_effect_event(
                     effect_events,
-                    f"Spiegeldimension/Reflexion durch {defender}: {int(reflected_damage)} Schaden zurÃ¼ckgeworfen.",
+                    f"Spiegeldimension/Reflexion durch {defender}: {int(reflected_damage)} Schaden zurückgeworfen.",
                 )
         if counter_damage > 0:
             self._append_effect_event(effect_events, f"Konter{source_suffix} durch {defender}: {int(counter_damage)} Schaden.")
@@ -10504,7 +10496,7 @@ class MissionBattleView(DurableView):
                         effect_events,
                         self.user_id,
                         counter_damage,
-                        source="Konter-RÃ¼ckschaden",
+                        source="Konter-Rückschaden",
                         self_damage=False,
                     )
                 self._guard_non_heal_damage_result(0, defender_hp_before, "mission_player_attack")
@@ -10597,15 +10589,15 @@ class MissionBattleView(DurableView):
                 self.pending_multiplier_uses[target_id] = max(self.pending_multiplier_uses.get(target_id, 0), uses)
                 pct = int(round((mult - 1.0) * 100))
                 if pct > 0:
-                    self._append_effect_event(effect_events, _effect_source_text(attack_name, f"NÃ¤chster Angriff macht +{pct}% Schaden."))
+                    self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Nächster Angriff macht +{pct}% Schaden."))
             elif eff_type == "force_max":
                 uses = int(effect.get("uses", 1) or 1)
                 self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, _effect_source_text(attack_name, "NÃ¤chster Angriff verursacht Maximalschaden."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Nächster Angriff verursacht Maximalschaden."))
             elif eff_type == "guaranteed_hit":
                 uses = int(effect.get("uses", 1) or 1)
                 self.guaranteed_hit_next[target_id] = max(self.guaranteed_hit_next.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, _effect_source_text(attack_name, "NÃ¤chster Angriff trifft garantiert."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Nächster Angriff trifft garantiert."))
             elif eff_type == "damage_reduction":
                 percent = float(effect.get("percent", 0.0) or 0.0)
                 turns = int(effect.get("turns", 1) or 1)
@@ -10874,7 +10866,7 @@ class MissionBattleView(DurableView):
             self.update_attack_buttons_mission()
             embed = discord.Embed(
                 title=f"âš”ï¸ Welle {self.wave_num}/{self.total_waves}",
-                description="ðŸ›‘ Bot war betÃ¤ubt und setzt den Zug aus! Du bist wieder an der Reihe!",
+                description="🛑 Bot war betäubt und setzt den Zug aus! Du bist wieder an der Reihe!",
             )
             player_label = f"ðŸŸ¥ Deine Karte{self._status_icons(self.user_id)}"
             bot_label = f"ðŸŸ¦ Bot Karte{self._status_icons(0)}"
@@ -11151,7 +11143,7 @@ class MissionBattleView(DurableView):
                             bot_effect_events,
                             0,
                             counter_damage,
-                            source="Konter-RÃ¼ckschaden",
+                            source="Konter-Rückschaden",
                             self_damage=False,
                         )
                     self._guard_non_heal_damage_result(self.user_id, defender_hp_before, "mission_bot_attack")
@@ -11243,15 +11235,15 @@ class MissionBattleView(DurableView):
                     self.pending_multiplier_uses[target_id] = max(self.pending_multiplier_uses.get(target_id, 0), uses)
                     pct = int(round((mult - 1.0) * 100))
                     if pct > 0:
-                        self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, f"NÃ¤chster Angriff macht +{pct}% Schaden."))
+                        self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, f"Nächster Angriff macht +{pct}% Schaden."))
                 elif eff_type == "force_max":
                     uses = int(effect.get("uses", 1) or 1)
                     self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
-                    self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "NÃ¤chster Angriff verursacht Maximalschaden."))
+                    self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Nächster Angriff verursacht Maximalschaden."))
                 elif eff_type == "guaranteed_hit":
                     uses = int(effect.get("uses", 1) or 1)
                     self.guaranteed_hit_next[target_id] = max(self.guaranteed_hit_next.get(target_id, 0), uses)
-                    self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "NÃ¤chster Angriff trifft garantiert."))
+                    self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Nächster Angriff trifft garantiert."))
                 elif eff_type == "damage_reduction":
                     percent = float(effect.get("percent", 0.0) or 0.0)
                     turns = int(effect.get("turns", 1) or 1)
