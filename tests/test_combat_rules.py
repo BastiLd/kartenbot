@@ -279,8 +279,8 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
             [{"threshold": 40, "turns": 7}, {"threshold": 55, "turns": 8}],
         )
         return
-        captain_marvel = _find_attack(_find_card("Captain Marvel"), "BinÃ¤r-Schlag")
-        thor = _find_attack(_find_card("Thor"), "Der GÃ¶tterschlag")
+        captain_marvel = _find_attack(_find_card("Captain Marvel"), "Binär-Schlag")
+        thor = _find_attack(_find_card("Thor"), "Der Götterschlag")
         mr_fantastic = _find_attack(_find_card("Mr. Fantastic"), "Hyper-Intelligenz-Schlag")
 
         self.assertEqual(captain_marvel.get("cooldown_overrides_by_final_damage"), [{"threshold": 27, "turns": 6}])

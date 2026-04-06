@@ -4,15 +4,15 @@ DEFAULT_HP = 140
 NEW_CARD_IMAGE = "https://i.imgur.com/4mxNv2c.png"
 
 # Zentraler Konfig-Block für spätere Balance-Anpassungen.
-DIRECT_DAMAGE_CAP = 999
-STANDARD_DAMAGE_UPGRADE_STEP = 4
-STANDARD_DAMAGE_UPGRADE_MAX_TIMES = 2
-SPECIAL_DAMAGE_UPGRADE_STEP = 3
-SPECIAL_DAMAGE_UPGRADE_MAX_TIMES = 5
+DIRECT_DAMAGE_CAP = 999  # Maximales Schadenslimit für direkten normalen Angriffsschaden.
+STANDARD_DAMAGE_UPGRADE_STEP = 4  # So viel Schaden bekommt ein Standardangriff pro Upgrade dazu.
+STANDARD_DAMAGE_UPGRADE_MAX_TIMES = 2  # So oft darf ein Standardangriff maximal verbessert werden.
+SPECIAL_DAMAGE_UPGRADE_STEP = 3  # So viel Schaden bekommt eine Spezialfähigkeit pro Upgrade dazu.
+SPECIAL_DAMAGE_UPGRADE_MAX_TIMES = 5  # So oft darf eine Spezialfähigkeit maximal verbessert werden.
 DOT_TYPE_DEFAULTS = {
-    "burning": {"label": "Brand", "icon": "🔥", "max_damage": 999},
-    "poison": {"label": "Gift", "icon": "☠️", "max_damage": 999},
-    "bleeding": {"label": "Blutung", "icon": "🩸", "max_damage": 999},
+    "burning": {"label": "Brand", "icon": "🔥", "max_damage": 999},  # Standardwerte für Brand-Schaden über Zeit.
+    "poison": {"label": "Gift", "icon": "☠️", "max_damage": 999},  # Standardwerte für Gift-Schaden über Zeit.
+    "bleeding": {"label": "Blutung", "icon": "🩸", "max_damage": 999},  # Standardwerte für Blutungs-Schaden über Zeit.
 }
 
 

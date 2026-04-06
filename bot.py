@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 import logging
 import aiosqlite
@@ -417,12 +417,12 @@ def _member_presence_priority(member: discord.Member) -> int:
 def _member_status_circle(member: discord.Member) -> str:
     status = member.status
     if status == discord.Status.online:
-        return "ðŸŸ¢"
+        return "🟢"
     if status == discord.Status.idle:
-        return "ðŸŸ¡"
+        return "🟡"
     if status == discord.Status.dnd:
-        return "ðŸ”´"
-    return "âš«"
+        return "🔴"
+    return "⚫"
 
 
 def _effect_source_text(source: object, message: str) -> str:
@@ -991,7 +991,7 @@ async def _require_optional_attack_confirmation(
     confirmations[player_id] = {"attack_index": int(attack_index), "attack_name": str(attack_name or "")}
     await _safe_send_interaction_ephemeral(
         interaction,
-        f"{reason_text} DrÃ¼cke `{attack_name}` noch einmal, um nur den Basisteil auszufÃ¼hren, oder wÃ¤hle eine andere Attacke.",
+        f"{reason_text} Drücke `{attack_name}` noch einmal, um nur den Basisteil auszuführen, oder wähle eine andere Attacke.",
     )
     return False
 
@@ -1074,7 +1074,7 @@ def _env_flag_enabled(name: str, *, default: bool = False) -> bool:
 
 ALPHA_PHASE_ENABLED = False
 ALPHA_HIDDEN_SLASH_COMMANDS = ("mission", "geschichte")
-ALPHA_FEATURE_DISABLED_TEXT = "ðŸ§ª Alpha-Phase: Mission und Story sind aktuell deaktiviert."
+ALPHA_FEATURE_DISABLED_TEXT = "🧪 Alpha-Phase: Mission und Story sind aktuell deaktiviert."
 
 
 class KatabumpCommandTree(app_commands.CommandTree):
@@ -1095,7 +1095,7 @@ class KatabumpCommandTree(app_commands.CommandTree):
         allow_channel_bypass = False
         if command_name == "kanal-freigeben":
             allow_channel_bypass = await is_config_admin(interaction)
-        elif command_name == "konfigurieren hinzufÃ¼gen":
+        elif command_name == "konfigurieren hinzufügen":
             allow_channel_bypass = await is_config_admin(interaction)
         if interaction.type == discord.InteractionType.autocomplete:
             return channel_allowed or allow_channel_bypass
@@ -1112,7 +1112,7 @@ class KatabumpCommandTree(app_commands.CommandTree):
             _interaction_timestamps.popleft()
         if len(_interaction_timestamps) >= KATABUMP_MAX_INTERACTIONS_PER_MIN:
             if channel_allowed:
-                message = "â³ Zu viele Anfragen. Bitte in einer Minute erneut versuchen (Katabump-Limit)."
+                message = "⏳ Zu viele Anfragen. Bitte in einer Minute erneut versuchen (Katabump-Limit)."
                 await send_interaction_response(interaction, content=message, ephemeral=True)
             return False
         _interaction_timestamps.append(now)
@@ -1139,7 +1139,7 @@ def create_bot() -> commands.Bot:
 
 ADMIN_SLASH_COMMANDS = {
     "konfigurieren",
-    "intro-zurÃ¼cksetzen",
+    "intro-zurücksetzen",
     "sammlung-ansehen",
     "test-bericht",
     "karte-geben",
@@ -1176,7 +1176,7 @@ def prune_alpha_slash_commands() -> list[str]:
     return removed
 
 
-# Rollen-IDs fÃ¼r Admin/Owner (vom Nutzer bestÃ¤tigt)
+# Rollen-IDs für Admin/Owner (vom Nutzer bestätigt)
 BASTI_USER_ID = 965593518745731152
 DEV_ROLE_ID = 1463304167421513961  # Bot_Developer/Tester role ID
 
@@ -1197,7 +1197,7 @@ BOT_STATUS_MAP: dict[str, discord.Status] = {
 BOT_STATUS_LABELS: dict[str, str] = {
     "online": "Online",
     "idle": "Abwesend",
-    "dnd": "Bitte nicht stÃ¶ren",
+    "dnd": "Bitte nicht stören",
     "invisible": "Unsichtbar",
 }
 
@@ -1261,7 +1261,7 @@ EFFECT_TYPES_WITH_EFFECT_LOGS = frozenset(
 
 
 def berlin_midnight_epoch() -> int:
-    """Gibt den Unix-Timestamp fÃ¼r den heutigen Tagesbeginn in Europe/Berlin zurÃ¼ck."""
+    """Gibt den Unix-Timestamp für den heutigen Tagesbeginn in Europe/Berlin zurück."""
     try:
         tz = ZoneInfo("Europe/Berlin")
         now = datetime.now(tz)
@@ -1352,13 +1352,13 @@ async def run_one_time_migrations() -> None:
 def build_anfang_intro_text() -> str:
     text = (
         "# **Rekrut.**\n\n"
-        "HÃ¶r gut zu. Ich bin Nick Fury, und wenn du Teil von etwas GrÃ¶ÃŸerem sein willst, bist du hier richtig. Willkommen auf dem Helicarrier. Wir haben alle HÃ¤nde voll zu tun, und ich hoffe, du bist bereit, dir die HÃ¤nde schmutzig zu machen.\n\n"
-        "Du willst wissen, wie du an die guten Sachen kommst? TÃ¤glich hast du die Chance, eine zufÃ¤llige Karte aus dem Pool zu ziehen `[/tÃ¤glich im Chat schreiben]`. Und wenn du eine doppelte Karte ziehst, verschwindet sie nicht einfach. Sie wird zu Staub umgewandelt. Sammle genug davon, um deine Karten zu verbessern und sie so noch mÃ¤chtiger zu machen `[/verbessern im Chat schreiben]`.\n\n"
-        "Du bist neu hier und brauchst Training? Auf dem Helicarrier kannst du dich mit anderen anlegen und Ã¼ben, bis deine Strategien sitzen `[/kampf im Chat schreiben]`.\n\n"
+        "Hör gut zu. Ich bin Nick Fury, und wenn du Teil von etwas Größerem sein willst, bist du hier richtig. Willkommen auf dem Helicarrier. Wir haben alle Hände voll zu tun, und ich hoffe, du bist bereit, dir die Hände schmutzig zu machen.\n\n"
+        "Du willst wissen, wie du an die guten Sachen kommst? Täglich hast du die Chance, eine zufällige Karte aus dem Pool zu ziehen `[/täglich im Chat schreiben]`. Und wenn du eine doppelte Karte ziehst, verschwindet sie nicht einfach. Sie wird zu Staub umgewandelt. Sammle genug davon, um deine Karten zu verbessern und sie so noch mächtiger zu machen `[/verbessern im Chat schreiben]`.\n\n"
+        "Du bist neu hier und brauchst Training? Auf dem Helicarrier kannst du dich mit anderen anlegen und üben, bis deine Strategien sitzen `[/kampf im Chat schreiben]`.\n\n"
     )
     text += (
-        "Wenn du bereit fÃ¼r den echten Einsatz bist, stehen dir jeden Tag zwei Missionen zur VerfÃ¼gung. SchlieÃŸe sie ab und ich garantiere dir, du bekommst jeweils eine Karte als Belohnung `[/mission im Chat schreiben]`.\n\n"
-        "FÃ¼r die VerrÃ¼ckten da drauÃŸen, die meinen, sie wÃ¤ren unschlagbar: Es gibt den Story-Modus. Du hast drei Leben, um die gesamte Geschichte zu Ã¼berleben. Schaffst du das, wartet eine mysteriÃ¶se Belohnung auf dich `[/geschichte im Chat schreiben]`.\n\n"
+        "Wenn du bereit für den echten Einsatz bist, stehen dir jeden Tag zwei Missionen zur Verfügung. Schließe sie ab und ich garantiere dir, du bekommst jeweils eine Karte als Belohnung `[/mission im Chat schreiben]`.\n\n"
+        "Für die Verrückten da draußen, die meinen, sie wären unschlagbar: Es gibt den Story-Modus. Du hast drei Leben, um die gesamte Geschichte zu überleben. Schaffst du das, wartet eine mysteriöse Belohnung auf dich `[/geschichte im Chat schreiben]`.\n\n"
     )
     text += "**Also los jetzt. Sag mir, was du tun willst. Wir haben keine Zeit zu verlieren.**"
     return text
@@ -1736,7 +1736,7 @@ _ATTACK_BUTTON_STYLE_MAP: dict[str, discord.ButtonStyle] = {
     "success": discord.ButtonStyle.success,
     "green": discord.ButtonStyle.success,
     "gruen": discord.ButtonStyle.success,
-    "grÃ¼n": discord.ButtonStyle.success,
+    "grün": discord.ButtonStyle.success,
     "primary": discord.ButtonStyle.primary,
     "blue": discord.ButtonStyle.primary,
     "blau": discord.ButtonStyle.primary,
@@ -2008,14 +2008,14 @@ def _boosted_damage_effect_text(boosted_damage: int, attack_multiplier: float, f
     bonus = boosted - normal_damage
     if bonus <= 0:
         return None
-    return f"Normal: {normal_damage} | durch VerstÃ¤rkung: {boosted} (+{bonus})"
+    return f"Normal: {normal_damage} | durch Verstärkung: {boosted} (+{bonus})"
 
 
 def _extract_boost_breakdown(effect_events: list[str] | None) -> dict[str, int]:
     for entry in effect_events or []:
         text = str(entry or "").strip()
         match = re.search(
-            r"Normal:\s*(\d+)\s*\|\s*durch VerstÃ¤rkung:\s*(\d+)\s*\(\+(\d+)\)",
+            r"Normal:\s*(\d+)\s*\|\s*durch Verstärkung:\s*(\d+)\s*\(\+(\d+)\)",
             text,
             flags=re.IGNORECASE,
         )
@@ -2104,7 +2104,7 @@ async def on_disconnect():
 async def on_resumed():
     await _log_event_safe("lifecycle_resumed", command_name="gateway")
 
-# Event: On Message â€“ bei erster Nachricht im Kanal Intro zeigen (ephemeral)
+# Event: On Message – bei erster Nachricht im Kanal Intro zeigen (ephemeral)
 @bot.event
 async def on_message(message: discord.Message):
     # Ignoriere Bot-Nachrichten
@@ -2165,7 +2165,7 @@ async def is_channel_allowed(interaction: discord.Interaction, *, bypass_mainten
             return False
     return True
 
-# Kanal-Check ohne Nachrichten-Seiteneffekte (fÃ¼r on_message)
+# Kanal-Check ohne Nachrichten-Seiteneffekte (für on_message)
 async def is_channel_allowed_ids(
     guild_id: int | None,
     channel_id: int | None,
@@ -2243,13 +2243,13 @@ class DurableView(RestrictedView):
 
 def _build_mission_embed(mission_data: dict) -> discord.Embed:
     title = mission_data.get("title") or "Mission"
-    description = mission_data.get("description") or "Hier kommt spÃ¤ter die Story. Hier kommt spÃ¤ter die Story."
+    description = mission_data.get("description") or "Hier kommt später die Story. Hier kommt später die Story."
     reward_card = mission_data.get("reward_card") or {}
     waves = mission_data.get("waves", 0)
     embed = discord.Embed(title=title, description=description, color=_card_rarity_color(reward_card))
     embed.add_field(name="Wellen", value=f"{waves}", inline=True)
     if reward_card:
-        embed.add_field(name="ðŸŽ Belohnung", value=f"**{reward_card.get('name', '?')}**", inline=True)
+        embed.add_field(name="🎁 Belohnung", value=f"**{reward_card.get('name', '?')}**", inline=True)
         if reward_card.get("bild"):
             embed.set_thumbnail(url=reward_card["bild"])
     return embed
@@ -2290,7 +2290,7 @@ def _sort_user_cards_like_karten(user_cards) -> list[tuple[str, int]]:
 
     return sorted(normalized, key=_key)
 
-# View fÃ¼r Buttons beim Kartenziehen
+# View für Buttons beim Kartenziehen
 class ZieheKarteView(RestrictedView):
     def __init__(self, user_id):
         super().__init__(timeout=60)
@@ -2311,7 +2311,7 @@ class ZieheKarteView(RestrictedView):
         embed.set_image(url=karte["bild"])
         await interaction.response.send_message(embed=embed, view=ZieheKarteView(self.user_id))
 
-# View fÃ¼r Missions-Buttons
+# View für Missions-Buttons
 class MissionView(RestrictedView):
     def __init__(self, user_id):
         super().__init__(timeout=60)
@@ -2335,7 +2335,7 @@ class MissionView(RestrictedView):
         else:
             # Karte wurde zu Infinitydust umgewandelt
             embed = discord.Embed(
-                title="ðŸ’Ž Mission abgeschlossen - Infinitydust!",
+                title="💎 Mission abgeschlossen - Infinitydust!",
                 description=f"Du hattest **{karte['name']}** bereits!",
                 color=_card_rarity_color(karte),
             )
@@ -2343,15 +2343,15 @@ class MissionView(RestrictedView):
             embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# View fÃ¼r HP-Button (Ã¼ber der Karte)
+# View für HP-Button (über der Karte)
 class HPView(RestrictedView):
     def __init__(self, player_card, player_hp):
         super().__init__(timeout=120)
         self.player_card = player_card
         self.player_hp = player_hp
-        self.hp_hearts = "â¤ï¸" * (self.player_hp // 20) + "ðŸ–¤" * (5 - self.player_hp // 20)
+        self.hp_hearts = "❤️" * (self.player_hp // 20) + "🖤" * (5 - self.player_hp // 20)
 
-    @ui.button(label="â¤ï¸â¤ï¸â¤ï¸â¤ï¸â¤ï¸", style=discord.ButtonStyle.success)
+    @ui.button(label="❤️❤️❤️❤️❤️", style=discord.ButtonStyle.success)
     async def hp_display(self, interaction: discord.Interaction, button: ui.Button):
         # HP-Button zeigt nur HP an, keine Aktion
         await interaction.response.send_message(f"**{self.player_card['name']}** HP: {self.player_hp}/100", ephemeral=True)
@@ -2359,13 +2359,13 @@ class HPView(RestrictedView):
     def update_hp(self, new_hp):
         """Aktualisiert die HP-Anzeige"""
         self.player_hp = new_hp
-        self.hp_hearts = "â¤ï¸" * (self.player_hp // 20) + "ðŸ–¤" * (5 - self.player_hp // 20)
+        self.hp_hearts = "❤️" * (self.player_hp // 20) + "🖤" * (5 - self.player_hp // 20)
         for child in self.children:
             if isinstance(child, ui.Button):
                 child.label = self.hp_hearts
                 break
 
-# View fÃ¼r Kampf-Buttons (unter der Karte)
+# View für Kampf-Buttons (unter der Karte)
 class BattleView(DurableView):
     durable_view_kind = VIEW_KIND_BATTLE
 
@@ -2518,8 +2518,8 @@ class BattleView(DurableView):
             return "Heilung"
         if "verbrennung" in normalized or "brennen" in normalized:
             return "Verbrennung"
-        if "betÃ¤ub" in normalized or "stun" in normalized:
-            return "BetÃ¤ubung"
+        if "betäub" in normalized or "stun" in normalized:
+            return "Betäubung"
         if (
             "ausweich" in normalized
             or "tarn" in normalized
@@ -2530,7 +2530,7 @@ class BattleView(DurableView):
             or "konter" in normalized
         ):
             return "Schutz"
-        if "bonus" in normalized or "verstÃ¤rkung" in normalized or "maximalschaden" in normalized or "garantiert" in normalized:
+        if "bonus" in normalized or "verstärkung" in normalized or "maximalschaden" in normalized or "garantiert" in normalized:
             return "Buffs"
         return None
 
@@ -2596,7 +2596,7 @@ class BattleView(DurableView):
                 return "heal"
         for entry in effect_events or []:
             text = str(entry or "").lower()
-            if "bonus" in text or "verstÃ¤rkung" in text or "maximalschaden" in text or "garantiert" in text:
+            if "bonus" in text or "verstärkung" in text or "maximalschaden" in text or "garantiert" in text:
                 return "buff"
         return "hit"
 
@@ -2724,7 +2724,7 @@ class BattleView(DurableView):
         )
         stats_lines = [
             f"Runden: {self.round_counter}",
-            f"GrÃ¶ÃŸter Treffer: {self._biggest_hit}",
+            f"Größter Treffer: {self._biggest_hit}",
             f"Kritische Treffer: {self._critical_hits}",
         ]
         embed.add_field(name="Kampfstatistik", value="\n".join(stats_lines), inline=False)
@@ -2740,10 +2740,10 @@ class BattleView(DurableView):
                         event_text = event_text[:77] + "..."
                     base += (
                         f" | Runde {int(best.get('round', 0) or 0)}"
-                        f" Â· {str(best.get('actor', 'Unbekannt') or 'Unbekannt')}"
+                        f" · {str(best.get('actor', 'Unbekannt') or 'Unbekannt')}"
                     )
                     if event_text:
-                        base += f" Â· {event_text}"
+                        base += f" · {event_text}"
                 lines.append(base)
             top_text = "\n".join(lines)
         else:
@@ -3002,8 +3002,8 @@ class BattleView(DurableView):
     @staticmethod
     def _thread_finished_embed() -> discord.Embed:
         return discord.Embed(
-            title="âš”ï¸ Kampf beendet",
-            description="Die Sieger-Nachricht wurde im Ã¶ffentlichen Kanal gesendet.",
+            title="⚔️ Kampf beendet",
+            description="Die Sieger-Nachricht wurde im öffentlichen Kanal gesendet.",
         )
 
     async def _resolve_public_result_channel(self, guild: discord.Guild | None):
@@ -3054,7 +3054,7 @@ class BattleView(DurableView):
             mentions.append(member.mention if member else f"<@{pid}>")
         prompt = (
             "Gab es einen Bug/Fehler?\n"
-            "Wenn du willst, klicke auf **Kampf-Log per DM** und ich schicke dir den vollstÃ¤ndigen Log privat."
+            "Wenn du willst, klicke auf **Kampf-Log per DM** und ich schicke dir den vollständigen Log privat."
         )
         if mentions:
             return f"{' '.join(mentions)} {prompt}"
@@ -3703,10 +3703,10 @@ class BattleView(DurableView):
         attacks = current_card.get("attacks", [{"name": "Punch", "damage": [15, 25]}])
         standard_idx = _standard_attack_index(attacks)
         
-        # Hole Buffs fÃ¼r diese Karte
+        # Hole Buffs für diese Karte
         card_buffs = await get_card_buffs(self.current_turn, current_card["name"])
         
-        # Finde die vier Angriffs-Buttons (Zeilen 0 und 1, unabhÃ¤ngig von Label/Style)
+        # Finde die vier Angriffs-Buttons (Zeilen 0 und 1, unabhängig von Label/Style)
         attack_buttons = [child for child in self.children if isinstance(child, ui.Button) and child.row in (0, 1)]
         attack_buttons = attack_buttons[:4]
 
@@ -3724,12 +3724,12 @@ class BattleView(DurableView):
             for i, btn in enumerate(attack_buttons):
                 btn.style = discord.ButtonStyle.secondary
                 if i >= len(attacks):
-                    btn.label = "â€”"
+                    btn.label = "—"
                     btn.disabled = True
                     continue
                 if i == landing_slot:
                     btn.style = discord.ButtonStyle.danger
-                    btn.label = f"{landing_name} ({dmg_text}) âœˆï¸"
+                    btn.label = f"{landing_name} ({dmg_text}) ✈️"
                     btn.disabled = False
                     continue
                 blocked_attack = attacks[i]
@@ -3746,7 +3746,7 @@ class BattleView(DurableView):
             for i, button in enumerate(attack_buttons):
                 button.style = discord.ButtonStyle.secondary
                 if i >= len(attacks):
-                    button.label = "â€”"
+                    button.label = "—"
                     button.disabled = True
                     continue
                 attack = attacks[i]
@@ -3815,7 +3815,7 @@ class BattleView(DurableView):
             for j in range(len(attacks), len(attack_buttons)):
                 btn = attack_buttons[j]
                 btn.style = discord.ButtonStyle.secondary
-                btn.label = "â€”"
+                btn.label = "—"
                 btn.disabled = True
 
     # Angriffs-Buttons (rot, 2x2 Grid)
@@ -3840,7 +3840,7 @@ class BattleView(DurableView):
     async def cancel(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id in [self.player1_id, self.player2_id]:
             embed = discord.Embed(
-                title="âš”ï¸ Kampf abgebrochen",
+                title="⚔️ Kampf abgebrochen",
                 description=f"Der Kampf wurde von {interaction.user.mention} abgebrochen.",
             )
             await interaction.response.edit_message(embed=embed, view=None)
@@ -3868,7 +3868,7 @@ class BattleView(DurableView):
         # Block actions if fight already ended (HP <= 0)
         if self.player1_hp <= 0 or self.player2_hp <= 0:
             try:
-                await interaction.response.send_message("âŒ Der Kampf ist bereits vorbei.", ephemeral=True)
+                await interaction.response.send_message("❌ Der Kampf ist bereits vorbei.", ephemeral=True)
             except Exception:
                 logging.exception("Unexpected error")
             return
@@ -3924,7 +3924,7 @@ class BattleView(DurableView):
         )
         standard_idx = _standard_attack_index(current_attacks)
 
-        # COOLDOWN-SYSTEM: PrÃ¼fe ob Attacke auf Cooldown ist
+        # COOLDOWN-SYSTEM: Prüfe ob Attacke auf Cooldown ist
         if not is_forced_landing and self.is_attack_on_cooldown(self.current_turn, attack_index):
             await _safe_send_interaction_ephemeral(interaction, "Diese Attacke ist noch auf Cooldown!")
             return
@@ -3934,7 +3934,7 @@ class BattleView(DurableView):
             if landing_slot is not None and 0 <= int(landing_slot) < 4 and int(landing_slot) != int(attack_index):
                 await _safe_send_interaction_ephemeral(
                     interaction,
-                    f"Diese Runde ist nur {str(forced_landing_attack.get('name') or 'Landungsschlag')} im ursprÃ¼nglichen Slot verfÃ¼gbar.",
+                    f"Diese Runde ist nur {str(forced_landing_attack.get('name') or 'Landungsschlag')} im ursprünglichen Slot verfügbar.",
                 )
                 return
 
@@ -3982,9 +3982,9 @@ class BattleView(DurableView):
         current_card = self.player1_card if self.current_turn == self.player1_id else self.player2_card
         attacks = current_card.get("attacks", [{"name": "Punch", "damage": [15, 25]}])
         if (not is_forced_landing) and attack_index >= len(attacks):
-            await _safe_send_interaction_ephemeral(interaction, "UngÃ¼ltiger Angriff!")
+            await _safe_send_interaction_ephemeral(interaction, "Ungültiger Angriff!")
             return
-        # Vor DB/weiterer Logik frÃ¼h defern, damit Interaction nicht ablÃ¤uft.
+        # Vor DB/weiterer Logik früh defern, damit Interaction nicht abläuft.
         await _safe_defer_interaction(interaction)
         damage_buff = 0
         damage_max_bonus = 0
@@ -4020,7 +4020,7 @@ class BattleView(DurableView):
                     player_id=self.current_turn,
                     attack_index=attack_index,
                     attack_name=str(attack_name),
-                    reason_text="Es gibt noch keine gegnerische SpezialfÃ¤higkeit zum VerlÃ¤ngern.",
+                    reason_text="Es gibt noch keine gegnerische Spezialfähigkeit zum Verlängern.",
                 )
                 if not confirmed:
                     return
@@ -4031,7 +4031,7 @@ class BattleView(DurableView):
                     player_id=self.current_turn,
                     attack_index=attack_index,
                     attack_name=str(attack_name),
-                    reason_text="Es gibt noch keine gegnerische SpezialfÃ¤higkeit zum Kopieren.",
+                    reason_text="Es gibt noch keine gegnerische Spezialfähigkeit zum Kopieren.",
                 )
                 if not confirmed:
                     return
@@ -4047,7 +4047,7 @@ class BattleView(DurableView):
                         player_id=self.current_turn,
                         attack_index=attack_index,
                         attack_name=str(attack_name),
-                        reason_text="Es gibt gerade keine eigene FÃ¤higkeit zum ZurÃ¼cksetzen.",
+                        reason_text="Es gibt gerade keine eigene Fähigkeit zum Zurücksetzen.",
                     )
                     if not confirmed:
                         return
@@ -4058,7 +4058,7 @@ class BattleView(DurableView):
                     base_damage = copied_attack.get("damage", base_damage)
                     self._append_effect_event(
                         effect_events,
-                        f"Gedankenkontrolle kopiert {str(last_enemy_special_entry.get('attack_name') or 'die letzte SpezialfÃ¤higkeit')}.",
+                        f"Gedankenkontrolle kopiert {str(last_enemy_special_entry.get('attack_name') or 'die letzte Spezialfähigkeit')}.",
                     )
 
         action_type = _attack_kind_label(
@@ -4119,7 +4119,7 @@ class BattleView(DurableView):
                 if self.pending_flat_bonus_uses[self.current_turn] <= 0:
                     self.pending_flat_bonus[self.current_turn] = 0
                 if flat_bonus_now > 0:
-                    self._append_effect_event(effect_events, f"VerstÃ¤rkung aktiv: +{flat_bonus_now} Schaden auf diesen Angriff.")
+                    self._append_effect_event(effect_events, f"Verstärkung aktiv: +{flat_bonus_now} Schaden auf diesen Angriff.")
             if self.pending_multiplier_uses.get(self.current_turn, 0) > 0:
                 attack_multiplier = float(self.pending_multiplier.get(self.current_turn, 1.0) or 1.0)
                 self.pending_multiplier_uses[self.current_turn] -= 1
@@ -4127,7 +4127,7 @@ class BattleView(DurableView):
                     self.pending_multiplier[self.current_turn] = 1.0
                 multiplier_pct = int(round((attack_multiplier - 1.0) * 100))
                 if multiplier_pct > 0:
-                    self._append_effect_event(effect_events, f"VerstÃ¤rkung aktiv: +{multiplier_pct}% Schaden auf diesen Angriff.")
+                    self._append_effect_event(effect_events, f"Verstärkung aktiv: +{multiplier_pct}% Schaden auf diesen Angriff.")
             if self.force_max_next.get(self.current_turn, 0) > 0:
                 force_max_damage = True
                 self.force_max_next[self.current_turn] -= 1
@@ -4293,7 +4293,7 @@ class BattleView(DurableView):
                 incoming_bonus = _incoming_damage_bonus(self.active_effects, defender_id)
                 if incoming_bonus > 0 and actual_damage > 0:
                     actual_damage += incoming_bonus
-                    self._append_effect_event(effect_events, f"SchadensanfÃ¤lligkeit: +{incoming_bonus} eingehender Schaden.")
+                    self._append_effect_event(effect_events, f"Schadensanfälligkeit: +{incoming_bonus} eingehender Schaden.")
 
                 bypass_all_defense = bool(
                     attack.get("ignore_defense")
@@ -4346,7 +4346,7 @@ class BattleView(DurableView):
                             actual_damage,
                         )
                         if shield_break_counter > 0:
-                            self._append_effect_event(effect_events, f"Schild zerbricht und verursacht {shield_break_counter} RÃ¼ckschaden.")
+                            self._append_effect_event(effect_events, f"Schild zerbricht und verursacht {shield_break_counter} Rückschaden.")
                     if actual_damage > 0:
                         self._apply_non_heal_damage(defender_id, actual_damage)
                     else:
@@ -4364,7 +4364,7 @@ class BattleView(DurableView):
                         effect_events,
                         self.current_turn,
                         reflected_damage,
-                        source="Reflexions-RÃ¼ckschaden",
+                        source="Reflexions-Rückschaden",
                         self_damage=False,
                     )
                 if counter_damage > 0:
@@ -4385,7 +4385,7 @@ class BattleView(DurableView):
                 effect_events,
                 self.current_turn,
                 self_damage_value,
-                source=f"{attack_name} / RÃ¼ckstoÃŸ",
+                source=f"{attack_name} / Rückstoß",
                 self_damage=True,
             )
 
@@ -4448,7 +4448,7 @@ class BattleView(DurableView):
         for effect in effects:
             if not isinstance(effect, dict):
                 continue
-            # 70% Fix-Chance fÃ¼r Verwirrung
+            # 70% Fix-Chance für Verwirrung
             chance = 0.7 if effect.get('type') == 'confusion' else (_maybe_float(effect.get('chance', 1.0)) or 1.0)
             if random.random() >= chance:
                 continue
@@ -4459,14 +4459,14 @@ class BattleView(DurableView):
                 continue
             if target != "self" and _should_block_negative_effect(self.active_effects, target_id, eff_type):
                 if _consume_status_immunity(self.active_effects, target_id):
-                    self._append_effect_event(effect_events, "Status-ImmunitÃ¤t verhindert den negativen Effekt.")
+                    self._append_effect_event(effect_events, "Status-Immunität verhindert den negativen Effekt.")
                 continue
             if eff_type == "stun" and _shield_has_stun_immunity(self.active_effects, target_id):
-                self._append_effect_event(effect_events, "BetÃ¤ubung abgewehrt: Schild schÃ¼tzt vor Stun.")
+                self._append_effect_event(effect_events, "Betäubung abgewehrt: Schild schützt vor Stun.")
                 continue
             if eff_type == "stealth":
                 self.grant_stealth(target_id)
-                self._append_effect_event(effect_events, "Schutz aktiv: Der nÃ¤chste gegnerische Angriff wird geblockt.")
+                self._append_effect_event(effect_events, "Schutz aktiv: Der nächste gegnerische Angriff wird geblockt.")
             elif _is_dot_effect_type(eff_type):
                 dot_multiplier = _consume_burn_multiplier(self.active_effects, self.current_turn) if str(eff_type or "").strip().lower() == "burning" else 1.0
                 duration, burn_damage = _append_dot_effect(
@@ -4481,7 +4481,7 @@ class BattleView(DurableView):
                 if attack.get("cooldown_from_burning_plus") is not None:
                     prev_duration = burning_duration_for_dynamic_cooldown or 0
                     burning_duration_for_dynamic_cooldown = max(prev_duration, duration)
-                self._append_effect_event(effect_events, f"{_dot_label(eff_type)} aktiv: {burn_damage} Schaden fÃ¼r {duration} Runden.")
+                self._append_effect_event(effect_events, f"{_dot_label(eff_type)} aktiv: {burn_damage} Schaden für {duration} Runden.")
             elif eff_type == "confusion":
                 # Confuse defender for next turn + UI marker
                 self.set_confusion(target_id, self.current_turn)
@@ -4489,13 +4489,13 @@ class BattleView(DurableView):
                 self._append_effect_event(effect_events, "Verwirrung wurde angewendet.")
             elif eff_type == "stun":
                 self.stunned_next_turn[target_id] = True
-                self._append_effect_event(effect_events, "BetÃ¤ubung: Der Gegner setzt den nÃ¤chsten Zug aus.")
+                self._append_effect_event(effect_events, "Betäubung: Der Gegner setzt den nächsten Zug aus.")
             elif eff_type == "damage_boost":
                 amount = int(effect.get("amount", 0) or 0)
                 uses = int(effect.get("uses", 1) or 1)
                 self.pending_flat_bonus[target_id] = max(self.pending_flat_bonus.get(target_id, 0), amount)
                 self.pending_flat_bonus_uses[target_id] = max(self.pending_flat_bonus_uses.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Schadensbonus aktiv: +{amount} fÃ¼r {uses} Angriff(e)."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Schadensbonus aktiv: +{amount} für {uses} Angriff(e)."))
             elif eff_type == "damage_multiplier":
                 mult = float(effect.get("multiplier", 1.0) or 1.0)
                 uses = int(effect.get("uses", 1) or 1)
@@ -4515,11 +4515,11 @@ class BattleView(DurableView):
             elif eff_type == "standard_lock":
                 turns = max(1, int(effect.get("turns", 1) or 1))
                 _append_active_effect(self.active_effects, target_id, "standard_lock", self.current_turn, turns=turns, source=attack_name)
-                self._append_effect_event(effect_events, "Der nÃ¤chste gegnerische Standardangriff ist gesperrt.")
+                self._append_effect_event(effect_events, "Der nächste gegnerische Standardangriff ist gesperrt.")
             elif eff_type == "status_immunity":
                 turns = max(1, int(effect.get("turns", 1) or 1))
                 _append_active_effect(self.active_effects, target_id, "status_immunity", self.current_turn, turns=turns, source=attack_name)
-                self._append_effect_event(effect_events, "Status-ImmunitÃ¤t aktiviert.")
+                self._append_effect_event(effect_events, "Status-Immunität aktiviert.")
             elif eff_type in {"enemy_attack_self_damage", "enemy_special_self_damage", "enemy_next_special_self_damage"}:
                 turns = max(1, int(effect.get("turns", 1) or 1))
                 amount = max(0, int(effect.get("amount", 0) or 0))
@@ -4552,7 +4552,7 @@ class BattleView(DurableView):
                 )
                 if chosen_idx is not None and 0 <= chosen_idx < len(target_attacks):
                     target_name = str(target_attacks[chosen_idx].get("name") or f"Angriff {chosen_idx+1}")
-                    self._append_effect_event(effect_events, f"Cooldown erhÃ¶ht: {target_name} ist jetzt {new_cd} Runde(n) gesperrt.")
+                    self._append_effect_event(effect_events, f"Cooldown erhöht: {target_name} ist jetzt {new_cd} Runde(n) gesperrt.")
             elif eff_type == "increase_last_enemy_special_cooldown":
                 if isinstance(last_enemy_special_entry, dict):
                     last_index = _maybe_int(last_enemy_special_entry.get("attack_index", -1)) or -1
@@ -4589,14 +4589,14 @@ class BattleView(DurableView):
                     turns=1,
                     source=attack_name,
                 )
-                self._append_effect_event(effect_events, "Der nÃ¤chste Brand wird verstÃ¤rkt.")
+                self._append_effect_event(effect_events, "Der nächste Brand wird verstärkt.")
             elif eff_type == "reset_own_cooldown":
                 if reset_cooldown_index is not None:
                     self.attack_cooldowns[self.current_turn].pop(reset_cooldown_index, None)
                     own_attacks = self.player1_card.get("attacks", []) if self.current_turn == self.player1_id else self.player2_card.get("attacks", [])
                     if 0 <= reset_cooldown_index < len(own_attacks):
                         reset_name = str(own_attacks[reset_cooldown_index].get("name") or f"Angriff {reset_cooldown_index+1}")
-                        self._append_effect_event(effect_events, f"Cooldown zurÃ¼ckgesetzt: {reset_name} ist wieder einsatzbereit.")
+                        self._append_effect_event(effect_events, f"Cooldown zurückgesetzt: {reset_name} ist wieder einsatzbereit.")
             elif eff_type == "heal_curse":
                 turns = max(1, int(effect.get("turns", 1) or 1))
                 _append_active_effect(
@@ -4612,11 +4612,11 @@ class BattleView(DurableView):
             elif eff_type == "next_attack_flat_penalty":
                 turns = max(1, int(effect.get("turns", 1) or 1))
                 _append_active_effect(self.active_effects, target_id, "next_attack_flat_penalty", self.current_turn, turns=turns, amount=int(effect.get("amount", 0) or 0), source=attack_name)
-                self._append_effect_event(effect_events, "Der nÃ¤chste eigene Angriff wird geschwÃ¤cht.")
+                self._append_effect_event(effect_events, "Der nächste eigene Angriff wird geschwächt.")
             elif eff_type == "enemy_force_min_damage":
                 turns = max(1, int(effect.get("turns", 1) or 1))
                 _append_active_effect(self.active_effects, target_id, "enemy_force_min_damage", self.current_turn, turns=turns, source=attack_name)
-                self._append_effect_event(effect_events, "Der nÃ¤chste gegnerische Angriff verursacht nur Mindestschaden.")
+                self._append_effect_event(effect_events, "Der nächste gegnerische Angriff verursacht nur Mindestschaden.")
             elif eff_type == "reactive_evolution":
                 if _find_active_effect(self.active_effects, target_id, "reactive_evolution") is None:
                     _append_active_effect(
@@ -4633,11 +4633,11 @@ class BattleView(DurableView):
             elif eff_type == "disable_enemy_heal_if_bleeding":
                 turns = max(1, int(effect.get("turns", 1) or 1))
                 _append_active_effect(self.active_effects, target_id, "disable_enemy_heal_if_bleeding", self.current_turn, turns=turns, source=attack_name)
-                self._append_effect_event(effect_events, "Blutende Gegner kÃ¶nnen vorerst nicht heilen.")
+                self._append_effect_event(effect_events, "Blutende Gegner können vorerst nicht heilen.")
             elif eff_type == "copy_last_enemy_special":
                 copied_name = str((last_enemy_special_entry or {}).get("attack_name") or "").strip()
                 if copied_name:
-                    self._append_effect_event(effect_events, f"Gedankenkontrolle Ã¼bernimmt {copied_name}.")
+                    self._append_effect_event(effect_events, f"Gedankenkontrolle übernimmt {copied_name}.")
             elif eff_type == "heal_from_target_dot":
                 dot_type = str(effect.get("dot_type") or "bleeding").strip().lower()
                 heal_amount = _sum_target_dot_damage(self.active_effects, target_id, dot_type)
@@ -4674,7 +4674,7 @@ class BattleView(DurableView):
                 self.queue_outgoing_attack_modifier(target_id, percent=percent, turns=turns, source=attack_name)
                 self._append_effect_event(
                     effect_events,
-                    _effect_source_text(attack_name, f"NÃ¤chster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden."),
+                    _effect_source_text(attack_name, f"Nächster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden."),
                 )
             elif eff_type == "enemy_next_attack_reduction_flat":
                 amount = int(effect.get("amount", 0) or 0)
@@ -4682,7 +4682,7 @@ class BattleView(DurableView):
                 self.queue_outgoing_attack_modifier(target_id, flat=amount, turns=turns, source=attack_name)
                 self._append_effect_event(
                     effect_events,
-                    _effect_source_text(attack_name, f"NÃ¤chster gegnerischer Angriff: -{amount} Schaden (mit Ãœberlauf-RÃ¼ckstoÃŸ)."),
+                    _effect_source_text(attack_name, f"Nächster gegnerischer Angriff: -{amount} Schaden (mit Überlauf-Rückstoß)."),
                 )
             elif eff_type == "reflect":
                 reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
@@ -4700,12 +4700,12 @@ class BattleView(DurableView):
                     self.incoming_modifiers[target_id][-1]["reflect_flat"] = reflect_flat
                 reduce_pct = int(round(max(0.0, reduce_percent) * 100))
                 reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
-                flat_text = f" und {reflect_flat} fixer RÃ¼ckschaden ausgelÃ¶st werden" if reflect_flat > 0 else ""
+                flat_text = f" und {reflect_flat} fixer Rückschaden ausgelöst werden" if reflect_flat > 0 else ""
                 self._append_effect_event(
                     effect_events,
                     _effect_source_text(
                         attack_name,
-                        f"Reflexion aktiv: NÃ¤chster eingehender Angriff wird um {reduce_pct}% reduziert, {reflect_pct}% des verhinderten Schadens werden zurÃ¼ckgeworfen{flat_text}.",
+                        f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert, {reflect_pct}% des verhinderten Schadens werden zurückgeworfen{flat_text}.",
                     ),
                 )
             elif eff_type == "absorb_store":
@@ -4726,19 +4726,19 @@ class BattleView(DurableView):
                     self.queue_incoming_modifier(target_id, cap="attack_min", turns=1, source=attack_name)
                     self._append_effect_event(
                         effect_events,
-                        _effect_source_text(attack_name, "Schadenslimit aktiv: NÃ¤chster Treffer wird auf dessen Mindestschaden begrenzt."),
+                        _effect_source_text(attack_name, "Schadenslimit aktiv: Nächster Treffer wird auf dessen Mindestschaden begrenzt."),
                     )
                 else:
                     max_damage = int(cap_setting or 0)
                     self.queue_incoming_modifier(target_id, cap=max_damage, turns=1, source=attack_name)
                     self._append_effect_event(
                         effect_events,
-                        _effect_source_text(attack_name, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nÃ¤chsten Treffer."),
+                        _effect_source_text(attack_name, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nächsten Treffer."),
                     )
             elif eff_type == "evade":
                 counter = int(effect.get("counter", 0) or 0)
                 self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1, source=attack_name)
-                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Ausweichen aktiv: Der nÃ¤chste gegnerische Angriff verfehlt."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
             elif eff_type == "special_lock":
                 turns = max(1, int(effect.get("turns", 1) or 1))
                 self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), turns)
@@ -4746,12 +4746,12 @@ class BattleView(DurableView):
             elif eff_type == "blind":
                 miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
                 self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
-                self._append_effect_event(effect_events, f"Blendung aktiv: {int(round(miss_chance * 100))}% Verfehlchance beim nÃ¤chsten Angriff.")
+                self._append_effect_event(effect_events, f"Blendung aktiv: {int(round(miss_chance * 100))}% Verfehlchance beim nächsten Angriff.")
             elif eff_type == "regen":
                 turns = int(effect.get("turns", 1) or 1)
                 heal = int(effect.get("heal", 0) or 0)
                 self.active_effects[target_id].append({"type": "regen", "duration": turns, "heal": heal, "applier": self.current_turn})
-                self._append_effect_event(effect_events, f"Regeneration aktiviert: Heilt sich in den nÃ¤chsten {turns} Runden jeweils um {heal} HP.")
+                self._append_effect_event(effect_events, f"Regeneration aktiviert: Heilt sich in den nächsten {turns} Runden jeweils um {heal} HP.")
             elif eff_type == "heal":
                 heal_data_effect = effect.get("amount", 0)
                 heal_amount = _random_int_from_range(heal_data_effect)
@@ -4764,7 +4764,7 @@ class BattleView(DurableView):
                 defense_mode = str(effect.get("defense", "")).strip().lower()
                 counter = int(effect.get("counter", 0) or 0)
                 self.queue_delayed_defense(target_id, defense_mode, counter=counter, source=attack_name)
-                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Schutz vorbereitet: Wird nach dem nÃ¤chsten eigenen Angriff aktiv."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Schutz vorbereitet: Wird nach dem nächsten eigenen Angriff aktiv."))
             elif eff_type == "airborne_two_phase":
                 self.start_airborne_two_phase(
                     target_id,
@@ -4775,7 +4775,7 @@ class BattleView(DurableView):
                     cooldown_turns=_maybe_int(attack.get("cooldown_turns", 0)) or 0,
                 )
 
-            # Kein separater Log-Eintrag mehr â€“ Effekt wird in der Angriffszeile signalisiert
+            # Kein separater Log-Eintrag mehr – Effekt wird in der Angriffszeile signalisiert
 
         if attack_hits_enemy and int(actual_damage or 0) > 0:
             for effect in effects:
@@ -4808,7 +4808,7 @@ class BattleView(DurableView):
             if not is_reload_action and attack.get("requires_reload"):
                 self.set_reload_needed(self.current_turn, attack_index, True)
 
-            # COOLDOWN-SYSTEM: Kartenspezifisch oder fÃ¼r starke Attacken
+            # COOLDOWN-SYSTEM: Kartenspezifisch oder für starke Attacken
             dynamic_cooldown_turns = _resolve_dynamic_cooldown_from_burning(
                 attack,
                 burning_duration_for_dynamic_cooldown,
@@ -4829,7 +4829,7 @@ class BattleView(DurableView):
                 current_cd = self.attack_cooldowns[previous_turn].get(attack_index, 0)
                 self.attack_cooldowns[previous_turn][attack_index] = max(current_cd, custom_cooldown_turns)
             elif self.is_strong_attack(base_damage, damage_buff):
-                # Starke Attacke - 2 ZÃ¼ge Cooldown
+                # Starke Attacke - 2 Züge Cooldown
                 previous_turn = self.current_turn
                 self.start_attack_cooldown(previous_turn, attack_index)
         else:
@@ -4874,7 +4874,7 @@ class BattleView(DurableView):
         if self.airborne_pending_landing.get(defender_id):
             self._consume_airborne_evade_marker(defender_id)
 
-        # Nach dem Log-Eintrag auf Kampfende prÃ¼fen, damit der finale Treffer immer im Log landet.
+        # Nach dem Log-Eintrag auf Kampfende prüfen, damit der finale Treffer immer im Log landet.
         if self.player1_hp <= 0 or self.player2_hp <= 0:
             if self.player2_hp <= 0:
                 winner_id = self.player1_id
@@ -4948,7 +4948,7 @@ class BattleView(DurableView):
             self.stop()
             return
 
-        # NÃ¤chster Spieler
+        # Nächster Spieler
         previous_turn = self.current_turn
         _consume_turn_end_decay_effects(self.active_effects, previous_turn)
         self.current_turn = self.player2_id if self.current_turn == self.player1_id else self.player1_id
@@ -4956,7 +4956,7 @@ class BattleView(DurableView):
         # COOLDOWN-SYSTEM: Reduziere Cooldowns am START des neuen Zugs
         self.reduce_cooldowns(self.current_turn)
         
-        # Attacken-Buttons fÃ¼r den neuen Spieler aktualisieren
+        # Attacken-Buttons für den neuen Spieler aktualisieren
         await self.update_attack_buttons()
         
         # Neues Kampf-Embed erstellen
@@ -4999,13 +4999,13 @@ class BattleView(DurableView):
             if replacement is not None:
                 await self.persist_session(interaction.channel, status="active", battle_message=replacement)
         
-        # BOT-ANGRIFF: Wenn der Bot an der Reihe ist, fÃ¼hre automatischen Angriff aus
+        # BOT-ANGRIFF: Wenn der Bot an der Reihe ist, führe automatischen Angriff aus
         if self.current_turn == 0:  # Bot ist an der Reihe
             if message is not None:
                 await self.execute_bot_attack(message)
 
     async def execute_bot_attack(self, message):
-        """FÃ¼hrt einen automatischen Bot-Angriff aus"""
+        """Führt einen automatischen Bot-Angriff aus"""
         # Bereits liegende DoT-Effekte des Bots ticken vor dessen Angriff.
         effect_events: list[str] = []
         defender_id = self.player1_id
@@ -5044,7 +5044,7 @@ class BattleView(DurableView):
             await message.edit(embed=battle_embed, view=self)
             return
 
-        # Hole Bot-Karte und verfÃ¼gbare Attacken
+        # Hole Bot-Karte und verfügbare Attacken
         bot_card = self.player2_card
         attacks = bot_card.get("attacks", [{"name": "Punch", "damage": [15, 25]}])
         forced_landing_attack = self.resolve_forced_landing_if_due(0, effect_events)
@@ -5097,7 +5097,7 @@ class BattleView(DurableView):
                 if self.pending_flat_bonus_uses[0] <= 0:
                     self.pending_flat_bonus[0] = 0
                 if flat_bonus_now > 0:
-                    self._append_effect_event(effect_events, f"VerstÃ¤rkung aktiv: +{flat_bonus_now} Schaden auf diesen Angriff.")
+                    self._append_effect_event(effect_events, f"Verstärkung aktiv: +{flat_bonus_now} Schaden auf diesen Angriff.")
             if self.pending_multiplier_uses.get(0, 0) > 0:
                 attack_multiplier = float(self.pending_multiplier.get(0, 1.0) or 1.0)
                 self.pending_multiplier_uses[0] -= 1
@@ -5105,7 +5105,7 @@ class BattleView(DurableView):
                     self.pending_multiplier[0] = 1.0
                 multiplier_pct = int(round((attack_multiplier - 1.0) * 100))
                 if multiplier_pct > 0:
-                    self._append_effect_event(effect_events, f"VerstÃ¤rkung aktiv: +{multiplier_pct}% Schaden auf diesen Angriff.")
+                    self._append_effect_event(effect_events, f"Verstärkung aktiv: +{multiplier_pct}% Schaden auf diesen Angriff.")
             if self.force_max_next.get(0, 0) > 0:
                 force_max_damage = True
                 self.force_max_next[0] -= 1
@@ -5308,7 +5308,7 @@ class BattleView(DurableView):
                         effect_events,
                         0,
                         reflected_damage,
-                        source="Reflexions-RÃ¼ckschaden",
+                        source="Reflexions-Rückschaden",
                         self_damage=False,
                     )
                 if counter_damage > 0:
@@ -5329,7 +5329,7 @@ class BattleView(DurableView):
                 effect_events,
                 0,
                 self_damage_value,
-                source=f"{attack_name} / RÃ¼ckstoÃŸ",
+                source=f"{attack_name} / Rückstoß",
                 self_damage=True,
             )
 
@@ -5354,7 +5354,7 @@ class BattleView(DurableView):
         # Aktualisiere Kampf-Log
         self.round_counter += 1
 
-        # Erstelle Bot-User-Objekt fÃ¼r das Log
+        # Erstelle Bot-User-Objekt für das Log
         bot_user = SimpleBotUser()
         player_user = _get_member_if_available(message.guild, self.player1_id)
 
@@ -5379,7 +5379,7 @@ class BattleView(DurableView):
                 continue
             if eff_type == "stealth":
                 self.grant_stealth(target_id)
-                self._append_effect_event(effect_events, "Schutz aktiv: Der nÃ¤chste gegnerische Angriff wird geblockt.")
+                self._append_effect_event(effect_events, "Schutz aktiv: Der nächste gegnerische Angriff wird geblockt.")
             elif _is_dot_effect_type(eff_type):
                 duration, burn_damage = _append_dot_effect(
                     self.active_effects,
@@ -5392,19 +5392,19 @@ class BattleView(DurableView):
                 if attack.get("cooldown_from_burning_plus") is not None:
                     prev_duration = burning_duration_for_dynamic_cooldown or 0
                     burning_duration_for_dynamic_cooldown = max(prev_duration, duration)
-                self._append_effect_event(effect_events, f"{_dot_label(eff_type)} aktiv: {burn_damage} Schaden fÃ¼r {duration} Runden.")
+                self._append_effect_event(effect_events, f"{_dot_label(eff_type)} aktiv: {burn_damage} Schaden für {duration} Runden.")
             elif eff_type == 'confusion':
                 self.set_confusion(target_id, 0)
                 self._append_effect_event(effect_events, "Verwirrung wurde angewendet.")
             elif eff_type == "stun":
                 self.stunned_next_turn[target_id] = True
-                self._append_effect_event(effect_events, "BetÃ¤ubung: Der Gegner setzt den nÃ¤chsten Zug aus.")
+                self._append_effect_event(effect_events, "Betäubung: Der Gegner setzt den nächsten Zug aus.")
             elif eff_type == "damage_boost":
                 amount = int(effect.get("amount", 0) or 0)
                 uses = int(effect.get("uses", 1) or 1)
                 self.pending_flat_bonus[target_id] = max(self.pending_flat_bonus.get(target_id, 0), amount)
                 self.pending_flat_bonus_uses[target_id] = max(self.pending_flat_bonus_uses.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Schadensbonus aktiv: +{amount} fÃ¼r {uses} Angriff(e)."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Schadensbonus aktiv: +{amount} für {uses} Angriff(e)."))
             elif eff_type == "damage_multiplier":
                 mult = float(effect.get("multiplier", 1.0) or 1.0)
                 uses = int(effect.get("uses", 1) or 1)
@@ -5451,7 +5451,7 @@ class BattleView(DurableView):
                 self.queue_outgoing_attack_modifier(target_id, percent=percent, turns=turns, source=attack_name)
                 self._append_effect_event(
                     effect_events,
-                    _effect_source_text(attack_name, f"NÃ¤chster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden."),
+                    _effect_source_text(attack_name, f"Nächster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden."),
                 )
             elif eff_type == "enemy_next_attack_reduction_flat":
                 amount = int(effect.get("amount", 0) or 0)
@@ -5459,7 +5459,7 @@ class BattleView(DurableView):
                 self.queue_outgoing_attack_modifier(target_id, flat=amount, turns=turns, source=attack_name)
                 self._append_effect_event(
                     effect_events,
-                    _effect_source_text(attack_name, f"NÃ¤chster gegnerischer Angriff: -{amount} Schaden (mit Ãœberlauf-RÃ¼ckstoÃŸ)."),
+                    _effect_source_text(attack_name, f"Nächster gegnerischer Angriff: -{amount} Schaden (mit Überlauf-Rückstoß)."),
                 )
             elif eff_type == "reflect":
                 reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
@@ -5477,12 +5477,12 @@ class BattleView(DurableView):
                     self.incoming_modifiers[target_id][-1]["reflect_flat"] = reflect_flat
                 reduce_pct = int(round(max(0.0, reduce_percent) * 100))
                 reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
-                flat_text = f" und {reflect_flat} fixer RÃ¼ckschaden ausgelÃ¶st werden" if reflect_flat > 0 else ""
+                flat_text = f" und {reflect_flat} fixer Rückschaden ausgelöst werden" if reflect_flat > 0 else ""
                 self._append_effect_event(
                     effect_events,
                     _effect_source_text(
                         attack_name,
-                        f"Reflexion aktiv: NÃ¤chster eingehender Angriff wird um {reduce_pct}% reduziert, {reflect_pct}% des verhinderten Schadens werden zurÃ¼ckgeworfen{flat_text}.",
+                        f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert, {reflect_pct}% des verhinderten Schadens werden zurückgeworfen{flat_text}.",
                     ),
                 )
             elif eff_type == "absorb_store":
@@ -5503,32 +5503,32 @@ class BattleView(DurableView):
                     self.queue_incoming_modifier(target_id, cap="attack_min", turns=1, source=attack_name)
                     self._append_effect_event(
                         effect_events,
-                        _effect_source_text(attack_name, "Schadenslimit aktiv: NÃ¤chster Treffer wird auf dessen Mindestschaden begrenzt."),
+                        _effect_source_text(attack_name, "Schadenslimit aktiv: Nächster Treffer wird auf dessen Mindestschaden begrenzt."),
                     )
                 else:
                     max_damage = int(cap_setting or 0)
                     self.queue_incoming_modifier(target_id, cap=max_damage, turns=1, source=attack_name)
                     self._append_effect_event(
                         effect_events,
-                        _effect_source_text(attack_name, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nÃ¤chsten Treffer."),
+                        _effect_source_text(attack_name, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nächsten Treffer."),
                     )
             elif eff_type == "evade":
                 counter = int(effect.get("counter", 0) or 0)
                 self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1, source=attack_name)
-                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Ausweichen aktiv: Der nÃ¤chste gegnerische Angriff verfehlt."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
             elif eff_type == "special_lock":
                 turns = max(1, int(effect.get("turns", 1) or 1))
                 self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), turns)
-                self._append_effect_event(effect_events, f"SpezialfÃ¤higkeiten des Gegners sind fÃ¼r {turns} Runde(n) gesperrt.")
+                self._append_effect_event(effect_events, f"Spezialfähigkeiten des Gegners sind für {turns} Runde(n) gesperrt.")
             elif eff_type == "blind":
                 miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
                 self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
-                self._append_effect_event(effect_events, f"Blendung aktiv: {int(round(miss_chance * 100))}% Verfehlchance beim nÃ¤chsten Angriff.")
+                self._append_effect_event(effect_events, f"Blendung aktiv: {int(round(miss_chance * 100))}% Verfehlchance beim nächsten Angriff.")
             elif eff_type == "regen":
                 turns = int(effect.get("turns", 1) or 1)
                 heal = int(effect.get("heal", 0) or 0)
                 self.active_effects[target_id].append({"type": "regen", "duration": turns, "heal": heal, "applier": 0})
-                self._append_effect_event(effect_events, f"Regeneration aktiviert: Heilt sich in den nÃ¤chsten {turns} Runden jeweils um {heal} HP.")
+                self._append_effect_event(effect_events, f"Regeneration aktiviert: Heilt sich in den nächsten {turns} Runden jeweils um {heal} HP.")
             elif eff_type == "heal":
                 heal_data_effect = effect.get("amount", 0)
                 heal_amount = _random_int_from_range(heal_data_effect)
@@ -5541,7 +5541,7 @@ class BattleView(DurableView):
                 defense_mode = str(effect.get("defense", "")).strip().lower()
                 counter = int(effect.get("counter", 0) or 0)
                 self.queue_delayed_defense(target_id, defense_mode, counter=counter, source=attack_name)
-                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Schutz vorbereitet: Wird nach dem nÃ¤chsten eigenen Angriff aktiv."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Schutz vorbereitet: Wird nach dem nächsten eigenen Angriff aktiv."))
             elif eff_type == "airborne_two_phase":
                 self.start_airborne_two_phase(
                     target_id,
@@ -5551,7 +5551,7 @@ class BattleView(DurableView):
                     source_attack_index=attack_index if not is_forced_landing else None,
                     cooldown_turns=int(attack.get("cooldown_turns", 0) or 0),
                 )
-        # Kein separater Log-Eintrag â€“ Effekte werden inline in der Angriffszeile angezeigt
+        # Kein separater Log-Eintrag – Effekte werden inline in der Angriffszeile angezeigt
 
         _prepend_action_context_events(
             effect_events,
@@ -5590,7 +5590,7 @@ class BattleView(DurableView):
             self.special_lock_next_turn[0] = max(0, self.special_lock_next_turn.get(0, 0) - 1)
 
         if not is_forced_landing:
-            # Cooldown fÃ¼r Bot-Attacke
+            # Cooldown für Bot-Attacke
             dynamic_cooldown_turns = _resolve_dynamic_cooldown_from_burning(
                 attack,
                 burning_duration_for_dynamic_cooldown,
@@ -5693,7 +5693,7 @@ class BattleView(DurableView):
         # Wechsle zu Spieler
         self.current_turn = self.player1_id
 
-        # Reduziere Cooldowns fÃ¼r Spieler
+        # Reduziere Cooldowns für Spieler
         self.reduce_cooldowns(self.player1_id)
 
         # Aktualisiere Buttons
@@ -5728,8 +5728,8 @@ class CardSelectView(RestrictedView):
         self.selected_base_name: str | None = None
         options = [SelectOption(label=_group_option_label(group)[:100], value=str(group.get("base_name") or "")) for group in self.base_groups[:25]]
         if not options:
-            options = [SelectOption(label="Keine Karten verfÃ¼gbar", value="__none__")]
-        self.select = ui.Select(placeholder=f"WÃ¤hle {anzahl} Karte(n)...", min_values=1, max_values=1, options=options)
+            options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
+        self.select = ui.Select(placeholder=f"Wähle {anzahl} Karte(n)...", min_values=1, max_values=1, options=options)
         self.select.callback = self.select_callback
         self.add_item(self.select)
 
@@ -5740,24 +5740,24 @@ class CardSelectView(RestrictedView):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nur der Herausforderer kann Karten wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Herausforderer kann Karten wählen!", ephemeral=True)
             return
         selected_value = str(self.select.values[0] or "").strip()
         if selected_value == "__none__":
-            await interaction.response.send_message("âŒ Es sind aktuell keine nutzbaren Karten verfÃ¼gbar.", ephemeral=True)
+            await interaction.response.send_message("❌ Es sind aktuell keine nutzbaren Karten verfügbar.", ephemeral=True)
             return
         if self.selected_base_name is None:
             self.selected_base_name = selected_value
             variant_rows = self._variant_rows_for_selected_base()
             if len(variant_rows) <= 1:
                 if not variant_rows:
-                    await interaction.response.send_message("âŒ FÃ¼r diese Karte wurde kein nutzbarer Style gefunden.", ephemeral=True)
+                    await interaction.response.send_message("❌ Für diese Karte wurde kein nutzbarer Style gefunden.", ephemeral=True)
                     return
                 self.value = [variant_rows[0][0]]
                 self.stop()
                 await interaction.response.defer()
                 return
-            self.select.placeholder = f"WÃ¤hle den Style fÃ¼r {self.selected_base_name}..."
+            self.select.placeholder = f"Wähle den Style für {self.selected_base_name}..."
             self.select.options = [
                 SelectOption(
                     label=(f"{variant_name} (x{amount})" if amount > 1 else variant_name)[:100],
@@ -5766,7 +5766,7 @@ class CardSelectView(RestrictedView):
                 for variant_name, amount in variant_rows[:25]
             ]
             await interaction.response.edit_message(
-                content=f"WÃ¤hle den Style fÃ¼r **{self.selected_base_name}**:",
+                content=f"Wähle den Style für **{self.selected_base_name}**:",
                 view=self,
             )
             return
@@ -5820,12 +5820,12 @@ class FightCardSelectView(DurableView):
                 for group in grouped_cards[:25]
             ]
         if not options:
-            options = [SelectOption(label="Keine Karten verfÃ¼gbar", value="__none__")]
+            options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
         self.select = ui.Select(
             placeholder=(
-                f"WÃ¤hle den Style fÃ¼r {self.selected_base_name}..."
+                f"Wähle den Style für {self.selected_base_name}..."
                 if self.selected_base_name
-                else "WÃ¤hle deine Karte fÃ¼r den 1v1 Kampf..."
+                else "Wähle deine Karte für den 1v1 Kampf..."
             ),
             min_values=1,
             max_values=1,
@@ -5849,11 +5849,11 @@ class FightCardSelectView(DurableView):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.challenged_id:
-            await interaction.response.send_message("Nur der Herausgeforderte kann die Karte wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Herausgeforderte kann die Karte wählen!", ephemeral=True)
             return
         selected_name = str(self.select.values[0] or "").strip()
         if not selected_name or selected_name == "__none__":
-            await interaction.response.send_message("âŒ Keine gÃ¼ltige Karte verfÃ¼gbar.", ephemeral=True)
+            await interaction.response.send_message("❌ Keine gültige Karte verfügbar.", ephemeral=True)
             return
         if self.selected_base_name is None:
             self.selected_base_name = selected_name
@@ -5863,7 +5863,7 @@ class FightCardSelectView(DurableView):
                 cards=karten,
             )
             if len(variant_rows) > 1:
-                self.select.placeholder = f"WÃ¤hle den Style fÃ¼r {self.selected_base_name}..."
+                self.select.placeholder = f"Wähle den Style für {self.selected_base_name}..."
                 self.select.options = [
                     SelectOption(
                         label=(f"{variant_name} (x{amount})" if amount > 1 else variant_name)[:100],
@@ -5872,7 +5872,7 @@ class FightCardSelectView(DurableView):
                     for variant_name, amount in variant_rows[:25]
                 ]
                 await interaction.response.edit_message(
-                    content=f"WÃ¤hle den Style fÃ¼r **{self.selected_base_name}**:",
+                    content=f"Wähle den Style für **{self.selected_base_name}**:",
                     view=self,
                 )
                 return
@@ -5909,7 +5909,7 @@ class UserSearchModal(RestrictedModal):
         exclude_user_id: int | None = None,
         exclude_user_ids: set[int] | None = None,
     ):
-        super().__init__(title="ðŸ” User suchen")
+        super().__init__(title="🔍 User suchen")
         self.guild = guild
         self.challenger = challenger
         self.requester_id = int(getattr(challenger, "id", challenger))
@@ -5933,7 +5933,7 @@ class UserSearchModal(RestrictedModal):
         search_term = self.search_input.value.lower().strip()
         
         if not search_term:
-            await interaction.response.send_message("âŒ Bitte gib einen Namen ein!", ephemeral=True)
+            await interaction.response.send_message("❌ Bitte gib einen Namen ein!", ephemeral=True)
             return
         
         # Finde passende User
@@ -5955,7 +5955,7 @@ class UserSearchModal(RestrictedModal):
         
         if not matches:
             await interaction.response.send_message(
-                f"âŒ Keine User mit '{search_term}' gefunden! Versuche es mit einem anderen Namen.", 
+                f"❌ Keine User mit '{search_term}' gefunden! Versuche es mit einem anderen Namen.", 
                 ephemeral=True
             )
             return
@@ -5964,7 +5964,7 @@ class UserSearchModal(RestrictedModal):
         if len(matches) <= 25:
             options = []
             if self.include_bot_option:
-                options.append(SelectOption(label="ðŸ¤– Bot", value="bot"))
+                options.append(SelectOption(label="🤖 Bot", value="bot"))
             for member in matches:
                 status_emoji = self.get_status_emoji(member)
                 options.append(SelectOption(
@@ -5974,25 +5974,25 @@ class UserSearchModal(RestrictedModal):
             
             view = UserSearchResultView(self.challenger, options, parent_view=self.parent_view)
             await interaction.response.send_message(
-                f"ðŸ” **Suchergebnisse fÃ¼r '{search_term}':**",
+                f"🔍 **Suchergebnisse für '{search_term}':**",
                 view=view, ephemeral=True
             )
         else:
             await interaction.response.send_message(
-                f"âŒ Zu viele Ergebnisse ({len(matches)}). Bitte spezifischer suchen!",
+                f"❌ Zu viele Ergebnisse ({len(matches)}). Bitte spezifischer suchen!",
                 ephemeral=True
             )
     
     def get_status_emoji(self, member):
-        """Gibt Emoji fÃ¼r Online-Status zurÃ¼ck"""
+        """Gibt Emoji für Online-Status zurück"""
         if member.status == discord.Status.online:
-            return "ðŸŸ¢"
+            return "🟢"
         elif member.status == discord.Status.idle:
-            return "ðŸŸ¡"
+            return "🟡"
         elif member.status == discord.Status.dnd:
-            return "ðŸ”´"
+            return "🔴"
         else:
-            return "âš«"
+            return "⚫"
 
 class UserSearchResultView(RestrictedView):
     def __init__(self, challenger, options, parent_view: object | None = None):
@@ -6002,17 +6002,17 @@ class UserSearchResultView(RestrictedView):
         self.value = None
         self.parent_view = parent_view
         
-        self.select = ui.Select(placeholder="WÃ¤hle einen Gegner aus den Suchergebnissen...", min_values=1, max_values=1, options=options)
+        self.select = ui.Select(placeholder="Wähle einen Gegner aus den Suchergebnissen...", min_values=1, max_values=1, options=options)
         self.select.callback = self.select_callback
         self.add_item(self.select)
     
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nur der Herausforderer kann den Gegner wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Herausforderer kann den Gegner wählen!", ephemeral=True)
             return
         
         self.value = self.select.values[0]
-        # Ãœbergib die Auswahl zurÃ¼ck an die Eltern-View (z. B. OpponentSelectView/AdminUserSelectView) und beende sie
+        # Übergib die Auswahl zurück an die Eltern-View (z. B. OpponentSelectView/AdminUserSelectView) und beende sie
         if self.parent_view is not None:
             try:
                 search_handler = getattr(self.parent_view, "handle_search_selection", None)
@@ -6042,51 +6042,51 @@ class OpponentSelectView(RestrictedView):
         self.show_smart_options()
     
     def show_smart_options(self):
-        """Zeigt intelligente Optionen basierend auf Server-GrÃ¶ÃŸe (mit Status-Kreisen und PrÃ¤senz-Sortierung)"""
+        """Zeigt intelligente Optionen basierend auf Server-Größe (mit Status-Kreisen und Präsenz-Sortierung)"""
         def label_with_circle(m: discord.Member) -> str:
-            # identische Kreise wie in der Suche: ðŸŸ¢ ðŸŸ¡ ðŸ”´ âš«
+            # identische Kreise wie in der Suche: 🟢 🟡 🔴 ⚫
             return safe_user_option_label(m, prefix=f"{_member_status_circle(m)} ")
         
         options = [
-            SelectOption(label="ðŸ” Nach Name suchen", value="search"),
-            SelectOption(label="ðŸ¤– Bot", value="bot"),
+            SelectOption(label="🔍 Nach Name suchen", value="search"),
+            SelectOption(label="🤖 Bot", value="bot"),
         ]
 
         if len(self.all_members) <= 23:
-            # Kompakte Liste: Suche zuerst, dann Bot, dann alle gÃ¼ltigen Nutzer
+            # Kompakte Liste: Suche zuerst, dann Bot, dann alle gültigen Nutzer
             for member in sorted(self.all_members, key=_member_presence_priority):
                 options.append(SelectOption(label=label_with_circle(member), value=str(member.id)))
         else:
-            # GrÃ¶ÃŸere Liste: Suche zuerst, dann Bot, dann hÃ¤ufig sichtbare Nutzer und Vollansicht
+            # Größere Liste: Suche zuerst, dann Bot, dann häufig sichtbare Nutzer und Vollansicht
             online_like = [m for m in self.all_members if m.status != discord.Status.offline]
             for member in sorted(online_like, key=_member_presence_priority)[:22]:
                 options.append(SelectOption(label=label_with_circle(member), value=str(member.id)))
-            options.append(SelectOption(label="ðŸ“‹ Alle User anzeigen", value="show_all"))
+            options.append(SelectOption(label="📋 Alle User anzeigen", value="show_all"))
         
-        self.select = ui.Select(placeholder="WÃ¤hle einen Gegner...", min_values=1, max_values=1, options=options)
+        self.select = ui.Select(placeholder="Wähle einen Gegner...", min_values=1, max_values=1, options=options)
         self.select.callback = self.select_callback
         self.add_item(self.select)
     
     def get_status_emoji(self, member):
-        """Gibt Emoji fÃ¼r Online-Status zurÃ¼ck"""
+        """Gibt Emoji für Online-Status zurück"""
         if member.status == discord.Status.online:
-            return "ðŸŸ¢"
+            return "🟢"
         elif member.status == discord.Status.idle:
-            return "ðŸŸ¡"
+            return "🟡"
         elif member.status == discord.Status.dnd:
-            return "ðŸ”´"
+            return "🔴"
         else:
-            return "âš«"
+            return "⚫"
     
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user != self.challenger:
-            await interaction.response.send_message("Nur der Herausforderer kann den Gegner wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Herausforderer kann den Gegner wählen!", ephemeral=True)
             return
         
         selected_value = self.select.values[0]
         
         if selected_value == "search":
-            # Ã–ffne Suchmodal und verknÃ¼pfe mit Parent-View
+            # Öffne Suchmodal und verknüpfe mit Parent-View
             modal = UserSearchModal(
                 self.guild,
                 self.challenger,
@@ -6097,9 +6097,9 @@ class OpponentSelectView(RestrictedView):
             return
         
         elif selected_value == "show_all":
-            # Zeige alle User (mit Paginierung falls nÃ¶tig)
+            # Zeige alle User (mit Paginierung falls nötig)
             if len(self.all_members) <= 25:
-                options = [SelectOption(label="ðŸ¤– Bot", value="bot")]
+                options = [SelectOption(label="🤖 Bot", value="bot")]
                 for member in sorted(self.all_members, key=_member_presence_priority):
                     status_emoji = self.get_status_emoji(member)
                     options.append(SelectOption(
@@ -6109,12 +6109,12 @@ class OpponentSelectView(RestrictedView):
                 
                 view = UserSearchResultView(self.challenger, options, parent_view=self)
                 await interaction.response.send_message(
-                    "ðŸ“‹ **Alle User:**",
+                    "📋 **Alle User:**",
                     view=view, ephemeral=True
                 )
             else:
                 pager = ShowAllMembersPager(self.challenger, self.all_members, parent_view=self, include_bot_option=True)
-                await interaction.response.send_message("ðŸ“‹ **Alle User (Seitenweise):**", view=pager, ephemeral=True)
+                await interaction.response.send_message("📋 **Alle User (Seitenweise):**", view=pager, ephemeral=True)
             return
         
         self.value = selected_value
@@ -6136,34 +6136,34 @@ class AdminUserSelectView(RestrictedView):
         members_sorted = sorted(self.all_members, key=_member_presence_priority)
 
         if not members_sorted:
-            options.append(SelectOption(label="Keine Nutzer verfÃ¼gbar", value="none"))
+            options.append(SelectOption(label="Keine Nutzer verfügbar", value="none"))
         elif len(members_sorted) <= 24:
             # Bis 24 User: alle anzeigen + Suchoption (max. 25 Optionen)
             for member in members_sorted:
                 circle = _member_status_circle(member)
                 label = safe_user_option_label(member, prefix=f"{circle} ")
                 options.append(SelectOption(label=label, value=str(member.id)))
-            options.insert(0, SelectOption(label="ðŸ” Nach Name suchen", value="search"))
+            options.insert(0, SelectOption(label="🔍 Nach Name suchen", value="search"))
         else:
-            # GrÃ¶ÃŸerer Server: kompakte Liste + Such-/Alle-Optionen (max. 25)
-            options.append(SelectOption(label="ðŸ” Nach Name suchen", value="search"))
-            options.append(SelectOption(label="ðŸ“‹ Alle User anzeigen", value="show_all"))
+            # Größerer Server: kompakte Liste + Such-/Alle-Optionen (max. 25)
+            options.append(SelectOption(label="🔍 Nach Name suchen", value="search"))
+            options.append(SelectOption(label="📋 Alle User anzeigen", value="show_all"))
             for member in members_sorted[:23]:
                 circle = _member_status_circle(member)
                 label = safe_user_option_label(member, prefix=f"{circle} ")
                 options.append(SelectOption(label=label, value=str(member.id)))
 
-        self.select = ui.Select(placeholder="WÃ¤hle einen Nutzer...", min_values=1, max_values=1, options=options)
+        self.select = ui.Select(placeholder="Wähle einen Nutzer...", min_values=1, max_values=1, options=options)
         self.select.callback = self.select_callback
         self.add_item(self.select)
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.admin_user_id:
-            await interaction.response.send_message("Nur der Admin kann wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Admin kann wählen!", ephemeral=True)
             return
         selected = self.select.values[0]
         if selected == "none":
-            await interaction.response.send_message("âŒ Keine Nutzer verfÃ¼gbar.", ephemeral=True)
+            await interaction.response.send_message("❌ Keine Nutzer verfügbar.", ephemeral=True)
             return
         if selected == "search":
             modal = UserSearchModal(self.guild, interaction.user, parent_view=self, include_bot_option=False)
@@ -6180,10 +6180,10 @@ class AdminUserSelectView(RestrictedView):
                     for m in members_sorted
                 ]
                 view = UserSearchResultView(interaction.user, options, parent_view=self)
-                await interaction.response.send_message("ðŸ“‹ Alle User:", view=view, ephemeral=True)
+                await interaction.response.send_message("📋 Alle User:", view=view, ephemeral=True)
             else:
                 pager = ShowAllMembersPager(interaction.user, self.all_members, parent_view=self, include_bot_option=False)
-                await interaction.response.send_message("ðŸ“‹ Alle User (Seitenweise):", view=pager, ephemeral=True)
+                await interaction.response.send_message("📋 Alle User (Seitenweise):", view=pager, ephemeral=True)
             return
         self.value = selected
         self.stop()
@@ -6213,7 +6213,7 @@ class DustMultiUserSelectView(RestrictedView):
         self._message = message
 
     def _content(self) -> str:
-        return f"WÃ¤hle mehrere Nutzer fÃ¼r {self.item_label}. Die Suche steht immer ganz oben."
+        return f"Wähle mehrere Nutzer für {self.item_label}. Die Suche steht immer ganz oben."
 
     def _available_members(self) -> list[discord.Member]:
         chosen = set(self.selected_user_ids)
@@ -6309,7 +6309,7 @@ class DustMultiUserSelectView(RestrictedView):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nur der Command-User kann wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Command-User kann wählen!", ephemeral=True)
             return
 
         selected = str(self.select.values[0] or "").strip()
@@ -6325,7 +6325,7 @@ class DustMultiUserSelectView(RestrictedView):
             return
         if selected == "done":
             if not self.selected_user_ids:
-                await interaction.response.send_message("âŒ Du musst erst mindestens einen Nutzer auswÃ¤hlen.", ephemeral=True)
+                await interaction.response.send_message("❌ Du musst erst mindestens einen Nutzer auswählen.", ephemeral=True)
                 return
             self.value = list(self.selected_user_ids)
             self.stop()
@@ -6337,22 +6337,22 @@ class FightVisibilityView(RestrictedView):
     def __init__(self, user_id: int):
         super().__init__(timeout=60)
         self.user_id = user_id
-        self.value: bool | None = None  # True=privat, False=Ã¶ffentlich, None=abgebrochen
+        self.value: bool | None = None  # True=privat, False=öffentlich, None=abgebrochen
         self.cancelled: bool = False
 
     @ui.button(label="Privat", style=discord.ButtonStyle.primary, row=0)
     async def private_btn(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nur der Herausforderer kann die Sichtbarkeit wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Herausforderer kann die Sichtbarkeit wählen!", ephemeral=True)
             return
         self.value = True
         self.stop()
         await interaction.response.defer()
 
-    @ui.button(label="Ã–ffentlich", style=discord.ButtonStyle.success, row=0)
+    @ui.button(label="Öffentlich", style=discord.ButtonStyle.success, row=0)
     async def public_btn(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nur der Herausforderer kann die Sichtbarkeit wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Herausforderer kann die Sichtbarkeit wählen!", ephemeral=True)
             return
         self.value = False
         self.stop()
@@ -6422,13 +6422,13 @@ async def _create_required_private_fight_thread(
         parent_text = base_channel.parent
     if parent_text is None:
         await interaction.followup.send(
-            f"âŒ Privater Kampf konnte nicht gestartet werden. Bitte {interaction.user.mention} und <@{BASTI_USER_ID}> informieren.",
+            f"❌ Privater Kampf konnte nicht gestartet werden. Bitte {interaction.user.mention} und <@{BASTI_USER_ID}> informieren.",
             ephemeral=True,
         )
         return None
     if me is None:
         await interaction.followup.send(
-            f"âŒ Privater Kampf konnte nicht gestartet werden. Bitte {interaction.user.mention} und <@{BASTI_USER_ID}> informieren.",
+            f"❌ Privater Kampf konnte nicht gestartet werden. Bitte {interaction.user.mention} und <@{BASTI_USER_ID}> informieren.",
             ephemeral=True,
         )
         return None
@@ -6436,7 +6436,7 @@ async def _create_required_private_fight_thread(
     if not perms.create_private_threads or not perms.send_messages_in_threads:
         await interaction.followup.send(
             (
-                "âŒ Ich kann hier keinen privaten Kampf-Thread erstellen "
+                "❌ Ich kann hier keinen privaten Kampf-Thread erstellen "
                 f"(fehlende Thread-Rechte). Bitte {interaction.user.mention} und <@{BASTI_USER_ID}> informieren."
             ),
             ephemeral=True,
@@ -6469,8 +6469,8 @@ async def _create_required_private_fight_thread(
                 await fight_thread.delete()
                 await interaction.followup.send(
                     (
-                        "âŒ Ich konnte den privaten Thread nicht fÃ¼r beide Nutzer Ã¶ffnen. "
-                        "Bitte prÃ¼fe Kanalrechte fÃ¼r den Gegner oder starte den Kampf im normalen Kanal."
+                        "❌ Ich konnte den privaten Thread nicht für beide Nutzer öffnen. "
+                        "Bitte prüfe Kanalrechte für den Gegner oder starte den Kampf im normalen Kanal."
                     ),
                     ephemeral=True,
                 )
@@ -6484,7 +6484,7 @@ async def _create_required_private_fight_thread(
     except Exception:
         logging.exception("Failed to create private fight thread")
         await interaction.followup.send(
-            f"âŒ Privater Kampf konnte nicht gestartet werden. Bitte {interaction.user.mention} und <@{BASTI_USER_ID}> informieren.",
+            f"❌ Privater Kampf konnte nicht gestartet werden. Bitte {interaction.user.mention} und <@{BASTI_USER_ID}> informieren.",
             ephemeral=True,
         )
         return None
@@ -6524,7 +6524,7 @@ async def _create_required_private_mission_thread(interaction: discord.Interacti
         parent_text = base_channel.parent
     if parent_text is None or me is None:
         await interaction.followup.send(
-            f"âŒ Privater Missions-Thread konnte nicht erstellt werden. Bitte {interaction.user.mention} und <@{BASTI_USER_ID}> informieren.",
+            f"❌ Privater Missions-Thread konnte nicht erstellt werden. Bitte {interaction.user.mention} und <@{BASTI_USER_ID}> informieren.",
             ephemeral=True,
         )
         return None
@@ -6532,7 +6532,7 @@ async def _create_required_private_mission_thread(interaction: discord.Interacti
     if not perms.create_private_threads or not perms.send_messages_in_threads:
         await interaction.followup.send(
             (
-                "âŒ Ich kann hier keinen privaten Missions-Thread erstellen "
+                "❌ Ich kann hier keinen privaten Missions-Thread erstellen "
                 f"(fehlende Thread-Rechte). Bitte {interaction.user.mention} und <@{BASTI_USER_ID}> informieren."
             ),
             ephemeral=True,
@@ -6566,7 +6566,7 @@ async def _create_required_private_mission_thread(interaction: discord.Interacti
     except Exception:
         logging.exception("Failed to create private mission thread")
         await interaction.followup.send(
-            f"âŒ Privater Missions-Thread konnte nicht gestartet werden. Bitte {interaction.user.mention} und <@{BASTI_USER_ID}> informieren.",
+            f"❌ Privater Missions-Thread konnte nicht gestartet werden. Bitte {interaction.user.mention} und <@{BASTI_USER_ID}> informieren.",
             ephemeral=True,
         )
         return None
@@ -6586,13 +6586,13 @@ async def _start_fight_card_selection_from_challenge(
         return
     send_channel = await _resolve_thread_channel_or_fallback(thread_id, interaction.channel)
     if thread_id and _thread_id_for_channel(send_channel) != thread_id:
-        await interaction.followup.send("âŒ Der private Kampf-Thread ist nicht mehr verfÃ¼gbar. Bitte erneut herausfordern.", ephemeral=True)
+        await interaction.followup.send("❌ Der private Kampf-Thread ist nicht mehr verfügbar. Bitte erneut herausfordern.", ephemeral=True)
         await _maybe_delete_fight_thread(thread_id, thread_created)
         return
     challenger = await _get_member_safe(interaction.guild, challenger_id)
     challenged = await _get_member_safe(interaction.guild, challenged_id)
     if not challenger or not challenged:
-        await interaction.followup.send("âŒ Nutzer nicht gefunden. Bitte erneut herausfordern.", ephemeral=True)
+        await interaction.followup.send("❌ Nutzer nicht gefunden. Bitte erneut herausfordern.", ephemeral=True)
         await _maybe_delete_fight_thread(thread_id, thread_created)
         return
     challenger_card = await get_karte_by_name(challenger_card_name)
@@ -6600,7 +6600,7 @@ async def _start_fight_card_selection_from_challenge(
         await _safe_send_channel(
             interaction,
             send_channel,
-            content=f"âŒ Karte von {challenger.mention} nicht gefunden. Bitte erneut herausfordern.",
+            content=f"❌ Karte von {challenger.mention} nicht gefunden. Bitte erneut herausfordern.",
         )
         await _maybe_delete_fight_thread(thread_id, thread_created)
         return
@@ -6611,7 +6611,7 @@ async def _start_fight_card_selection_from_challenge(
         await _safe_send_channel(
             interaction,
             send_channel,
-            content=f"âŒ {challenged.mention} hat keine Karten! Kampf abgebrochen.",
+            content=f"❌ {challenged.mention} hat keine Karten! Kampf abgebrochen.",
         )
         await _maybe_delete_fight_thread(thread_id, thread_created)
         return
@@ -6629,7 +6629,7 @@ async def _start_fight_card_selection_from_challenge(
         interaction,
         send_channel,
         content=(
-            f"{challenged.mention}, wÃ¤hle deine Karte fÃ¼r den 1v1 Kampf:\n"
+            f"{challenged.mention}, wähle deine Karte für den 1v1 Kampf:\n"
             f"Herausforderer-Karte: **{_fight_challenge_card_label(challenger_card_name)}**"
         ),
         view=gegner_card_select_view,
@@ -6655,7 +6655,7 @@ async def _start_fight_battle_from_card_selection(
         await _safe_send_channel(
             interaction,
             interaction.channel,
-            content="âŒ Der private Kampf-Thread ist nicht mehr verfÃ¼gbar. Bitte erneut herausfordern.",
+            content="❌ Der private Kampf-Thread ist nicht mehr verfügbar. Bitte erneut herausfordern.",
         )
         await _maybe_delete_fight_thread(thread_id, thread_created)
         return
@@ -6665,7 +6665,7 @@ async def _start_fight_battle_from_card_selection(
         await _safe_send_channel(
             interaction,
             send_channel,
-            content="âŒ Nutzer nicht gefunden. Bitte erneut herausfordern.",
+            content="❌ Nutzer nicht gefunden. Bitte erneut herausfordern.",
         )
         await _maybe_delete_fight_thread(thread_id, thread_created)
         return
@@ -6675,7 +6675,7 @@ async def _start_fight_battle_from_card_selection(
         await _safe_send_channel(
             interaction,
             send_channel,
-            content="âŒ Eine der ausgewÃ¤hlten Karten konnte nicht gefunden werden. Kampf abgebrochen.",
+            content="❌ Eine der ausgewählten Karten konnte nicht gefunden werden. Kampf abgebrochen.",
         )
         await _maybe_delete_fight_thread(thread_id, thread_created)
         return
@@ -6759,16 +6759,16 @@ def _mission_success_embed(reward_card: dict[str, Any], total_waves: int, *, is_
     reward_color = _card_rarity_color(cast(CardData, reward_card))
     if is_new_card:
         embed = discord.Embed(
-            title="ðŸ† Mission erfolgreich!",
-            description=f"Du hast alle {total_waves} Wellen Ã¼berstanden und **{reward_card['name']}** erhalten!",
+            title="🏆 Mission erfolgreich!",
+            description=f"Du hast alle {total_waves} Wellen überstanden und **{reward_card['name']}** erhalten!",
             color=reward_color,
         )
         if reward_card.get("bild"):
             embed.set_image(url=str(reward_card["bild"]))
         return embed
     embed = discord.Embed(
-        title="ðŸ’Ž Mission erfolgreich - Infinitydust!",
-        description=f"Du hast alle {total_waves} Wellen Ã¼berstanden!",
+        title="💎 Mission erfolgreich - Infinitydust!",
+        description=f"Du hast alle {total_waves} Wellen überstanden!",
         color=reward_color,
     )
     embed.add_field(
@@ -6796,7 +6796,7 @@ async def _begin_mission_thread_flow(interaction: discord.Interaction, mission_d
         await _safe_send_channel(
             interaction,
             thread,
-            content=f"{interaction.user.mention} âŒ Du hast keine Karten fÃ¼r die Mission!",
+            content=f"{interaction.user.mention} ❌ Du hast keine Karten für die Mission!",
         )
         return
     select_view = MissionStartCardSelectView(
@@ -6808,7 +6808,7 @@ async def _begin_mission_thread_flow(interaction: discord.Interaction, mission_d
     intro_embed = _build_mission_embed(_dict_str_any(mission_data))
     intro_embed.description = (
         f"{intro_embed.description or ''}\n\n"
-        f"{interaction.user.mention}, wÃ¤hle jetzt deine Karte fÃ¼r diese Mission."
+        f"{interaction.user.mention}, wähle jetzt deine Karte für diese Mission."
     ).strip()
     await _safe_send_channel(interaction, thread, embed=intro_embed, view=select_view)
 
@@ -6821,14 +6821,14 @@ async def _start_mission_wave_in_thread(
     mission_data = _dict_str_any(mission_state.get("mission_data"))
     selected_card_name = str(mission_state.get("selected_card_name") or "").strip()
     if not selected_card_name:
-        await _safe_send_channel(interaction, interaction.channel, content="âŒ Keine Missions-Karte ausgewÃ¤hlt.")
+        await _safe_send_channel(interaction, interaction.channel, content="❌ Keine Missions-Karte ausgewählt.")
         return None
     player_card = await get_karte_by_name(selected_card_name)
     if not player_card:
         await _safe_send_channel(
             interaction,
             interaction.channel,
-            content=f"âŒ Die Karte **{selected_card_name}** konnte nicht gefunden werden.",
+            content=f"❌ Die Karte **{selected_card_name}** konnte nicht gefunden werden.",
         )
         return None
     wave_num = max(1, int(mission_state.get("next_wave", 1) or 1))
@@ -6892,13 +6892,13 @@ class ChallengeResponseView(DurableView):
             "thread_created": self.thread_created,
         }
 
-    @ui.button(label="KÃ¤mpfen", style=discord.ButtonStyle.success, custom_id="fight_challenge:accept")
+    @ui.button(label="Kämpfen", style=discord.ButtonStyle.success, custom_id="fight_challenge:accept")
     async def accept(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.challenged_id:
             await interaction.response.send_message("Nur der Herausgeforderte kann annehmen!", ephemeral=True)
             return
         if not await claim_fight_request(self.request_id, "accepted"):
-            await interaction.response.send_message("âŒ Diese Kampf-Anfrage ist nicht mehr offen.", ephemeral=True)
+            await interaction.response.send_message("❌ Diese Kampf-Anfrage ist nicht mehr offen.", ephemeral=True)
             return
         await interaction.response.defer()
         thread: discord.Thread | None = None
@@ -6920,7 +6920,7 @@ class ChallengeResponseView(DurableView):
             challenged_member = interaction.guild.get_member(self.challenged_id) if interaction.guild is not None else None
             replacement_thread = await _create_required_private_fight_thread(interaction, challenged=challenged_member)
             if replacement_thread is None:
-                await interaction.followup.send("âŒ Der private Kampf-Thread konnte nicht wiederhergestellt werden. Bitte erneut herausfordern.", ephemeral=True)
+                await interaction.followup.send("❌ Der private Kampf-Thread konnte nicht wiederhergestellt werden. Bitte erneut herausfordern.", ephemeral=True)
                 return
             thread = replacement_thread
             self.thread_id = replacement_thread.id
@@ -6946,7 +6946,7 @@ class ChallengeResponseView(DurableView):
             await interaction.response.send_message("Nur der Herausgeforderte kann ablehnen!", ephemeral=True)
             return
         if not await claim_fight_request(self.request_id, "declined"):
-            await interaction.response.send_message("âŒ Diese Kampf-Anfrage ist nicht mehr offen.", ephemeral=True)
+            await interaction.response.send_message("❌ Diese Kampf-Anfrage ist nicht mehr offen.", ephemeral=True)
             return
         await interaction.response.send_message("Kampf abgelehnt.", ephemeral=True)
         try:
@@ -6971,7 +6971,7 @@ class AdminCloseView(DurableView):
         return {"thread_id": self.thread.id}
 
     @ui.button(
-        label="Thread schlieÃŸen (Admin/Owner)",
+        label="Thread schließen (Admin/Owner)",
         style=discord.ButtonStyle.danger,
         custom_id="thread_close:admin",
     )
@@ -6994,7 +6994,7 @@ class BugReportLinkView(RestrictedView):
     def __init__(self):
         super().__init__(timeout=300)
         if BUG_REPORT_TALLY_URL:
-            self.add_item(ui.Button(label="Formular Ã¶ffnen", style=discord.ButtonStyle.link, url=BUG_REPORT_TALLY_URL))
+            self.add_item(ui.Button(label="Formular öffnen", style=discord.ButtonStyle.link, url=BUG_REPORT_TALLY_URL))
 
 class FightFeedbackView(DurableView):
     durable_view_kind = VIEW_KIND_FIGHT_FEEDBACK
@@ -7146,7 +7146,7 @@ class FightFeedbackView(DurableView):
         self._admin_close_posted = True
         try:
             view = AdminCloseView(self.channel)
-            message = await self.channel.send("Ein Admin/Owner kann den Thread jetzt schlieÃŸen.", view=view)
+            message = await self.channel.send("Ein Admin/Owner kann den Thread jetzt schließen.", view=view)
             await _maybe_register_durable_message(message, view)
         except Exception:
             logging.exception("Unexpected error")
@@ -7273,13 +7273,13 @@ class FightFeedbackView(DurableView):
         )
 
     @ui.button(
-        label="Thread schlieÃŸen (Admin/Owner)",
+        label="Thread schließen (Admin/Owner)",
         style=discord.ButtonStyle.secondary,
         custom_id="fight_feedback:close_thread",
     )
     async def close_thread_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not isinstance(self.channel, discord.Thread):
-            await interaction.response.send_message("Dieser Button ist nur in Threads verfÃ¼gbar.", ephemeral=False)
+            await interaction.response.send_message("Dieser Button ist nur in Threads verfügbar.", ephemeral=False)
             return
         if not await is_admin(interaction):
             await interaction.response.send_message(CLOSE_PERMISSION_DENIED, ephemeral=False)
@@ -7305,11 +7305,11 @@ class FightFeedbackView(DurableView):
 
 # Helper: Check Admin (Admins oder Owner/Dev)
 async def is_admin(interaction):
-    # Bot-Owner/Dev dÃ¼rfen Admin-Commands nutzen (auch ohne Serverrechte)
+    # Bot-Owner/Dev dürfen Admin-Commands nutzen (auch ohne Serverrechte)
     if await is_owner_or_dev(interaction):
         return True
     member = _interaction_member_or_none(interaction)
-    # PrÃ¼fe ob User Admin-Berechtigung hat ODER Server-Owner ist ODER spezielle Rollen hat
+    # Prüfe ob User Admin-Berechtigung hat ODER Server-Owner ist ODER spezielle Rollen hat
     if interaction.user.id == (interaction.guild.owner_id if interaction.guild else 0):
         return True
     if member is not None and member.guild_permissions.administrator:
@@ -7362,7 +7362,7 @@ async def is_owner_or_dev(interaction: discord.Interaction) -> bool:
 async def require_owner_or_dev(interaction: discord.Interaction) -> bool:
     if not await is_owner_or_dev(interaction):
         await interaction.response.send_message(
-            "â›” Nur Basti oder die Developer-Rolle dÃ¼rfen diesen Command nutzen.",
+            "⛔ Nur Basti oder die Developer-Rolle dürfen diesen Command nutzen.",
             ephemeral=True,
         )
         return False
@@ -7375,13 +7375,13 @@ def _normalize_rarity_key(raw_value: str | None) -> str:
         "ö": "oe",
         "ü": "ue",
         "ß": "ss",
-        "Ã¤": "ae",
-        "Ã¶": "oe",
-        "Ã¼": "ue",
-        "ÃŸ": "ss",
-        "ÃƒÂ¤": "ae",
-        "ÃƒÂ¶": "oe",
-        "ÃƒÂ¼": "ue",
+        "ä": "ae",
+        "ö": "oe",
+        "ü": "ue",
+        "ß": "ss",
+        "ä": "ae",
+        "ö": "oe",
+        "ü": "ue",
     }
     for old, new in replacements.items():
         value = value.replace(old, new)
@@ -7403,10 +7403,10 @@ def _normalize_rarity_key(raw_value: str | None) -> str:
 
 def _rarity_label_from_key(rarity_key: str) -> str:
     labels = {
-        "common": "GewÃ¶hnlich / Common",
+        "common": "Gewöhnlich / Common",
         "rare": "Selten / Rare",
         "epic": "Episch / Epic",
-        "legendary": "LegendÃ¤r / Legendary",
+        "legendary": "Legendär / Legendary",
     }
     return labels.get(rarity_key, rarity_key.title())
 
@@ -7435,10 +7435,10 @@ def _card_rarity_color(card: dict | None) -> int | None:
         return None
     rarity_key = _normalize_rarity_key(card.get("seltenheit"))
     color_map = {
-        "common": 0x13EB2B,      # GewÃ¶hnlich
+        "common": 0x13EB2B,      # Gewöhnlich
         "rare": 0x2E86FF,        # Selten
         "epic": 0xC84DFF,        # Episch
-        "legendary": 0xFFB020,   # LegendÃ¤r
+        "legendary": 0xFFB020,   # Legendär
     }
     return color_map.get(rarity_key)
 
@@ -7505,13 +7505,13 @@ class StorySelectView(RestrictedView):
         self.user_id = user_id
         self.value: str | None = None
         options = [SelectOption(label="text", value="text", description="Test-Story")]  # Platzhalter
-        self.select = ui.Select(placeholder="WÃ¤hle eine Story...", min_values=1, max_values=1, options=options)
+        self.select = ui.Select(placeholder="Wähle eine Story...", min_values=1, max_values=1, options=options)
         self.select.callback = self.on_select
         self.add_item(self.select)
 
     async def on_select(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nur der Command-User kann die Story wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Command-User kann die Story wählen!", ephemeral=True)
             return
         self.value = self.select.values[0]
         self.stop()
@@ -7527,15 +7527,15 @@ class StoryPlayerView(RestrictedView):
 
     def render_step_embed(self) -> discord.Embed:
         if self.step == 0:
-            embed = discord.Embed(title="ðŸŽ¬ Story: text", description="Schau dir dieses Video an: https://youtu.be/cpXOkN6T2OU")
+            embed = discord.Embed(title="🎬 Story: text", description="Schau dir dieses Video an: https://youtu.be/cpXOkN6T2OU")
         elif self.step == 1:
-            embed = discord.Embed(title="ðŸ—ºï¸ Story: text", description="Weg Beschreibung noch nicht vorhanden.")
+            embed = discord.Embed(title="🗺️ Story: text", description="Weg Beschreibung noch nicht vorhanden.")
         else:
-            embed = discord.Embed(title="ðŸš§ Realize Feature", description="Dies ist ein Realize Feature und deshalb noch nicht erreichbar.")
+            embed = discord.Embed(title="🚧 Realize Feature", description="Dies ist ein Realize Feature und deshalb noch nicht erreichbar.")
         return embed
 
     def update_buttons_for_step(self):
-        # Buttons existieren immer, aber ZustÃ¤nde variieren
+        # Buttons existieren immer, aber Zustände variieren
         # Back ist nur ab Schritt 1 aktiv
         self.button_back.disabled = (self.step == 0)
         # Weiter ist in Schritt 2 deaktiviert
@@ -7559,9 +7559,9 @@ class StoryPlayerView(RestrictedView):
             await interaction.response.send_message("Das ist nicht dein Story-Dialog!", ephemeral=True)
             return
         self.stop()
-        await interaction.response.edit_message(content="âŒ Story abgebrochen.", embed=None, view=None)
+        await interaction.response.edit_message(content="❌ Story abgebrochen.", embed=None, view=None)
 
-    @ui.button(label="ZurÃ¼ck", style=discord.ButtonStyle.secondary)
+    @ui.button(label="Zurück", style=discord.ButtonStyle.secondary)
     async def button_back(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Das ist nicht dein Story-Dialog!", ephemeral=True)
@@ -7571,7 +7571,7 @@ class StoryPlayerView(RestrictedView):
         self.update_buttons_for_step()
         await interaction.response.edit_message(embed=self.render_step_embed(), view=self)
 
-# Select Menu Views fÃ¼r das VerstÃ¤rken-System
+# Select Menu Views für das Verstärken-System
 FUSE_DUST_COST = 10
 FUSE_HEALTH_BONUS = 10
 FUSE_DAMAGE_MAX_BONUS = f"{STANDARD_DAMAGE_UPGRADE_STEP} Standard / {SPECIAL_DAMAGE_UPGRADE_STEP} Spezial"
@@ -7580,7 +7580,7 @@ FUSE_CARD_ACTION_SEARCH = "search"
 FUSE_CARD_ACTION_BROWSE_ALL = "browse_all"
 FUSE_CARD_ACTION_BACK = "back"
 FUSE_CARD_EMPTY = "__none__"
-FUSE_OWNER_LOCKED_TEXT = "Nur die Person, die â€ž/verbessernâ€œ gestartet hat, kann dieses MenÃ¼ benutzen."
+FUSE_OWNER_LOCKED_TEXT = "Nur die Person, die „/verbessern“ gestartet hat, kann dieses Menü benutzen."
 
 
 def _attack_upgrade_step(attack: dict) -> int:
@@ -7597,7 +7597,7 @@ def _attack_upgrade_max_bonus(attack: dict) -> int:
 
 def _normalize_fuse_search_text(text: str) -> str:
     normalized = str(text or "").strip().lower()
-    for source, target in (("Ã¤", "ae"), ("Ã¶", "oe"), ("Ã¼", "ue"), ("ÃŸ", "ss")):
+    for source, target in (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss")):
         normalized = normalized.replace(source, target)
     normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
     return " ".join(normalized.split())
@@ -7689,16 +7689,16 @@ class DustAmountSelect(ui.Select):
                         f"Leben +{FUSE_HEALTH_BONUS} oder Schaden: "
                         f"Std +{STANDARD_DAMAGE_UPGRADE_STEP} / Spez +{SPECIAL_DAMAGE_UPGRADE_STEP}"
                     ),
-                    emoji="ðŸ’Ž",
+                    emoji="💎",
                 )
             )
-        super().__init__(placeholder="WÃ¤hle die Infinitydust-Menge...", options=options)
+        super().__init__(placeholder="Wähle die Infinitydust-Menge...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
         dust_amount = int(self.values[0])
         user_karten = await get_user_karten(interaction.user.id)
         if not user_karten:
-            await interaction.response.send_message("âŒ Du hast keine Karten zum VerstÃ¤rken!", ephemeral=True)
+            await interaction.response.send_message("❌ Du hast keine Karten zum Verstärken!", ephemeral=True)
             return
 
         next_view = FuseCardSelectView(interaction.user.id, dust_amount, user_karten)
@@ -7757,7 +7757,7 @@ class FuseCardSearchModal(FuseFlowModal):
         source_message: discord.Message | None,
         parent_view: "FuseCardSelectView",
     ):
-        super().__init__(requester_id, title="ðŸ” Held suchen")
+        super().__init__(requester_id, title="🔍 Held suchen")
         self.dust_amount = int(dust_amount)
         self.user_karten = list(user_karten)
         self.source_message = source_message
@@ -7773,19 +7773,19 @@ class FuseCardSearchModal(FuseFlowModal):
     async def on_submit(self, interaction: discord.Interaction):
         search_query = str(self.search_input.value or "").strip()
         if not search_query:
-            await interaction.response.send_message("âŒ Bitte gib einen Suchbegriff ein.", ephemeral=True)
+            await interaction.response.send_message("❌ Bitte gib einen Suchbegriff ein.", ephemeral=True)
             return
 
         matches = _search_fuse_card_groups(self.user_karten, search_query)
         if not matches:
             await interaction.response.send_message(
-                f"âŒ Keine passenden Helden fÃ¼r â€ž{search_query}â€œ gefunden.",
+                f"❌ Keine passenden Helden für „{search_query}“ gefunden.",
                 ephemeral=True,
             )
             return
         if self.source_message is None:
             await interaction.response.send_message(
-                "âŒ Die Suchergebnisse konnten nicht geladen werden.",
+                "❌ Die Suchergebnisse konnten nicht geladen werden.",
                 ephemeral=True,
             )
             return
@@ -7808,7 +7808,7 @@ class FuseCardSearchModal(FuseFlowModal):
             next_view.stop()
             await send_interaction_response(
                 interaction,
-                content="âŒ Die Suchergebnisse konnten nicht geladen werden.",
+                content="❌ Die Suchergebnisse konnten nicht geladen werden.",
                 ephemeral=True,
             )
 
@@ -7835,7 +7835,7 @@ class FuseCardSelectView(FuseFlowView):
 
         self.action_select = FuseCardActionSelect(self)
         self.card_select = CardSelect(self)
-        self.prev_button = ui.Button(label="ZurÃ¼ck", style=discord.ButtonStyle.secondary, row=2)
+        self.prev_button = ui.Button(label="Zurück", style=discord.ButtonStyle.secondary, row=2)
         self.next_button = ui.Button(label="Weiter", style=discord.ButtonStyle.secondary, row=2)
         self.prev_button.callback = self._on_prev_page
         self.next_button.callback = self._on_next_page
@@ -7858,7 +7858,7 @@ class FuseCardSelectView(FuseFlowView):
             return "Suchoptionen"
         if self.mode == "browse":
             return "Browseroptionen"
-        return "Aktion wÃ¤hlen..."
+        return "Aktion wählen..."
 
     def action_options(self) -> list[SelectOption]:
         if self.mode == "root":
@@ -7867,39 +7867,39 @@ class FuseCardSelectView(FuseFlowView):
                     label="Suchen",
                     value=FUSE_CARD_ACTION_SEARCH,
                     description="Held per Suchbegriff finden",
-                    emoji="ðŸ”",
+                    emoji="🔍",
                 ),
                 SelectOption(
                     label="Alle durchsuchen",
                     value=FUSE_CARD_ACTION_BROWSE_ALL,
-                    description="Alle verfÃ¼gbaren Helden anzeigen",
-                    emoji="ðŸ“š",
+                    description="Alle verfügbaren Helden anzeigen",
+                    emoji="📚",
                 ),
             ]
         return [
             SelectOption(
-                label="ZurÃ¼ck",
+                label="Zurück",
                 value=FUSE_CARD_ACTION_BACK,
-                description="Zur normalen Held-Auswahl zurÃ¼ckkehren",
-                emoji="â†©ï¸",
+                description="Zur normalen Held-Auswahl zurückkehren",
+                emoji="↩️",
             )
         ]
 
     def card_placeholder(self) -> str:
         if self.mode == "search":
             if self._page_count() > 1:
-                return f"Suchergebnisse auswÃ¤hlen... (Seite {self.page + 1}/{self._page_count()})"
-            return "Suchergebnis auswÃ¤hlen..."
+                return f"Suchergebnisse auswählen... (Seite {self.page + 1}/{self._page_count()})"
+            return "Suchergebnis auswählen..."
         if self.mode == "browse":
             if self._page_count() > 1:
-                return f"Helden auswÃ¤hlen... (Seite {self.page + 1}/{self._page_count()})"
-            return "Helden auswÃ¤hlen..."
-        return "WÃ¤hle eine Karte zum VerstÃ¤rken..."
+                return f"Helden auswählen... (Seite {self.page + 1}/{self._page_count()})"
+            return "Helden auswählen..."
+        return "Wähle eine Karte zum Verstärken..."
 
     def card_options(self) -> list[SelectOption]:
         visible_groups = self._visible_groups()
         if not visible_groups:
-            return [SelectOption(label="Keine Karten verfÃ¼gbar", value=FUSE_CARD_EMPTY)]
+            return [SelectOption(label="Keine Karten verfügbar", value=FUSE_CARD_EMPTY)]
         return [
             SelectOption(
                 label=_group_option_label(group)[:100],
@@ -7912,10 +7912,10 @@ class FuseCardSelectView(FuseFlowView):
         if self.mode == "browse":
             return _build_fuse_card_select_embed(
                 self.dust_amount,
-                title="ðŸ“š Alle Helden durchsuchen",
+                title="📚 Alle Helden durchsuchen",
                 guidance=(
                     f"Seite **{self.page + 1}** von **{self._page_count()}**.\n"
-                    "WÃ¤hle einen Helden oder nutze oben â€žZurÃ¼ckâ€œ."
+                    "Wähle einen Helden oder nutze oben „Zurück“."
                 ),
             )
         if self.mode == "search":
@@ -7927,7 +7927,7 @@ class FuseCardSelectView(FuseFlowView):
                 guidance += f"\nSeite **{self.page + 1}** von **{self._page_count()}**"
             return _build_fuse_card_select_embed(
                 self.dust_amount,
-                title="ðŸ” Suchergebnisse",
+                title="🔍 Suchergebnisse",
                 guidance=guidance,
             )
         return _build_fuse_card_select_embed(self.dust_amount)
@@ -7977,12 +7977,12 @@ class FuseCardSelectView(FuseFlowView):
 
     async def handle_card_selection(self, interaction: discord.Interaction, selected_card: str) -> None:
         if selected_card == FUSE_CARD_EMPTY:
-            await interaction.response.send_message("âŒ Du hast aktuell keine Karten zum VerstÃ¤rken.", ephemeral=True)
+            await interaction.response.send_message("❌ Du hast aktuell keine Karten zum Verstärken.", ephemeral=True)
             return
 
         karte_data = await get_karte_by_name(selected_card)
         if not karte_data:
-            await interaction.response.send_message("âŒ Karte nicht gefunden!", ephemeral=True)
+            await interaction.response.send_message("❌ Karte nicht gefunden!", ephemeral=True)
             return
 
         user_buffs = await get_card_buffs(interaction.user.id, selected_card)
@@ -8033,14 +8033,14 @@ class BuffTypeSelect(ui.Select):
             SelectOption(
                 label="Held wechseln",
                 value="change_card",
-                description="ZurÃ¼ck zur Held-Auswahl",
-                emoji="ðŸ”",
+                description="Zurück zur Held-Auswahl",
+                emoji="🔁",
             ),
             SelectOption(
-                label="Leben verstÃ¤rken",
+                label="Leben verstärken",
                 value="health_0",
                 description=f"Aktuell {current_hp} HP, +{FUSE_HEALTH_BONUS} Lebenspunkte",
-                emoji="â¤ï¸",
+                emoji="❤️",
             )
         ]
 
@@ -8059,21 +8059,21 @@ class BuffTypeSelect(ui.Select):
                 continue
             options.append(
                 SelectOption(
-                    label=f"{attack_name} verstÃ¤rken",
+                    label=f"{attack_name} verstärken",
                     value=f"damage_{i + 1}",
                     description=f"Aktuell {min_dmg}-{max_dmg} Schaden, +{upgrade_step} Max-Schaden",
-                    emoji="âš”ï¸",
+                    emoji="⚔️",
                 )
             )
 
-        super().__init__(placeholder="WÃ¤hle was verstÃ¤rkt werden soll...", options=options)
+        super().__init__(placeholder="Wähle was verstärkt werden soll...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
         buff_choice = str(self.values[0] or "")
         if buff_choice == "change_card":
             user_karten = await get_user_karten(interaction.user.id)
             if not user_karten:
-                await interaction.response.send_message("âŒ Du hast keine Karten zum VerstÃ¤rken!", ephemeral=True)
+                await interaction.response.send_message("❌ Du hast keine Karten zum Verstärken!", ephemeral=True)
                 return
             view = FuseCardSelectView(interaction.user.id, self.dust_amount, user_karten)
             if self.view is not None:
@@ -8086,23 +8086,23 @@ class BuffTypeSelect(ui.Select):
 
         karte_data = await get_karte_by_name(self.selected_card)
         if not karte_data:
-            await interaction.response.send_message("âŒ Karte nicht gefunden!", ephemeral=True)
+            await interaction.response.send_message("❌ Karte nicht gefunden!", ephemeral=True)
             return
         user_buffs = await get_card_buffs(interaction.user.id, self.selected_card)
 
         applied_buff_amount = 0
         buff_text = ""
-        emoji = "âš”ï¸"
+        emoji = "⚔️"
 
         if buff_type == "damage":
             attacks = karte_data.get("attacks", [])
             if attack_number <= 0 or attack_number > len(attacks):
-                await interaction.response.send_message("âŒ UngÃ¼ltige Attacke.", ephemeral=True)
+                await interaction.response.send_message("❌ Ungültige Attacke.", ephemeral=True)
                 return
             selected_attack = attacks[attack_number - 1]
             if not _attack_is_damage_upgradeable(selected_attack):
                 await interaction.response.send_message(
-                    "âŒ Nur reine Schadens-Attacken ohne Zusatzeffekte kÃ¶nnen aktuell verbessert werden.",
+                    "❌ Nur reine Schadens-Attacken ohne Zusatzeffekte können aktuell verbessert werden.",
                     ephemeral=True,
                 )
                 return
@@ -8122,7 +8122,7 @@ class BuffTypeSelect(ui.Select):
             current_max_damage = int(max_base_damage) + int(existing_buffs)
             if existing_buffs >= upgrade_cap:
                 await interaction.response.send_message(
-                    "âŒ Dieses Upgrade hat bereits sein Maximum erreicht.",
+                    "❌ Dieses Upgrade hat bereits sein Maximum erreicht.",
                     ephemeral=True,
                 )
                 return
@@ -8131,9 +8131,9 @@ class BuffTypeSelect(ui.Select):
             if next_max_damage > MAX_ATTACK_DAMAGE_PER_HIT:
                 await interaction.response.send_message(
                     (
-                        f"âŒ **Maximal {MAX_ATTACK_DAMAGE_PER_HIT} Schaden pro Angriff erlaubt!**\n\n"
+                        f"❌ **Maximal {MAX_ATTACK_DAMAGE_PER_HIT} Schaden pro Angriff erlaubt!**\n\n"
                         f"Aktuell: **{current_max_damage}**\n"
-                        f"NÃ¤chste Verbesserung wÃ¤re: **{next_max_damage}**"
+                        f"Nächste Verbesserung wäre: **{next_max_damage}**"
                     ),
                     ephemeral=True,
                 )
@@ -8142,7 +8142,7 @@ class BuffTypeSelect(ui.Select):
             applied_buff_amount = upgrade_step
             attack_name = str(selected_attack.get("name") or f"Attacke {attack_number}")
             buff_text = f"**{attack_name} Max-Schaden +{applied_buff_amount}**"
-            emoji = "âš”ï¸"
+            emoji = "⚔️"
         else:
             base_hp = int(karte_data.get("hp", 100) or 100)
             existing_health = 0
@@ -8153,17 +8153,17 @@ class BuffTypeSelect(ui.Select):
             allowed_buff = min(FUSE_HEALTH_BONUS, max(0, FUSE_HP_CAP - current_hp))
             if allowed_buff <= 0:
                 await interaction.response.send_message(
-                    f"âŒ **HP-Cap erreicht!** Diese Karte hat bereits **{current_hp} HP**.",
+                    f"❌ **HP-Cap erreicht!** Diese Karte hat bereits **{current_hp} HP**.",
                     ephemeral=True,
                 )
                 return
             applied_buff_amount = allowed_buff
             buff_text = f"**Leben +{applied_buff_amount}**"
-            emoji = "â¤ï¸"
+            emoji = "❤️"
 
         success = await spend_infinitydust(interaction.user.id, self.dust_amount)
         if not success:
-            await interaction.response.send_message("âŒ Nicht genug Infinitydust!", ephemeral=True)
+            await interaction.response.send_message("❌ Nicht genug Infinitydust!", ephemeral=True)
             return
 
         try:
@@ -8202,9 +8202,9 @@ class BuffTypeSelect(ui.Select):
         embed = discord.Embed(
             title="✅ Verstärkung erfolgreich!",
             description=(
-                f"ðŸƒ **{self.selected_card}**\n"
+                f"🃏 **{self.selected_card}**\n"
                 f"{emoji} {buff_text}\n\n"
-                f"ðŸ’Ž **{self.dust_amount} Infinitydust** verbraucht"
+                f"💎 **{self.dust_amount} Infinitydust** verbraucht"
             ),
             color=0x00FF00,
         )
@@ -8239,31 +8239,31 @@ class InviteUserSelect(ui.Select):
                     label=display_name[:100],  # Discord Limit
                     value=str(user_id),
                     description="Beide erhalten 1x Infinitydust",
-                    emoji="ðŸŽ"
+                    emoji="🎁"
                 ))
             except:
-                # Fallback fÃ¼r unbekannte User
+                # Fallback für unbekannte User
                 options.append(SelectOption(
                     label=f"Unbekannt (<@{user_id}>)"[:100],
                     value=str(user_id),
                     description="Beide erhalten 1x Infinitydust",
-                    emoji="ðŸŽ"
+                    emoji="🎁"
                 ))
         
         if not options:
-            options.append(SelectOption(label="Keine Spieler verfÃ¼gbar", value="none"))
+            options.append(SelectOption(label="Keine Spieler verfügbar", value="none"))
         
-        super().__init__(placeholder="WÃ¤hle den Spieler der dich eingeladen hat! :)", options=options)
+        super().__init__(placeholder="Wähle den Spieler der dich eingeladen hat! :)", options=options)
     
     async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "none":
-            await interaction.response.send_message("âŒ Keine Spieler verfÃ¼gbar!", ephemeral=True)
+            await interaction.response.send_message("❌ Keine Spieler verfügbar!", ephemeral=True)
             return
 
         invited_user_id = int(self.values[0])
         logging.info("[INVITED] selected_inviter_id=%s user=%s", invited_user_id, interaction.user.id)
 
-        # PrÃ¼fe nochmal ob der Einlader den Command schon mal genutzt hat (nur fÃ¼r Nicht-Admins)
+        # Prüfe nochmal ob der Einlader den Command schon mal genutzt hat (nur für Nicht-Admins)
         is_admin_user = await is_admin(interaction)
         if not is_admin_user:
             async with db_context() as db:
@@ -8274,9 +8274,9 @@ class InviteUserSelect(ui.Select):
                 row = await cursor.fetchone()
                 logging.info("[INVITED] used_invite check inviter=%s row=%s", self.inviter_id, row)
                 if row and row[0] == 1:
-                    await interaction.response.send_message("âŒ Du hast den `/eingeladen` Command bereits verwendet! Nur Admins kÃ¶nnen ihn mehrfach nutzen.", ephemeral=True)
+                    await interaction.response.send_message("❌ Du hast den `/eingeladen` Command bereits verwendet! Nur Admins können ihn mehrfach nutzen.", ephemeral=True)
                     return
-                # Markiere als verwendet (nur fÃ¼r Nicht-Admins)
+                # Markiere als verwendet (nur für Nicht-Admins)
                 await db.execute(
                     """
                     INSERT OR REPLACE INTO user_daily (user_id, last_daily, used_invite)
@@ -8299,7 +8299,7 @@ class InviteUserSelect(ui.Select):
             invited_user_id,
         )
 
-        # Hole User-Namen fÃ¼r die Nachricht
+        # Hole User-Namen für die Nachricht
         inviter = interaction.user
         invited_user = None
         try:
@@ -8310,23 +8310,23 @@ class InviteUserSelect(ui.Select):
             invited_user = None
         invited_mention = invited_user.mention if invited_user else f"<@{invited_user_id}>"
 
-        # Erfolgs-Nachricht (Ã¶ffentlich fÃ¼r beide)
+        # Erfolgs-Nachricht (öffentlich für beide)
         embed = discord.Embed(
-            title="ðŸŽ‰ Einladung erfolgreich!",
+            title="🎉 Einladung erfolgreich!",
             description=(
                 f"**{inviter.mention}** wurde von **{invited_mention}** eingeladen!\n\n"
-                f"ðŸ’Ž **Beide haben 1x Infinitydust erhalten!**"
+                f"💎 **Beide haben 1x Infinitydust erhalten!**"
             ),
             color=0x00ff00,
         )
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
 
-        # Sende Ã¶ffentlich in den Kanal
+        # Sende öffentlich in den Kanal
         await _safe_send_channel(interaction, interaction.channel, embed=embed)
 
-        # BestÃ¤tige dem Initiator
+        # Bestätige dem Initiator
         await interaction.response.edit_message(
-            content="âœ… Einladung erfolgreich gesendet!",
+            content="✅ Einladung erfolgreich gesendet!",
             embed=None,
             view=None,
         )
@@ -8337,7 +8337,7 @@ class DustAmountView(FuseFlowView):
         self.add_item(DustAmountSelect(int(user_dust)))
         self.add_item(FuseCancelButton())
 
-# Slash-Command: Anfang (HauptmenÃ¼)
+# Slash-Command: Anfang (Hauptmenü)
 class AnfangView(RestrictedView):
     def __init__(self):
         super().__init__(timeout=None)
@@ -8352,7 +8352,7 @@ class AnfangView(RestrictedView):
         # Leitet zum Fuse-Flow weiter
         await _invoke_command_callback(fuse, interaction)
 
-    @ui.button(label="KÃ¤mpfe", style=discord.ButtonStyle.danger, row=0, custom_id="anfang:fight")
+    @ui.button(label="Kämpfe", style=discord.ButtonStyle.danger, row=0, custom_id="anfang:fight")
     async def btn_fight(self, interaction: discord.Interaction, button: ui.Button):
         # Leitet zum Fight-Flow weiter
         await _invoke_command_callback(fight, interaction)
@@ -8392,13 +8392,13 @@ class IntroEphemeralPromptView(DurableView):
         return {"user_id": self.user_id}
 
     @ui.button(
-        label="Intro anzeigen (nur fÃ¼r dich)",
+        label="Intro anzeigen (nur für dich)",
         style=discord.ButtonStyle.primary,
         custom_id="intro_prompt:show_intro",
     )
     async def show_intro(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Das ist nicht fÃ¼r dich gedacht.", ephemeral=True)
+            await interaction.response.send_message("Das ist nicht für dich gedacht.", ephemeral=True)
             return
         view = AnfangView()
         text = build_anfang_intro_text()
@@ -8427,7 +8427,7 @@ class UserSelectView(RestrictedView):
         self.select.callback = self.select_callback
         self.add_item(self.select)
 
-        self.prev_btn = ui.Button(label="ZurÃ¼ck", style=discord.ButtonStyle.secondary, disabled=True, row=1)
+        self.prev_btn = ui.Button(label="Zurück", style=discord.ButtonStyle.secondary, disabled=True, row=1)
         self.next_btn = ui.Button(
             label="Weiter",
             style=discord.ButtonStyle.secondary,
@@ -8441,13 +8441,13 @@ class UserSelectView(RestrictedView):
 
     def _placeholder(self) -> str:
         if not self.members:
-            return "WÃ¤hle einen Nutzer oder suche oben..."
-        return f"WÃ¤hle einen Nutzer... (Seite {self.page_index + 1}/{len(self.pages)})"
+            return "Wähle einen Nutzer oder suche oben..."
+        return f"Wähle einen Nutzer... (Seite {self.page_index + 1}/{len(self.pages)})"
 
     def _build_options_for_current_page(self) -> list[SelectOption]:
-        options = [SelectOption(label="ðŸ” Nach Name suchen", value="search")]
+        options = [SelectOption(label="🔍 Nach Name suchen", value="search")]
         if not self.members:
-            options.append(SelectOption(label="Keine Nutzer verfÃ¼gbar", value="__none__"))
+            options.append(SelectOption(label="Keine Nutzer verfügbar", value="__none__"))
             return options
         page_members = self.pages[self.page_index]
         for member in page_members:
@@ -8456,7 +8456,7 @@ class UserSelectView(RestrictedView):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nur der Command-User kann den Nutzer wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Command-User kann den Nutzer wählen!", ephemeral=True)
             return
         selected_value = self.select.values[0]
         if selected_value == "search":
@@ -8470,7 +8470,7 @@ class UserSelectView(RestrictedView):
             await interaction.response.send_modal(modal)
             return
         if selected_value == "__none__":
-            await interaction.response.send_message("âŒ Keine Nutzer verfÃ¼gbar.", ephemeral=True)
+            await interaction.response.send_message("❌ Keine Nutzer verfügbar.", ephemeral=True)
             return
         self.value = selected_value
         self.stop()
@@ -8478,7 +8478,7 @@ class UserSelectView(RestrictedView):
 
     async def _on_prev(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼!", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
             return
         if self.page_index > 0:
             self.page_index -= 1
@@ -8490,7 +8490,7 @@ class UserSelectView(RestrictedView):
 
     async def _on_next(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼!", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
             return
         if self.page_index < len(self.pages) - 1:
             self.page_index += 1
@@ -8531,16 +8531,16 @@ async def _build_owned_card_detail(
             _button_label, _button_style, attack_summary = _attack_display_parts(atk, max_only_bonus=buff)
             info_text = str(atk.get("info") or "").strip()
             if info_text:
-                lines.append(f"â€¢ {attack_summary}\n  â†³ {info_text}")
+                lines.append(f"• {attack_summary}\n  ↳ {info_text}")
             else:
-                lines.append(f"â€¢ {attack_summary}")
+                lines.append(f"• {attack_summary}")
         embed.add_field(name="Attacken", value="\n".join(lines), inline=False)
 
     variant_rows = list(variant_rows or [])
     if len(variant_rows) > 1:
         embed.add_field(
             name="Varianten",
-            value="\n".join(f"â€¢ {variant_name} (x{amount})" for variant_name, amount in variant_rows),
+            value="\n".join(f"• {variant_name} (x{amount})" for variant_name, amount in variant_rows),
             inline=False,
         )
 
@@ -8587,7 +8587,7 @@ class VaultView(RestrictedView):
             return
         variant_view = CardVariantSelectView(self.user_id, base_name, variant_rows)
         await interaction.response.send_message(
-            f"WÃ¤hle den Style fÃ¼r **{base_name}**:",
+            f"Wähle den Style für **{base_name}**:",
             view=variant_view,
             ephemeral=True,
         )
@@ -8616,18 +8616,18 @@ class VaultView(RestrictedView):
         ]
 
         if len(options) <= 25:
-            select = ui.Select(placeholder="WÃ¤hle eine Karte zur Anzeige...", min_values=1, max_values=1, options=options)
+            select = ui.Select(placeholder="Wähle eine Karte zur Anzeige...", min_values=1, max_values=1, options=options)
 
             async def handle_select(interaction: discord.Interaction):
                 if interaction.user.id != self.user_id:
-                    await interaction.response.send_message("Das ist nicht dein MenÃ¼!", ephemeral=True)
+                    await interaction.response.send_message("Das ist nicht dein Menü!", ephemeral=True)
                     return
                 await self._show_card_detail(interaction, str(select.values[0] or "").strip())
 
             select.callback = handle_select
             view = RestrictedView(timeout=90)
             view.add_item(select)
-            await interaction.response.send_message("WÃ¤hle eine Karte:", view=view, ephemeral=True)
+            await interaction.response.send_message("Wähle eine Karte:", view=view, ephemeral=True)
             return
 
         pages = [options[i:i + 25] for i in range(0, len(options), 25)]
@@ -8635,7 +8635,7 @@ class VaultView(RestrictedView):
 
         async def send_page(interaction: discord.Interaction, page_index: int):
             sel = ui.Select(
-                placeholder=f"Seite {page_index + 1}/{len(pages)} â€“ Karte wÃ¤hlen...",
+                placeholder=f"Seite {page_index + 1}/{len(pages)} – Karte wählen...",
                 min_values=1,
                 max_values=1,
                 options=pages[page_index],
@@ -8643,24 +8643,24 @@ class VaultView(RestrictedView):
 
             async def handle_sel(interaction: discord.Interaction):
                 if interaction.user.id != self.user_id:
-                    await interaction.response.send_message("Das ist nicht dein MenÃ¼!", ephemeral=True)
+                    await interaction.response.send_message("Das ist nicht dein Menü!", ephemeral=True)
                     return
                 await self._show_card_detail(interaction, str(sel.values[0] or "").strip())
 
             sel.callback = handle_sel
 
-            prev_btn = ui.Button(label="ZurÃ¼ck", style=discord.ButtonStyle.secondary, disabled=page_index == 0)
+            prev_btn = ui.Button(label="Zurück", style=discord.ButtonStyle.secondary, disabled=page_index == 0)
             next_btn = ui.Button(label="Weiter", style=discord.ButtonStyle.secondary, disabled=page_index == len(pages) - 1)
 
             async def on_prev(interaction: discord.Interaction):
                 if interaction.user.id != self.user_id:
-                    await interaction.response.send_message("Nicht dein MenÃ¼!", ephemeral=True)
+                    await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
                     return
                 await send_page(interaction, page_index - 1)
 
             async def on_next(interaction: discord.Interaction):
                 if interaction.user.id != self.user_id:
-                    await interaction.response.send_message("Nicht dein MenÃ¼!", ephemeral=True)
+                    await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
                     return
                 await send_page(interaction, page_index + 1)
 
@@ -8673,9 +8673,9 @@ class VaultView(RestrictedView):
             v.add_item(next_btn)
 
             try:
-                await interaction.response.send_message("WÃ¤hle eine Karte:", view=v, ephemeral=True)
+                await interaction.response.send_message("Wähle eine Karte:", view=v, ephemeral=True)
             except discord.InteractionResponded:
-                await interaction.followup.send("WÃ¤hle eine Karte:", view=v, ephemeral=True)
+                await interaction.followup.send("Wähle eine Karte:", view=v, ephemeral=True)
 
         await send_page(interaction, current_index)
 
@@ -8685,9 +8685,9 @@ class GiveCardSelectView(RestrictedView):
         self.user_id = user_id
         self.target_user_id = target_user_id
         self.value = None
-        # FÃ¼ge alle Karten aus karten.py hinzu + Infinitydust
+        # Füge alle Karten aus karten.py hinzu + Infinitydust
         self.options = [SelectOption(label=karte["name"], value=karte["name"]) for karte in karten]
-        self.options.append(SelectOption(label="ðŸ’Ž Infinitydust", value="infinitydust"))
+        self.options.append(SelectOption(label="💎 Infinitydust", value="infinitydust"))
         self.pages = [self.options[i:i + 25] for i in range(0, len(self.options), 25)] or [[]]
         self.page_index = 0
 
@@ -8701,7 +8701,7 @@ class GiveCardSelectView(RestrictedView):
         self.select.callback = self.select_callback
         self.add_item(self.select)
 
-        self.prev_btn = ui.Button(label="ZurÃ¼ck", style=discord.ButtonStyle.secondary, disabled=True, row=1)
+        self.prev_btn = ui.Button(label="Zurück", style=discord.ButtonStyle.secondary, disabled=True, row=1)
         self.next_btn = ui.Button(
             label="Weiter",
             style=discord.ButtonStyle.secondary,
@@ -8714,14 +8714,14 @@ class GiveCardSelectView(RestrictedView):
         self.add_item(self.next_btn)
 
     def _placeholder(self) -> str:
-        return f"WÃ¤hle eine Karte oder Infinitydust... (Seite {self.page_index + 1}/{len(self.pages)})"
+        return f"Wähle eine Karte oder Infinitydust... (Seite {self.page_index + 1}/{len(self.pages)})"
 
     def _build_options_for_current_page(self) -> list[SelectOption]:
         return self.pages[self.page_index]
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nur der Command-User kann die Karte wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Command-User kann die Karte wählen!", ephemeral=True)
             return
         self.value = self.select.values[0]
         self.stop()
@@ -8729,7 +8729,7 @@ class GiveCardSelectView(RestrictedView):
 
     async def _on_prev(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼!", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
             return
         if self.page_index > 0:
             self.page_index -= 1
@@ -8741,7 +8741,7 @@ class GiveCardSelectView(RestrictedView):
 
     async def _on_next(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼!", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
             return
         if self.page_index < len(self.pages) - 1:
             self.page_index += 1
@@ -8761,13 +8761,13 @@ class GiveOpActionView(RestrictedView):
             SelectOption(label="card remove", value="card_remove", description="Eine Karte wegnehmen"),
             SelectOption(label="card give-group", value="group_give", description="Kartengruppe geben"),
             SelectOption(label="card remove-group", value="group_remove", description="Kartengruppe wegnehmen"),
-            SelectOption(label="ad user", value="add_user", description="Nutzer fÃ¼r /op-verwaltung freischalten"),
-            SelectOption(label="remove user", value="remove_user", description="Nutzer fÃ¼r /op-verwaltung entfernen"),
-            SelectOption(label="ad role", value="add_role", description="Rolle fÃ¼r /op-verwaltung freischalten"),
-            SelectOption(label="remove role", value="remove_role", description="Rolle fÃ¼r /op-verwaltung entfernen"),
+            SelectOption(label="ad user", value="add_user", description="Nutzer für /op-verwaltung freischalten"),
+            SelectOption(label="remove user", value="remove_user", description="Nutzer für /op-verwaltung entfernen"),
+            SelectOption(label="ad role", value="add_role", description="Rolle für /op-verwaltung freischalten"),
+            SelectOption(label="remove role", value="remove_role", description="Rolle für /op-verwaltung entfernen"),
         ]
         self.select = ui.Select(
-            placeholder="WÃ¤hle eine Aktion...",
+            placeholder="Wähle eine Aktion...",
             min_values=1,
             max_values=1,
             options=options,
@@ -8777,7 +8777,7 @@ class GiveOpActionView(RestrictedView):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nur der Command-User kann wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Command-User kann wählen!", ephemeral=True)
             return
         self.value = self.select.values[0]
         self.stop()
@@ -8793,9 +8793,9 @@ class GiveOpRaritySelectView(RestrictedView):
             for key in rarity_keys[:25]
         ]
         if not options:
-            options = [SelectOption(label="Keine Gruppen verfÃ¼gbar", value="__none__")]
+            options = [SelectOption(label="Keine Gruppen verfügbar", value="__none__")]
         self.select = ui.Select(
-            placeholder="WÃ¤hle eine Karten-Gruppe...",
+            placeholder="Wähle eine Karten-Gruppe...",
             min_values=1,
             max_values=1,
             options=options,
@@ -8805,11 +8805,11 @@ class GiveOpRaritySelectView(RestrictedView):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nur der Command-User kann wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Command-User kann wählen!", ephemeral=True)
             return
         selected = self.select.values[0]
         if selected == "__none__":
-            await interaction.response.send_message("âŒ Keine Gruppen verfÃ¼gbar.", ephemeral=True)
+            await interaction.response.send_message("❌ Keine Gruppen verfügbar.", ephemeral=True)
             return
         self.value = selected
         self.stop()
@@ -8817,15 +8817,15 @@ class GiveOpRaritySelectView(RestrictedView):
 
 class GiveOpRolePicker(ui.RoleSelect):
     def __init__(self, parent_view: "GiveOpRoleSelectView"):
-        super().__init__(placeholder="WÃ¤hle eine Rolle...", min_values=1, max_values=1)
+        super().__init__(placeholder="Wähle eine Rolle...", min_values=1, max_values=1)
         self.parent_view: GiveOpRoleSelectView = parent_view
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.parent_view.user_id:
-            await interaction.response.send_message("Nur der Command-User kann wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Command-User kann wählen!", ephemeral=True)
             return
         if not self.values:
-            await interaction.response.send_message("âŒ Keine Rolle gewÃ¤hlt.", ephemeral=True)
+            await interaction.response.send_message("❌ Keine Rolle gewählt.", ephemeral=True)
             return
         selected_role = self.values[0]
         self.parent_view.value = selected_role.id
@@ -8841,7 +8841,7 @@ class GiveOpRoleSelectView(RestrictedView):
         self.value: int | None = None
         self.add_item(GiveOpRolePicker(self))
 
-# View fÃ¼r Infinitydust-Mengen-Auswahl
+# View für Infinitydust-Mengen-Auswahl
 class InfinitydustAmountView(RestrictedView):
     def __init__(self, user_id, target_user_id):
         super().__init__(timeout=60)
@@ -8849,22 +8849,22 @@ class InfinitydustAmountView(RestrictedView):
         self.target_user_id = target_user_id
         self.value = None
         
-        # Erstelle Optionen fÃ¼r Mengen: 1-20, dann 25, 30, 40, 50, 70 (25 Optionen total)
+        # Erstelle Optionen für Mengen: 1-20, dann 25, 30, 40, 50, 70 (25 Optionen total)
         amounts = list(range(1, 21)) + [25, 30, 40, 50, 70]
         options = [SelectOption(label=f"{i}x Infinitydust", value=str(i)) for i in amounts]
-        self.select = ui.Select(placeholder="WÃ¤hle die Menge...", min_values=1, max_values=1, options=options)
+        self.select = ui.Select(placeholder="Wähle die Menge...", min_values=1, max_values=1, options=options)
         self.select.callback = self.select_callback
         self.add_item(self.select)
     
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nur der Command-User kann die Menge wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Command-User kann die Menge wählen!", ephemeral=True)
             return
         self.value = int(self.select.values[0])
         self.stop()
         await interaction.response.defer()
 
-# View fÃ¼r Mission-Auswahl
+# View für Mission-Auswahl
 class MissionAcceptView(DurableView):
     durable_view_kind = VIEW_KIND_MISSION_ACCEPT
 
@@ -8891,7 +8891,7 @@ class MissionAcceptView(DurableView):
             await interaction.response.send_message("Nur der Mission-User kann annehmen!", ephemeral=True)
             return
         if not await claim_mission_request(self.request_id, "accepted"):
-            await interaction.response.send_message("âŒ Diese Missions-Anfrage ist nicht mehr offen.", ephemeral=True)
+            await interaction.response.send_message("❌ Diese Missions-Anfrage ist nicht mehr offen.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
         if not self.is_admin:
@@ -8905,12 +8905,12 @@ class MissionAcceptView(DurableView):
             await interaction.response.send_message("Nur der Mission-User kann ablehnen!", ephemeral=True)
             return
         if not await claim_mission_request(self.request_id, "declined"):
-            await interaction.response.send_message("âŒ Diese Missions-Anfrage ist nicht mehr offen.", ephemeral=True)
+            await interaction.response.send_message("❌ Diese Missions-Anfrage ist nicht mehr offen.", ephemeral=True)
             return
         await interaction.response.send_message("Mission abgelehnt.", ephemeral=True)
         self.stop()
 
-# View fÃ¼r initiale Missions-Kartenwahl
+# View für initiale Missions-Kartenwahl
 class MissionStartCardSelectView(DurableView):
     durable_view_kind = VIEW_KIND_MISSION_CARD_SELECT
 
@@ -8946,12 +8946,12 @@ class MissionStartCardSelectView(DurableView):
             grouped_cards = group_owned_cards_by_base([(name, 1) for name in self.user_karten], cards=karten)
             options = [SelectOption(label=_group_option_label(group)[:100], value=str(group.get("base_name") or "")) for group in grouped_cards[:25]]
         if not options:
-            options = [SelectOption(label="Keine Karten verfÃ¼gbar", value="__none__")]
+            options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
         self.select = ui.Select(
             placeholder=(
-                f"WÃ¤hle den Style fÃ¼r {self.selected_base_name}..."
+                f"Wähle den Style für {self.selected_base_name}..."
                 if self.selected_base_name
-                else "WÃ¤hle deine Karte fÃ¼r die Mission..."
+                else "Wähle deine Karte für die Mission..."
             ),
             min_values=1,
             max_values=1,
@@ -8972,11 +8972,11 @@ class MissionStartCardSelectView(DurableView):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nur der Mission-User kann wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Mission-User kann wählen!", ephemeral=True)
             return
         selected_name = str(self.select.values[0] or "").strip()
         if not selected_name or selected_name == "__none__":
-            await interaction.response.send_message("âŒ Keine gÃ¼ltige Karte verfÃ¼gbar.", ephemeral=True)
+            await interaction.response.send_message("❌ Keine gültige Karte verfügbar.", ephemeral=True)
             return
         if self.selected_base_name is None:
             self.selected_base_name = selected_name
@@ -8986,7 +8986,7 @@ class MissionStartCardSelectView(DurableView):
                 cards=karten,
             )
             if len(variant_rows) > 1:
-                self.select.placeholder = f"WÃ¤hle den Style fÃ¼r {self.selected_base_name}..."
+                self.select.placeholder = f"Wähle den Style für {self.selected_base_name}..."
                 self.select.options = [
                     SelectOption(
                         label=(f"{variant_name} (x{amount})" if amount > 1 else variant_name)[:100],
@@ -8995,7 +8995,7 @@ class MissionStartCardSelectView(DurableView):
                     for variant_name, amount in variant_rows[:25]
                 ]
                 await interaction.response.edit_message(
-                    content=f"WÃ¤hle den Style fÃ¼r **{self.selected_base_name}**:",
+                    content=f"Wähle den Style für **{self.selected_base_name}**:",
                     view=self,
                 )
                 return
@@ -9030,10 +9030,10 @@ class MissionPauseView(DurableView):
         self.mission_state = mission_state
         options = [
             SelectOption(label=f"Beibehalten: {current_card_name}", value="keep"),
-            SelectOption(label="Neue Karte wÃ¤hlen", value="change"),
+            SelectOption(label="Neue Karte wählen", value="change"),
         ]
         self.select = ui.Select(
-            placeholder="Was mÃ¶chtest du tun?",
+            placeholder="Was möchtest du tun?",
             min_values=1,
             max_values=1,
             options=options,
@@ -9051,7 +9051,7 @@ class MissionPauseView(DurableView):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nur der Mission-User kann wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Mission-User kann wählen!", ephemeral=True)
             return
         choice = str(self.select.values[0] or "").strip()
         await interaction.response.defer()
@@ -9065,7 +9065,7 @@ class MissionPauseView(DurableView):
                 _filter_owned_cards_for_current_mode(await get_user_karten(self.user_id))
             )
             next_view = MissionNewCardSelectView(self.user_id, user_karten, mission_state=self.mission_state)
-            await _safe_send_channel(interaction, interaction.channel, content="WÃ¤hle eine neue Karte:", view=next_view)
+            await _safe_send_channel(interaction, interaction.channel, content="Wähle eine neue Karte:", view=next_view)
         else:
             await _start_mission_wave_in_thread(interaction, mission_state=self.mission_state)
         self.stop()
@@ -9097,12 +9097,12 @@ class MissionNewCardSelectView(DurableView):
             grouped_cards = group_owned_cards_by_base([(name, 1) for name in self.user_karten], cards=karten)
             options = [SelectOption(label=_group_option_label(group)[:100], value=str(group.get("base_name") or "")) for group in grouped_cards[:25]]
         if not options:
-            options = [SelectOption(label="Keine Karten verfÃ¼gbar", value="__none__")]
+            options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
         self.select = ui.Select(
             placeholder=(
-                f"WÃ¤hle den Style fÃ¼r {self.selected_base_name}..."
+                f"Wähle den Style für {self.selected_base_name}..."
                 if self.selected_base_name
-                else "WÃ¤hle eine neue Karte..."
+                else "Wähle eine neue Karte..."
             ),
             min_values=1,
             max_values=1,
@@ -9122,11 +9122,11 @@ class MissionNewCardSelectView(DurableView):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nur der Mission-User kann wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der Mission-User kann wählen!", ephemeral=True)
             return
         selected_name = str(self.select.values[0] or "").strip()
         if not selected_name or selected_name == "__none__":
-            await interaction.response.send_message("âŒ Keine gÃ¼ltige Karte verfÃ¼gbar.", ephemeral=True)
+            await interaction.response.send_message("❌ Keine gültige Karte verfügbar.", ephemeral=True)
             return
         if self.selected_base_name is None:
             self.selected_base_name = selected_name
@@ -9136,7 +9136,7 @@ class MissionNewCardSelectView(DurableView):
                 cards=karten,
             )
             if len(variant_rows) > 1:
-                self.select.placeholder = f"WÃ¤hle den Style fÃ¼r {self.selected_base_name}..."
+                self.select.placeholder = f"Wähle den Style für {self.selected_base_name}..."
                 self.select.options = [
                     SelectOption(
                         label=(f"{variant_name} (x{amount})" if amount > 1 else variant_name)[:100],
@@ -9145,7 +9145,7 @@ class MissionNewCardSelectView(DurableView):
                     for variant_name, amount in variant_rows[:25]
                 ]
                 await interaction.response.edit_message(
-                    content=f"WÃ¤hle den Style fÃ¼r **{self.selected_base_name}**:",
+                    content=f"Wähle den Style für **{self.selected_base_name}**:",
                     view=self,
                 )
                 return
@@ -9164,7 +9164,7 @@ class MissionNewCardSelectView(DurableView):
 
 
 
-# View fÃ¼r Mission-KÃ¤mpfe (interaktiv)
+# View für Mission-Kämpfe (interaktiv)
 class MissionBattleView(DurableView):
     durable_view_kind = VIEW_KIND_MISSION_BATTLE
 
@@ -9418,11 +9418,11 @@ class MissionBattleView(DurableView):
 
     def create_current_embed(self, *, description: str | None = None) -> discord.Embed:
         embed = discord.Embed(
-            title=f"âš”ï¸ Welle {self.wave_num}/{self.total_waves}",
-            description=description or f"Du kÃ¤mpfst gegen **{self.bot_card['name']}**!",
+            title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
+            description=description or f"Du kämpfst gegen **{self.bot_card['name']}**!",
         )
-        player_label = f"ðŸŸ¥ Deine Karte{self._status_icons(self.user_id)}"
-        bot_label = f"ðŸŸ¦ Bot Karte{self._status_icons(0)}"
+        player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
+        bot_label = f"🟦 Bot Karte{self._status_icons(0)}"
         embed.add_field(name=player_label, value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
         embed.add_field(name=bot_label, value=f"{self.bot_card['name']}\nHP: {self.bot_hp}", inline=True)
         if self.player_card.get("bild"):
@@ -9499,7 +9499,7 @@ class MissionBattleView(DurableView):
                     interaction,
                     interaction.channel,
                     content=(
-                        f"âš”ï¸ Mission abgebrochen von {cancel_actor.mention}.\n\n"
+                        f"⚔️ Mission abgebrochen von {cancel_actor.mention}.\n\n"
                         "Gab es einen Bug/Fehler? Nutze die Buttons unten."
                     ),
                 )
@@ -9539,14 +9539,14 @@ class MissionBattleView(DurableView):
         await _safe_send_channel(
             interaction,
             interaction.channel,
-            content=f"ðŸ† Welle {self.wave_num} gewonnen! Welle {next_wave} startet jetzt.",
+            content=f"🏆 Welle {self.wave_num} gewonnen! Welle {next_wave} startet jetzt.",
         )
         if self.total_waves > 4 and next_wave == 4:
             pause_view = MissionPauseView(self.user_id, self.selected_card_name, mission_state=next_state)
             await _safe_send_channel(
                 interaction,
                 interaction.channel,
-                content="â¸ï¸ Pause nach der 3. Welle. MÃ¶chtest du deine Karte wechseln?",
+                content="⏸️ Pause nach der 3. Welle. Möchtest du deine Karte wechseln?",
                 view=pause_view,
             )
             return
@@ -10051,12 +10051,12 @@ class MissionBattleView(DurableView):
             for i, btn in enumerate(attack_buttons):
                 btn.style = discord.ButtonStyle.secondary
                 if i >= len(self.attacks):
-                    btn.label = "â€”"
+                    btn.label = "—"
                     btn.disabled = True
                     continue
                 if i == landing_slot:
                     btn.style = discord.ButtonStyle.danger
-                    btn.label = f"{landing_name} ({dmg_text}) âœˆï¸"
+                    btn.label = f"{landing_name} ({dmg_text}) ✈️"
                     btn.disabled = False
                     continue
                 blocked_attack = self.attacks[i]
@@ -10073,7 +10073,7 @@ class MissionBattleView(DurableView):
             for i, button in enumerate(attack_buttons):
                 button.style = discord.ButtonStyle.secondary
                 if i >= len(self.attacks):
-                    button.label = "â€”"
+                    button.label = "—"
                     button.disabled = True
                     continue
                 attack = self.attacks[i]
@@ -10164,7 +10164,7 @@ class MissionBattleView(DurableView):
             try:
                 await message.edit(
                     embed=self.create_current_embed(
-                        description=f"âš”ï¸ Mission abgebrochen von {interaction.user.mention}.",
+                        description=f"⚔️ Mission abgebrochen von {interaction.user.mention}.",
                     ),
                     view=None,
                 )
@@ -10175,7 +10175,7 @@ class MissionBattleView(DurableView):
             message,
             won=False,
             cancel_actor=interaction.user,
-            detail_text=f"âš”ï¸ Mission abgebrochen von {interaction.user.mention}.",
+            detail_text=f"⚔️ Mission abgebrochen von {interaction.user.mention}.",
         )
 
     # Entfernt: Platzhalter-Button
@@ -10185,7 +10185,7 @@ class MissionBattleView(DurableView):
         # Block if fight already ended
         if self.player_hp <= 0 or self.bot_hp <= 0:
             try:
-                await interaction.response.send_message("âŒ Die Welle ist bereits beendet.", ephemeral=True)
+                await interaction.response.send_message("❌ Die Welle ist bereits beendet.", ephemeral=True)
             except Exception:
                 logging.exception("Unexpected error")
             return
@@ -10218,11 +10218,11 @@ class MissionBattleView(DurableView):
 
         # Hole Angriff
         if attack_index >= len(self.attacks):
-            await _safe_send_interaction_ephemeral(interaction, "UngÃ¼ltiger Angriff!")
+            await _safe_send_interaction_ephemeral(interaction, "Ungültiger Angriff!")
             return
         standard_idx = _standard_attack_index(self.attacks)
 
-        # COOLDOWN prÃ¼fen (Spieler)
+        # COOLDOWN prüfen (Spieler)
         if (not is_forced_landing) and self.is_attack_on_cooldown_user(attack_index):
             await _safe_send_interaction_ephemeral(interaction, "Diese Attacke ist noch auf Cooldown!")
             return
@@ -10231,7 +10231,7 @@ class MissionBattleView(DurableView):
             if landing_slot is not None and 0 <= int(landing_slot) < 4 and int(landing_slot) != int(attack_index):
                 await _safe_send_interaction_ephemeral(
                     interaction,
-                    f"Diese Runde ist nur {str(forced_landing_attack.get('name') or 'Landungsschlag')} im ursprÃ¼nglichen Slot verfÃ¼gbar.",
+                    f"Diese Runde ist nur {str(forced_landing_attack.get('name') or 'Landungsschlag')} im ursprünglichen Slot verfügbar.",
                 )
                 return
         if (not is_forced_landing) and self.special_lock_next_turn.get(self.user_id, 0) > 0 and attack_index != standard_idx:
@@ -10307,7 +10307,7 @@ class MissionBattleView(DurableView):
                 if self.pending_flat_bonus_uses[self.user_id] <= 0:
                     self.pending_flat_bonus[self.user_id] = 0
                 if flat_bonus_now > 0:
-                    self._append_effect_event(effect_events, f"VerstÃ¤rkung aktiv: +{flat_bonus_now} Schaden auf diesen Angriff.")
+                    self._append_effect_event(effect_events, f"Verstärkung aktiv: +{flat_bonus_now} Schaden auf diesen Angriff.")
             if self.pending_multiplier_uses.get(self.user_id, 0) > 0:
                 attack_multiplier = float(self.pending_multiplier.get(self.user_id, 1.0) or 1.0)
                 self.pending_multiplier_uses[self.user_id] -= 1
@@ -10315,7 +10315,7 @@ class MissionBattleView(DurableView):
                     self.pending_multiplier[self.user_id] = 1.0
                 multiplier_pct = int(round((attack_multiplier - 1.0) * 100))
                 if multiplier_pct > 0:
-                    self._append_effect_event(effect_events, f"VerstÃ¤rkung aktiv: +{multiplier_pct}% Schaden auf diesen Angriff.")
+                    self._append_effect_event(effect_events, f"Verstärkung aktiv: +{multiplier_pct}% Schaden auf diesen Angriff.")
             if self.force_max_next.get(self.user_id, 0) > 0:
                 force_max_damage = True
                 self.force_max_next[self.user_id] -= 1
@@ -10488,7 +10488,7 @@ class MissionBattleView(DurableView):
                         effect_events,
                         self.user_id,
                         reflected_damage,
-                        source="Reflexions-RÃ¼ckschaden",
+                        source="Reflexions-Rückschaden",
                         self_damage=False,
                     )
                 if counter_damage > 0:
@@ -10509,7 +10509,7 @@ class MissionBattleView(DurableView):
                 effect_events,
                 self.user_id,
                 self_damage_value,
-                source=f"{attack_name} / RÃ¼ckstoÃŸ",
+                source=f"{attack_name} / Rückstoß",
                 self_damage=True,
             )
 
@@ -10555,7 +10555,7 @@ class MissionBattleView(DurableView):
                 continue
             if eff_type == "stealth":
                 self.grant_stealth(target_id)
-                self._append_effect_event(effect_events, "Schutz aktiv: Der nÃ¤chste gegnerische Angriff wird geblockt.")
+                self._append_effect_event(effect_events, "Schutz aktiv: Der nächste gegnerische Angriff wird geblockt.")
             elif _is_dot_effect_type(eff_type):
                 duration, burn_damage = _append_dot_effect(
                     self.active_effects,
@@ -10568,20 +10568,20 @@ class MissionBattleView(DurableView):
                 if attack.get("cooldown_from_burning_plus") is not None:
                     prev_duration = burning_duration_for_dynamic_cooldown or 0
                     burning_duration_for_dynamic_cooldown = max(prev_duration, duration)
-                self._append_effect_event(effect_events, f"{_dot_label(eff_type)} aktiv: {burn_damage} Schaden fÃ¼r {duration} Runden.")
+                self._append_effect_event(effect_events, f"{_dot_label(eff_type)} aktiv: {burn_damage} Schaden für {duration} Runden.")
             elif eff_type == 'confusion':
                 self.set_confusion(target_id, self.user_id)
                 confusion_applied = True
                 self._append_effect_event(effect_events, "Verwirrung wurde angewendet.")
             elif eff_type == "stun":
                 self.stunned_next_turn[target_id] = True
-                self._append_effect_event(effect_events, "BetÃ¤ubung: Der Gegner setzt den nÃ¤chsten Zug aus.")
+                self._append_effect_event(effect_events, "Betäubung: Der Gegner setzt den nächsten Zug aus.")
             elif eff_type == "damage_boost":
                 amount = int(effect.get("amount", 0) or 0)
                 uses = int(effect.get("uses", 1) or 1)
                 self.pending_flat_bonus[target_id] = max(self.pending_flat_bonus.get(target_id, 0), amount)
                 self.pending_flat_bonus_uses[target_id] = max(self.pending_flat_bonus_uses.get(target_id, 0), uses)
-                self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Schadensbonus aktiv: +{amount} fÃ¼r {uses} Angriff(e)."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Schadensbonus aktiv: +{amount} für {uses} Angriff(e)."))
             elif eff_type == "damage_multiplier":
                 mult = float(effect.get("multiplier", 1.0) or 1.0)
                 uses = int(effect.get("uses", 1) or 1)
@@ -10628,7 +10628,7 @@ class MissionBattleView(DurableView):
                 self.queue_outgoing_attack_modifier(target_id, percent=percent, turns=turns, source=attack_name)
                 self._append_effect_event(
                     effect_events,
-                    _effect_source_text(attack_name, f"NÃ¤chster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden."),
+                    _effect_source_text(attack_name, f"Nächster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden."),
                 )
             elif eff_type == "enemy_next_attack_reduction_flat":
                 amount = int(effect.get("amount", 0) or 0)
@@ -10636,7 +10636,7 @@ class MissionBattleView(DurableView):
                 self.queue_outgoing_attack_modifier(target_id, flat=amount, turns=turns, source=attack_name)
                 self._append_effect_event(
                     effect_events,
-                    _effect_source_text(attack_name, f"NÃ¤chster gegnerischer Angriff: -{amount} Schaden (mit Ãœberlauf-RÃ¼ckstoÃŸ)."),
+                    _effect_source_text(attack_name, f"Nächster gegnerischer Angriff: -{amount} Schaden (mit Überlauf-Rückstoß)."),
                 )
             elif eff_type == "reflect":
                 reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
@@ -10654,12 +10654,12 @@ class MissionBattleView(DurableView):
                     self.incoming_modifiers[target_id][-1]["reflect_flat"] = reflect_flat
                 reduce_pct = int(round(max(0.0, reduce_percent) * 100))
                 reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
-                flat_text = f" und {reflect_flat} fixer RÃ¼ckschaden ausgelÃ¶st werden" if reflect_flat > 0 else ""
+                flat_text = f" und {reflect_flat} fixer Rückschaden ausgelöst werden" if reflect_flat > 0 else ""
                 self._append_effect_event(
                     effect_events,
                     _effect_source_text(
                         attack_name,
-                        f"Reflexion aktiv: NÃ¤chster eingehender Angriff wird um {reduce_pct}% reduziert, {reflect_pct}% des verhinderten Schadens werden zurÃ¼ckgeworfen{flat_text}.",
+                        f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert, {reflect_pct}% des verhinderten Schadens werden zurückgeworfen{flat_text}.",
                     ),
                 )
             elif eff_type == "absorb_store":
@@ -10680,32 +10680,32 @@ class MissionBattleView(DurableView):
                     self.queue_incoming_modifier(target_id, cap="attack_min", turns=1, source=attack_name)
                     self._append_effect_event(
                         effect_events,
-                        _effect_source_text(attack_name, "Schadenslimit aktiv: NÃ¤chster Treffer wird auf dessen Mindestschaden begrenzt."),
+                        _effect_source_text(attack_name, "Schadenslimit aktiv: Nächster Treffer wird auf dessen Mindestschaden begrenzt."),
                     )
                 else:
                     max_damage = int(cap_setting or 0)
                     self.queue_incoming_modifier(target_id, cap=max_damage, turns=1, source=attack_name)
                     self._append_effect_event(
                         effect_events,
-                        _effect_source_text(attack_name, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nÃ¤chsten Treffer."),
+                        _effect_source_text(attack_name, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nächsten Treffer."),
                     )
             elif eff_type == "evade":
                 counter = int(effect.get("counter", 0) or 0)
                 self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1, source=attack_name)
-                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Ausweichen aktiv: Der nÃ¤chste gegnerische Angriff verfehlt."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
             elif eff_type == "special_lock":
                 turns = max(1, int(effect.get("turns", 1) or 1))
                 self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), turns)
-                self._append_effect_event(effect_events, f"SpezialfÃ¤higkeiten des Gegners sind fÃ¼r {turns} Runde(n) gesperrt.")
+                self._append_effect_event(effect_events, f"Spezialfähigkeiten des Gegners sind für {turns} Runde(n) gesperrt.")
             elif eff_type == "blind":
                 miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
                 self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
-                self._append_effect_event(effect_events, f"Blendung aktiv: {int(round(miss_chance * 100))}% Verfehlchance beim nÃ¤chsten Angriff.")
+                self._append_effect_event(effect_events, f"Blendung aktiv: {int(round(miss_chance * 100))}% Verfehlchance beim nächsten Angriff.")
             elif eff_type == "regen":
                 turns = int(effect.get("turns", 1) or 1)
                 heal = int(effect.get("heal", 0) or 0)
                 self.active_effects[target_id].append({"type": "regen", "duration": turns, "heal": heal, "applier": self.user_id})
-                self._append_effect_event(effect_events, f"Regeneration aktiviert: Heilt sich in den nÃ¤chsten {turns} Runden jeweils um {heal} HP.")
+                self._append_effect_event(effect_events, f"Regeneration aktiviert: Heilt sich in den nächsten {turns} Runden jeweils um {heal} HP.")
             elif eff_type == "heal":
                 heal_data_effect = effect.get("amount", 0)
                 heal_amount = _random_int_from_range(heal_data_effect)
@@ -10718,7 +10718,7 @@ class MissionBattleView(DurableView):
                 defense_mode = str(effect.get("defense", "")).strip().lower()
                 counter = int(effect.get("counter", 0) or 0)
                 self.queue_delayed_defense(target_id, defense_mode, counter=counter, source=attack_name)
-                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Schutz vorbereitet: Wird nach dem nÃ¤chsten eigenen Angriff aktiv."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, "Schutz vorbereitet: Wird nach dem nächsten eigenen Angriff aktiv."))
             elif eff_type == "airborne_two_phase":
                 self.start_airborne_two_phase(
                     target_id,
@@ -10784,9 +10784,9 @@ class MissionBattleView(DurableView):
         if self.special_lock_next_turn.get(self.user_id, 0) > 0:
             self.special_lock_next_turn[self.user_id] = max(0, self.special_lock_next_turn.get(self.user_id, 0) - 1)
         
-        # Starte Cooldown (kartenspezifisch oder fÃ¼r starke Attacken) fÃ¼r den nÃ¤chsten Zug.
-        # In Missionen soll die stÃ¤rkste Attacke im nÃ¤chsten eigenen Zug gesperrt sein.
-        # Darum KEINE sofortige Reduktion hier â€“ die Reduktion passiert nach dem Bot-Zug.
+        # Starte Cooldown (kartenspezifisch oder für starke Attacken) für den nächsten Zug.
+        # In Missionen soll die stärkste Attacke im nächsten eigenen Zug gesperrt sein.
+        # Darum KEINE sofortige Reduktion hier – die Reduktion passiert nach dem Bot-Zug.
         if not is_forced_landing:
             dynamic_cooldown_turns = _resolve_dynamic_cooldown_from_burning(
                 attack,
@@ -10814,7 +10814,7 @@ class MissionBattleView(DurableView):
                 current_cd = self.user_attack_cooldowns.get(landing_cd_index, 0)
                 self.user_attack_cooldowns[landing_cd_index] = max(current_cd, landing_cd_turns)
         
-        # PrÃ¼fen ob Kampf vorbei nach Spieler-Angriff
+        # Prüfen ob Kampf vorbei nach Spieler-Angriff
         if self.bot_hp <= 0:
             self.result = True
             self.stop()
@@ -10822,7 +10822,7 @@ class MissionBattleView(DurableView):
                 interaction,
                 message,
                 won=True,
-                detail_text=f"ðŸ† **Welle {self.wave_num} gewonnen!** Du hast **{self.bot_card['name']}** besiegt!",
+                detail_text=f"🏆 **Welle {self.wave_num} gewonnen!** Du hast **{self.bot_card['name']}** besiegt!",
             )
             return
         if self.player_hp <= 0:
@@ -10832,7 +10832,7 @@ class MissionBattleView(DurableView):
                 interaction,
                 message,
                 won=False,
-                detail_text=f"âŒ **Welle {self.wave_num} verloren!** Du hast dich selbst besiegt.",
+                detail_text=f"❌ **Welle {self.wave_num} verloren!** Du hast dich selbst besiegt.",
             )
             return
         
@@ -10841,7 +10841,7 @@ class MissionBattleView(DurableView):
             try:
                 await message.edit(
                     embed=self.create_current_embed(
-                        description=f"ðŸŽ¯ Du hast **{attack_name}** verwendet! **{self.bot_card['name']}** ist an der Reihe...",
+                        description=f"🎯 Du hast **{attack_name}** verwendet! **{self.bot_card['name']}** ist an der Reihe...",
                     ),
                     view=None,
                 )
@@ -10865,11 +10865,11 @@ class MissionBattleView(DurableView):
             self.reduce_cooldowns_user()
             self.update_attack_buttons_mission()
             embed = discord.Embed(
-                title=f"âš”ï¸ Welle {self.wave_num}/{self.total_waves}",
+                title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
                 description="🛑 Bot war betäubt und setzt den Zug aus! Du bist wieder an der Reihe!",
             )
-            player_label = f"ðŸŸ¥ Deine Karte{self._status_icons(self.user_id)}"
-            bot_label = f"ðŸŸ¦ Bot Karte{self._status_icons(0)}"
+            player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
+            bot_label = f"🟦 Bot Karte{self._status_icons(0)}"
             embed.add_field(name=player_label, value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
             embed.add_field(name=bot_label, value=f"{self.bot_card['name']}\nHP: {self.bot_hp}", inline=True)
             embed.set_image(url=self.player_card["bild"])
@@ -10891,7 +10891,7 @@ class MissionBattleView(DurableView):
             self._append_effect_event(bot_effect_events, event_text)
         forced_bot_landing_attack = self.resolve_forced_landing_if_due(0, bot_effect_events)
         is_forced_bot_landing = forced_bot_landing_attack is not None
-        # WÃ¤hle stÃ¤rkste verfÃ¼gbare Bot-Attacke (unter BerÃ¼cksichtigung von Cooldown)
+        # Wähle stärkste verfügbare Bot-Attacke (unter Berücksichtigung von Cooldown)
         available_attacks = []
         attack_damages = []
         for i, atk in enumerate(bot_attacks[:4]):
@@ -10911,7 +10911,7 @@ class MissionBattleView(DurableView):
                 attack = forced_bot_landing_attack
                 damage = attack["damage"]
             else:
-                # WÃ¤hle die mit max Damage
+                # Wähle die mit max Damage
                 best_index = available_attacks[attack_damages.index(max(attack_damages))]
                 attack = bot_attacks[best_index]
                 damage = attack["damage"]
@@ -10955,7 +10955,7 @@ class MissionBattleView(DurableView):
                     if self.pending_flat_bonus_uses[0] <= 0:
                         self.pending_flat_bonus[0] = 0
                     if flat_bonus_now > 0:
-                        self._append_effect_event(bot_effect_events, f"VerstÃ¤rkung aktiv: +{flat_bonus_now} Schaden auf diesen Angriff.")
+                        self._append_effect_event(bot_effect_events, f"Verstärkung aktiv: +{flat_bonus_now} Schaden auf diesen Angriff.")
                 if self.pending_multiplier_uses.get(0, 0) > 0:
                     attack_multiplier = float(self.pending_multiplier.get(0, 1.0) or 1.0)
                     self.pending_multiplier_uses[0] -= 1
@@ -10963,7 +10963,7 @@ class MissionBattleView(DurableView):
                         self.pending_multiplier[0] = 1.0
                     multiplier_pct = int(round((attack_multiplier - 1.0) * 100))
                     if multiplier_pct > 0:
-                        self._append_effect_event(bot_effect_events, f"VerstÃ¤rkung aktiv: +{multiplier_pct}% Schaden auf diesen Angriff.")
+                        self._append_effect_event(bot_effect_events, f"Verstärkung aktiv: +{multiplier_pct}% Schaden auf diesen Angriff.")
                 if self.force_max_next.get(0, 0) > 0:
                     force_max_damage = True
                     self.force_max_next[0] -= 1
@@ -11135,7 +11135,7 @@ class MissionBattleView(DurableView):
                             bot_effect_events,
                             0,
                             reflected_damage,
-                            source="Reflexions-RÃ¼ckschaden",
+                            source="Reflexions-Rückschaden",
                             self_damage=False,
                         )
                     if counter_damage > 0:
@@ -11156,7 +11156,7 @@ class MissionBattleView(DurableView):
                     bot_effect_events,
                     0,
                     self_damage_value,
-                    source=f"{bot_attack_name} / RÃ¼ckstoÃŸ",
+                    source=f"{bot_attack_name} / Rückstoß",
                     self_damage=True,
                 )
 
@@ -11191,7 +11191,7 @@ class MissionBattleView(DurableView):
             effects = attack.get("effects", [])
             bot_burning_duration_for_dynamic_cooldown: int | None = None
             for effect in effects:
-                # 70% Fix-Chance fÃ¼r Verwirrung
+                # 70% Fix-Chance für Verwirrung
                 chance = 0.7 if effect.get('type') == 'confusion' else effect.get('chance', 1.0)
                 if random.random() >= chance:
                     continue
@@ -11202,7 +11202,7 @@ class MissionBattleView(DurableView):
                     continue
                 if eff_type == "stealth":
                     self.grant_stealth(target_id)
-                    self._append_effect_event(bot_effect_events, "Schutz aktiv: Der nÃ¤chste gegnerische Angriff wird geblockt.")
+                    self._append_effect_event(bot_effect_events, "Schutz aktiv: Der nächste gegnerische Angriff wird geblockt.")
                 elif _is_dot_effect_type(eff_type):
                     duration, burn_damage = _append_dot_effect(
                         self.active_effects,
@@ -11215,19 +11215,19 @@ class MissionBattleView(DurableView):
                     if attack.get("cooldown_from_burning_plus") is not None:
                         prev_duration = bot_burning_duration_for_dynamic_cooldown or 0
                         bot_burning_duration_for_dynamic_cooldown = max(prev_duration, duration)
-                    self._append_effect_event(bot_effect_events, f"{_dot_label(eff_type)} aktiv: {burn_damage} Schaden fÃ¼r {duration} Runden.")
+                    self._append_effect_event(bot_effect_events, f"{_dot_label(eff_type)} aktiv: {burn_damage} Schaden für {duration} Runden.")
                 elif eff_type == 'confusion':
                     self.set_confusion(target_id, 0)
                     self._append_effect_event(bot_effect_events, "Verwirrung wurde angewendet.")
                 elif eff_type == "stun":
                     self.stunned_next_turn[target_id] = True
-                    self._append_effect_event(bot_effect_events, "BetÃ¤ubung: Der Gegner setzt den nÃ¤chsten Zug aus.")
+                    self._append_effect_event(bot_effect_events, "Betäubung: Der Gegner setzt den nächsten Zug aus.")
                 elif eff_type == "damage_boost":
                     amount = int(effect.get("amount", 0) or 0)
                     uses = int(effect.get("uses", 1) or 1)
                     self.pending_flat_bonus[target_id] = max(self.pending_flat_bonus.get(target_id, 0), amount)
                     self.pending_flat_bonus_uses[target_id] = max(self.pending_flat_bonus_uses.get(target_id, 0), uses)
-                    self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, f"Schadensbonus aktiv: +{amount} fÃ¼r {uses} Angriff(e)."))
+                    self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, f"Schadensbonus aktiv: +{amount} für {uses} Angriff(e)."))
                 elif eff_type == "damage_multiplier":
                     mult = float(effect.get("multiplier", 1.0) or 1.0)
                     uses = int(effect.get("uses", 1) or 1)
@@ -11274,7 +11274,7 @@ class MissionBattleView(DurableView):
                     self.queue_outgoing_attack_modifier(target_id, percent=percent, turns=turns, source=bot_attack_name)
                     self._append_effect_event(
                         bot_effect_events,
-                        _effect_source_text(bot_attack_name, f"NÃ¤chster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden."),
+                        _effect_source_text(bot_attack_name, f"Nächster gegnerischer Angriff: -{int(round(percent * 100))}% Schaden."),
                     )
                 elif eff_type == "enemy_next_attack_reduction_flat":
                     amount = int(effect.get("amount", 0) or 0)
@@ -11282,7 +11282,7 @@ class MissionBattleView(DurableView):
                     self.queue_outgoing_attack_modifier(target_id, flat=amount, turns=turns, source=bot_attack_name)
                     self._append_effect_event(
                         bot_effect_events,
-                        _effect_source_text(bot_attack_name, f"NÃ¤chster gegnerischer Angriff: -{amount} Schaden (mit Ãœberlauf-RÃ¼ckstoÃŸ)."),
+                        _effect_source_text(bot_attack_name, f"Nächster gegnerischer Angriff: -{amount} Schaden (mit Überlauf-Rückstoß)."),
                     )
                 elif eff_type == "reflect":
                     reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
@@ -11300,12 +11300,12 @@ class MissionBattleView(DurableView):
                         self.incoming_modifiers[target_id][-1]["reflect_flat"] = reflect_flat
                     reduce_pct = int(round(max(0.0, reduce_percent) * 100))
                     reflect_pct = int(round(max(0.0, reflect_ratio) * 100))
-                    flat_text = f" und {reflect_flat} fixer RÃ¼ckschaden ausgelÃ¶st werden" if reflect_flat > 0 else ""
+                    flat_text = f" und {reflect_flat} fixer Rückschaden ausgelöst werden" if reflect_flat > 0 else ""
                     self._append_effect_event(
                         bot_effect_events,
                         _effect_source_text(
                             bot_attack_name,
-                            f"Reflexion aktiv: NÃ¤chster eingehender Angriff wird um {reduce_pct}% reduziert, {reflect_pct}% des verhinderten Schadens werden zurÃ¼ckgeworfen{flat_text}.",
+                            f"Reflexion aktiv: Nächster eingehender Angriff wird um {reduce_pct}% reduziert, {reflect_pct}% des verhinderten Schadens werden zurückgeworfen{flat_text}.",
                         ),
                     )
                 elif eff_type == "absorb_store":
@@ -11326,32 +11326,32 @@ class MissionBattleView(DurableView):
                         self.queue_incoming_modifier(target_id, cap="attack_min", turns=1, source=bot_attack_name)
                         self._append_effect_event(
                             bot_effect_events,
-                            _effect_source_text(bot_attack_name, "Schadenslimit aktiv: NÃ¤chster Treffer wird auf dessen Mindestschaden begrenzt."),
+                            _effect_source_text(bot_attack_name, "Schadenslimit aktiv: Nächster Treffer wird auf dessen Mindestschaden begrenzt."),
                         )
                     else:
                         max_damage = int(cap_setting or 0)
                         self.queue_incoming_modifier(target_id, cap=max_damage, turns=1, source=bot_attack_name)
                         self._append_effect_event(
                             bot_effect_events,
-                            _effect_source_text(bot_attack_name, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nÃ¤chsten Treffer."),
+                            _effect_source_text(bot_attack_name, f"Schadenslimit aktiv: Maximal {max_damage} Schaden beim nächsten Treffer."),
                         )
                 elif eff_type == "evade":
                     counter = int(effect.get("counter", 0) or 0)
                     self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1, source=bot_attack_name)
-                    self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Ausweichen aktiv: Der nÃ¤chste gegnerische Angriff verfehlt."))
+                    self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
                 elif eff_type == "special_lock":
                     turns = max(1, int(effect.get("turns", 1) or 1))
                     self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), turns)
-                    self._append_effect_event(bot_effect_events, f"SpezialfÃ¤higkeiten des Gegners sind fÃ¼r {turns} Runde(n) gesperrt.")
+                    self._append_effect_event(bot_effect_events, f"Spezialfähigkeiten des Gegners sind für {turns} Runde(n) gesperrt.")
                 elif eff_type == "blind":
                     miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
                     self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
-                    self._append_effect_event(bot_effect_events, f"Blendung aktiv: {int(round(miss_chance * 100))}% Verfehlchance beim nÃ¤chsten Angriff.")
+                    self._append_effect_event(bot_effect_events, f"Blendung aktiv: {int(round(miss_chance * 100))}% Verfehlchance beim nächsten Angriff.")
                 elif eff_type == "regen":
                     turns = int(effect.get("turns", 1) or 1)
                     heal = int(effect.get("heal", 0) or 0)
                     self.active_effects[target_id].append({"type": "regen", "duration": turns, "heal": heal, "applier": 0})
-                    self._append_effect_event(bot_effect_events, f"Regeneration aktiviert: +{heal} HP fÃ¼r {turns} Runde(n).")
+                    self._append_effect_event(bot_effect_events, f"Regeneration aktiviert: +{heal} HP für {turns} Runde(n).")
                 elif eff_type == "heal":
                     heal_data_effect = effect.get("amount", 0)
                     heal_amount = _random_int_from_range(heal_data_effect)
@@ -11364,7 +11364,7 @@ class MissionBattleView(DurableView):
                     defense_mode = str(effect.get("defense", "")).strip().lower()
                     counter = int(effect.get("counter", 0) or 0)
                     self.queue_delayed_defense(target_id, defense_mode, counter=counter, source=bot_attack_name)
-                    self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Schutz vorbereitet: Wird nach dem nÃ¤chsten eigenen Angriff aktiv."))
+                    self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Schutz vorbereitet: Wird nach dem nächsten eigenen Angriff aktiv."))
                 elif eff_type == "airborne_two_phase":
                     self.start_airborne_two_phase(
                         target_id,
@@ -11374,7 +11374,7 @@ class MissionBattleView(DurableView):
                         source_attack_index=best_index if not is_forced_bot_landing else None,
                         cooldown_turns=int(attack.get("cooldown_turns", 0) or 0),
                     )
-            # Kein separater Log â€“ Effekte werden inline in der Angriffszeile angezeigt
+            # Kein separater Log – Effekte werden inline in der Angriffszeile angezeigt
 
             _prepend_action_context_events(
                 bot_effect_events,
@@ -11435,12 +11435,12 @@ class MissionBattleView(DurableView):
                     interaction,
                     message,
                     won=False,
-                    detail_text=f"âŒ **Welle {self.wave_num} verloren!** **{self.bot_card['name']}** hat dich besiegt!",
+                    detail_text=f"❌ **Welle {self.wave_num} verloren!** **{self.bot_card['name']}** hat dich besiegt!",
                 )
                 return
 
             if not is_forced_bot_landing:
-                # Cooldown fÃ¼r Bot (kartenspezifisch oder stark)
+                # Cooldown für Bot (kartenspezifisch oder stark)
                 dynamic_cooldown_turns = _resolve_dynamic_cooldown_from_burning(
                     attack,
                     bot_burning_duration_for_dynamic_cooldown,
@@ -11462,7 +11462,7 @@ class MissionBattleView(DurableView):
                     self.reduce_cooldowns_bot()
                 elif self.mission_is_strong_attack(damage, dmg_buff_bot):
                     self.start_attack_cooldown_bot(best_index, 2)
-                    # Reduziere Cooldowns fÃ¼r den Bot direkt nach seinem Zug (entspricht /kampf)
+                    # Reduziere Cooldowns für den Bot direkt nach seinem Zug (entspricht /kampf)
                     self.reduce_cooldowns_bot()
             else:
                 landing_cd_index = forced_bot_landing_attack.get("cooldown_attack_index")
@@ -11470,24 +11470,24 @@ class MissionBattleView(DurableView):
                 if isinstance(landing_cd_index, int) and landing_cd_index >= 0 and landing_cd_turns > 0:
                     current_cd = self.bot_attack_cooldowns.get(landing_cd_index, 0)
                     self.bot_attack_cooldowns[landing_cd_index] = max(current_cd, landing_cd_turns)
-                    # Reduziere Cooldowns fÃ¼r den Bot direkt nach seinem Zug (entspricht /kampf)
+                    # Reduziere Cooldowns für den Bot direkt nach seinem Zug (entspricht /kampf)
                     self.reduce_cooldowns_bot()
     
             # Reduce Cooldowns for User nach Bot-Zug
             self.reduce_cooldowns_user()
     
-            # Update UI fÃ¼r nÃ¤chsten Spieler-Zug
-            embed = discord.Embed(title=f"âš”ï¸ Welle {self.wave_num}/{self.total_waves}",
+            # Update UI für nächsten Spieler-Zug
+            embed = discord.Embed(title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
                                   description=f"Bot hat **{bot_attack_name}** verwendet! Dein HP: {self.player_hp}\nDu bist wieder an der Reihe!")
-            player_label = f"ðŸŸ¥ Deine Karte{self._status_icons(self.user_id)}"
-            bot_label = f"ðŸŸ¦ Bot Karte{self._status_icons(0)}"
+            player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
+            bot_label = f"🟦 Bot Karte{self._status_icons(0)}"
             embed.add_field(name=player_label, value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
             embed.add_field(name=bot_label, value=f"{self.bot_card['name']}\nHP: {self.bot_hp}", inline=True)
             embed.set_image(url=self.player_card["bild"])
             embed.set_thumbnail(url=self.bot_card["bild"])
             _add_attack_info_field(embed, self.player_card)
     
-            # Update attack buttons fÃ¼r neuen Spieler-Zug
+            # Update attack buttons für neuen Spieler-Zug
             self.update_attack_buttons_mission()
     
             if message is not None:
@@ -11496,16 +11496,16 @@ class MissionBattleView(DurableView):
             else:
                 await interaction.followup.send(embed=embed, view=self, ephemeral=True)
         else:
-            # Bot hat keine Attacken verfÃ¼gbar (alle auf Cooldown) - Ã¼berspringe Bot-Zug
+            # Bot hat keine Attacken verfügbar (alle auf Cooldown) - überspringe Bot-Zug
             if self.airborne_pending_landing.get(self.user_id):
                 self._consume_airborne_evade_marker(self.user_id)
             self.reduce_cooldowns_user()
             self.update_attack_buttons_mission()
             
-            embed = discord.Embed(title=f"âš”ï¸ Welle {self.wave_num}/{self.total_waves}", 
-                                  description=f"ðŸ¤– Bot hat keine Attacken verfÃ¼gbar! Du bist wieder an der Reihe!")
-            player_label = f"ðŸŸ¥ Deine Karte{self._status_icons(self.user_id)}"
-            bot_label = f"ðŸŸ¦ Bot Karte{self._status_icons(0)}"
+            embed = discord.Embed(title=f"⚔️ Welle {self.wave_num}/{self.total_waves}", 
+                                  description=f"🤖 Bot hat keine Attacken verfügbar! Du bist wieder an der Reihe!")
+            player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
+            bot_label = f"🟦 Bot Karte{self._status_icons(0)}"
             embed.add_field(name=player_label, value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
             embed.add_field(name=bot_label, value=f"{self.bot_card['name']}\nHP: {self.bot_hp}", inline=True)
             embed.set_image(url=self.player_card["bild"])
@@ -11761,7 +11761,7 @@ async def _handle_durable_view_error(
     try:
         await send_interaction_response(
             interaction,
-            content="âŒ Da ist vermutlich ein Bug passiert. Ich habe Basti informiert. Wenn du willst, nutze das Formular unten.",
+            content="❌ Da ist vermutlich ein Bug passiert. Ich habe Basti informiert. Wenn du willst, nutze das Formular unten.",
             view=BugReportLinkView(),
             ephemeral=True,
         )
@@ -12070,31 +12070,31 @@ LEGACY_COMMAND_VISIBILITY_KEYS = {
 }
 
 PANEL_STATIC_VISIBILITY_ITEMS: list[tuple[str, str, str]] = [
-    ("maintenance", "Wartungsmodus", "BestÃ¤tigungen fÃ¼r Wartungsmodus an/aus"),
-    ("delete_user", "User lÃ¶schen", "LÃ¶sch-Dialog und Ergebnis"),
+    ("maintenance", "Wartungsmodus", "Bestätigungen für Wartungsmodus an/aus"),
+    ("delete_user", "User löschen", "Lösch-Dialog und Ergebnis"),
     ("db_backup", "DB-Backup", "DB-Datei als Attachment"),
-    ("give_dust", "Give Dust", "BestÃ¤tigung fÃ¼r Dust-Vergabe"),
-    ("grant_card", "Grant Card", "BestÃ¤tigung fÃ¼r Karten-Vergabe"),
-    ("revoke_card", "Revoke Card", "BestÃ¤tigung fÃ¼r Karten-Abzug"),
-    ("set_daily", "Daily Reset", "BestÃ¤tigung fÃ¼r Daily-Reset"),
-    ("set_mission", "Mission Reset", "BestÃ¤tigung fÃ¼r Mission-Reset"),
+    ("give_dust", "Give Dust", "Bestätigung für Dust-Vergabe"),
+    ("grant_card", "Grant Card", "Bestätigung für Karten-Vergabe"),
+    ("revoke_card", "Revoke Card", "Bestätigung für Karten-Abzug"),
+    ("set_daily", "Daily Reset", "Bestätigung für Daily-Reset"),
+    ("set_mission", "Mission Reset", "Bestätigung für Mission-Reset"),
     ("health", "Health", "Health-Report"),
     ("debug_db", "Debug DB", "DB-Checks/Integrity"),
-    ("debug_user", "Debug User", "User-Ãœbersicht"),
+    ("debug_user", "Debug User", "User-Übersicht"),
     ("debug_sync", "Debug Sync", "Sync-Ergebnis"),
     ("logs_last", "Logs Last", "Letzte Log-Zeilen"),
-    ("karten_validate", "Karten Validate", "PrÃ¼fung karten.py"),
+    ("karten_validate", "Karten Validate", "Prüfung karten.py"),
     ("channel_config", "Kanal-Config", "Kanal erlauben/entfernen/listen"),
-    ("reset_intro", "Intro Reset", "Intro-Reset BestÃ¤tigung"),
+    ("reset_intro", "Intro Reset", "Intro-Reset Bestätigung"),
     ("vault_look", "Vault Look", "Vault-Ansicht"),
-    ("bot_status", "Bot-Status", "Status-MenÃ¼"),
+    ("bot_status", "Bot-Status", "Status-Menü"),
     ("test_report", "Command-Report", "Slash-Command Bericht"),
 ]
 if ALPHA_PHASE_ENABLED:
     PANEL_STATIC_VISIBILITY_ITEMS = [item for item in PANEL_STATIC_VISIBILITY_ITEMS if item[0] != "set_mission"]
 
 def _visibility_label(value: str) -> str:
-    return "Ã¶ffentlich" if value == VISIBILITY_PUBLIC else "nur sichtbar"
+    return "öffentlich" if value == VISIBILITY_PUBLIC else "nur sichtbar"
 
 async def get_latest_anfang_message(guild_id: int | None):
     return await load_latest_anfang_message(guild_id)
@@ -12261,15 +12261,15 @@ class NumberInputModal(RestrictedModal):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         raw_value = str(self.amount.value or "").strip()
         if not raw_value.isdigit() or int(raw_value) <= 0:
-            await interaction.response.send_message("âŒ Bitte gib eine gÃ¼ltige positive Zahl ein.", ephemeral=True)
+            await interaction.response.send_message("❌ Bitte gib eine gültige positive Zahl ein.", ephemeral=True)
             return
         self.parent_view.value = int(raw_value)
         self.parent_view.stop()
-        await interaction.response.send_message(f"âœ… Eigene Menge gewÃ¤hlt: **{int(raw_value)}**", ephemeral=True)
+        await interaction.response.send_message(f"✅ Eigene Menge gewählt: **{int(raw_value)}**", ephemeral=True)
 
 
 class NumberSelectView(RestrictedView):
@@ -12285,7 +12285,7 @@ class NumberSelectView(RestrictedView):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         selected = str(self.select.values[0] or "").strip()
         if selected == "__custom__":
@@ -12319,19 +12319,19 @@ async def _post_dust_result_message(
     for user_id, applied_amount in results:
         target = _member_mention_or_fallback(interaction.guild, user_id)
         if remove:
-            lines.append(f"â€¢ {target}: **{applied_amount}x** entfernt")
+            lines.append(f"• {target}: **{applied_amount}x** entfernt")
         else:
-            lines.append(f"â€¢ {target}: **{applied_amount}x** erhalten")
+            lines.append(f"• {target}: **{applied_amount}x** erhalten")
     if remove:
         lines.append("")
         lines.append(f"Angeforderte Menge pro Nutzer: **{amount}x**")
 
     embed = discord.Embed(
-        title=f"ðŸ’Ž {action_title}",
+        title=f"💎 {action_title}",
         description="\n".join(lines),
         color=0xD64B4B if remove else 0x2ECC71,
     )
-    embed.set_footer(text=f"AusgefÃ¼hrt von {safe_display_name(interaction.user, fallback='Unbekannt')}")
+    embed.set_footer(text=f"Ausgeführt von {safe_display_name(interaction.user, fallback='Unbekannt')}")
     sent_message = await _send_channel_message(
         interaction.channel,
         embed=embed,
@@ -12440,7 +12440,7 @@ async def run_dust_command_flow(
     if result_sent:
         return
     await interaction.followup.send(
-        "âŒ Die Ã¶ffentliche Ergebnisnachricht konnte nicht gesendet werden.",
+        "❌ Die öffentliche Ergebnisnachricht konnte nicht gesendet werden.",
         ephemeral=True,
     )
 
@@ -12451,9 +12451,9 @@ class CardSelectPagerView(RestrictedView):
         self.cards: list[CardData] = list(cards)
         self.page = 0
         self.value = None
-        self.select = ui.Select(placeholder="WÃ¤hle eine Karte...", min_values=1, max_values=1, options=[])
+        self.select = ui.Select(placeholder="Wähle eine Karte...", min_values=1, max_values=1, options=[])
         self.select.callback = self.select_callback
-        self.prev_button = ui.Button(label="< ZurÃ¼ck", style=discord.ButtonStyle.secondary)
+        self.prev_button = ui.Button(label="< Zurück", style=discord.ButtonStyle.secondary)
         self.prev_button.callback = self.prev_page
         self.next_button = ui.Button(label="Weiter >", style=discord.ButtonStyle.secondary)
         self.next_button.callback = self.next_page
@@ -12475,7 +12475,7 @@ class CardSelectPagerView(RestrictedView):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         self.value = self.select.values[0]
         self.stop()
@@ -12483,7 +12483,7 @@ class CardSelectPagerView(RestrictedView):
 
     async def prev_page(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         if self.page > 0:
             self.page -= 1
@@ -12492,7 +12492,7 @@ class CardSelectPagerView(RestrictedView):
 
     async def next_page(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         if (self.page + 1) * 25 < len(self.cards):
             self.page += 1
@@ -12501,7 +12501,7 @@ class CardSelectPagerView(RestrictedView):
 
     async def cancel(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         self.stop()
         await interaction.response.edit_message(content="Abgebrochen.", view=None)
@@ -12522,9 +12522,9 @@ class CardVariantSelectView(RestrictedView):
             for variant_name, amount in self.variant_rows[:25]
         ]
         if not options:
-            options = [SelectOption(label="Keine Varianten verfÃ¼gbar", value="__none__")]
+            options = [SelectOption(label="Keine Varianten verfügbar", value="__none__")]
         self.select = ui.Select(
-            placeholder=placeholder or f"WÃ¤hle den Style fÃ¼r {base_name}...",
+            placeholder=placeholder or f"Wähle den Style für {base_name}...",
             min_values=1,
             max_values=1,
             options=options,
@@ -12534,11 +12534,11 @@ class CardVariantSelectView(RestrictedView):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         selected_value = str(self.select.values[0] or "").strip()
         if not selected_value or selected_value == "__none__":
-            await interaction.response.send_message("âŒ Keine gÃ¼ltige Variante verfÃ¼gbar.", ephemeral=True)
+            await interaction.response.send_message("❌ Keine gültige Variante verfügbar.", ephemeral=True)
             return
         self.value = selected_value
         self.stop()
@@ -12555,8 +12555,8 @@ class SingleMultiModeView(RestrictedView):
             min_values=1,
             max_values=1,
             options=[
-                SelectOption(label="Single", value="single", description="Einen Nutzer auswÃ¤hlen"),
-                SelectOption(label="Multi", value="multi", description="Mehrere Nutzer auswÃ¤hlen"),
+                SelectOption(label="Single", value="single", description="Einen Nutzer auswählen"),
+                SelectOption(label="Multi", value="multi", description="Mehrere Nutzer auswählen"),
             ],
         )
         self.select.callback = self.select_callback
@@ -12564,7 +12564,7 @@ class SingleMultiModeView(RestrictedView):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         self.value = str(self.select.values[0] or "").strip() or None
         self.stop()
@@ -12577,16 +12577,16 @@ class ConfirmDeleteUserView(RestrictedView):
         self.target_id = target_id
         self.target_name = target_name
 
-    @ui.button(label="LÃ¶schen", style=discord.ButtonStyle.danger)
+    @ui.button(label="Löschen", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nur der Anforderer kann bestÃ¤tigen.", ephemeral=True)
+            await interaction.response.send_message("Nur der Anforderer kann bestätigen.", ephemeral=True)
             return
         await delete_user_data(self.target_id)
         logging.info("Delete user data: actor=%s target=%s", interaction.user.id, self.target_id)
         self.stop()
         await interaction.response.edit_message(
-            content=f"Daten von {self.target_name} gelÃ¶scht.", view=None
+            content=f"Daten von {self.target_name} gelöscht.", view=None
         )
 
     @ui.button(label="Abbrechen", style=discord.ButtonStyle.secondary)
@@ -12628,20 +12628,20 @@ async def send_stats_excel_export(interaction: discord.Interaction) -> None:
         workbook_bytes, filename = await build_stats_workbook()
     except Exception:
         logging.exception("Failed to build stats workbook")
-        await interaction.followup.send("âŒ Der Excel-Export konnte nicht erstellt werden.", ephemeral=True)
+        await interaction.followup.send("❌ Der Excel-Export konnte nicht erstellt werden.", ephemeral=True)
         return
 
     try:
         await interaction.user.send(
-            content="ðŸ“Š Hier ist dein aktueller Statistik-Export.",
+            content="📊 Hier ist dein aktueller Statistik-Export.",
             file=discord.File(BytesIO(workbook_bytes), filename=filename),
         )
     except discord.Forbidden:
-        await interaction.followup.send("âŒ Ich konnte dir keine DM senden. Bitte aktiviere Direktnachrichten.", ephemeral=True)
+        await interaction.followup.send("❌ Ich konnte dir keine DM senden. Bitte aktiviere Direktnachrichten.", ephemeral=True)
         return
     except Exception:
         logging.exception("Failed to deliver stats workbook via DM")
-        await interaction.followup.send("âŒ Der Excel-Export wurde erstellt, konnte aber nicht per DM gesendet werden.", ephemeral=True)
+        await interaction.followup.send("❌ Der Excel-Export wurde erstellt, konnte aber nicht per DM gesendet werden.", ephemeral=True)
         return
 
     await _log_event_safe(
@@ -12653,7 +12653,7 @@ async def send_stats_excel_export(interaction: discord.Interaction) -> None:
         command_name="stats_e",
         payload={"filename": filename, "bytes": len(workbook_bytes)},
     )
-    await interaction.followup.send("âœ… Die Excel-Datei wurde dir per DM geschickt.", ephemeral=True)
+    await interaction.followup.send("✅ Die Excel-Datei wurde dir per DM geschickt.", ephemeral=True)
 
 async def send_db_debug(interaction: discord.Interaction, visibility_key: str | None = None):
     async with db_context() as db:
@@ -12745,7 +12745,7 @@ async def send_configure_add(interaction: discord.Interaction, visibility_key: s
     await _send_with_visibility(
         interaction,
         visibility_key,
-        content=f"âœ… HinzugefÃ¼gt: {_channel_mention_or_fallback(interaction.channel)}",
+        content=f"✅ Hinzugefügt: {_channel_mention_or_fallback(interaction.channel)}",
     )
 
 async def send_configure_remove(interaction: discord.Interaction, visibility_key: str | None = None):
@@ -12762,7 +12762,7 @@ async def send_configure_remove(interaction: discord.Interaction, visibility_key
     await _send_with_visibility(
         interaction,
         visibility_key,
-        content=f"ðŸ—‘ï¸ Entfernt: {_channel_mention_or_fallback(interaction.channel)}",
+        content=f"🗑️ Entfernt: {_channel_mention_or_fallback(interaction.channel)}",
     )
 
 async def send_configure_list(interaction: discord.Interaction, visibility_key: str | None = None):
@@ -12776,10 +12776,10 @@ async def send_configure_list(interaction: discord.Interaction, visibility_key: 
         )
         rows = await cursor.fetchall()
     if not rows:
-        await _send_with_visibility(interaction, visibility_key, content="â„¹ï¸ Es sind noch keine KanÃ¤le erlaubt.")
+        await _send_with_visibility(interaction, visibility_key, content="ℹ️ Es sind noch keine Kanäle erlaubt.")
         return
-    mentions = "\n".join(f"â€¢ <#{r[0]}>" for r in rows)
-    await _send_with_visibility(interaction, visibility_key, content=f"âœ… Erlaubte KanÃ¤le:\n{mentions}")
+    mentions = "\n".join(f"• <#{r[0]}>" for r in rows)
+    await _send_with_visibility(interaction, visibility_key, content=f"✅ Erlaubte Kanäle:\n{mentions}")
 
 async def send_reset_intro(interaction: discord.Interaction, visibility_key: str | None = None):
     if interaction.guild is None:
@@ -12799,7 +12799,7 @@ async def send_reset_intro(interaction: discord.Interaction, visibility_key: str
     await _send_with_visibility(
         interaction,
         visibility_key,
-        content="âœ… Intro-Status fÃ¼r ALLE in diesem Kanal zurÃ¼ckgesetzt. Schreibe eine Nachricht, um den Prompt erneut zu sehen.",
+        content="✅ Intro-Status für ALLE in diesem Kanal zurückgesetzt. Schreibe eine Nachricht, um den Prompt erneut zu sehen.",
     )
 
 async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_name: str, visibility_key: str | None = None):
@@ -12812,14 +12812,14 @@ async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_na
     grouped_cards = _group_owned_cards_for_current_mode(user_karten)
     infinitydust = await get_infinitydust(user_id)
     if not user_karten and infinitydust == 0:
-        await _send_with_visibility(interaction, visibility_key, content=f"âŒ {mention} hat noch keine Karten in seiner Sammlung.")
+        await _send_with_visibility(interaction, visibility_key, content=f"❌ {mention} hat noch keine Karten in seiner Sammlung.")
         return
     embed = discord.Embed(
-        title=f"ðŸ” Vault von {escape_display_text(user_name, fallback=mention)}",
+        title=f"🔍 Vault von {escape_display_text(user_name, fallback=mention)}",
         description=f"**{mention}** besitzt **{len(grouped_cards)}** verschiedene Helden:",
     )
     if infinitydust > 0:
-        embed.add_field(name="ðŸ’Ž Infinitydust", value=f"Anzahl: {infinitydust}x", inline=True)
+        embed.add_field(name="💎 Infinitydust", value=f"Anzahl: {infinitydust}x", inline=True)
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
     for group in grouped_cards:
         base_name = str(group.get("base_name") or "")
@@ -12850,18 +12850,18 @@ async def send_test_report(interaction: discord.Interaction, visibility_key: str
 
     all_cmds = bot.tree.get_commands()
     flat_cmds = flatten_commands(all_cmds)
-    lines = [f"â€¢ /{name} â€” registriert" for name, _ in flat_cmds]
+    lines = [f"• /{name} — registriert" for name, _ in flat_cmds]
     description = "Alle registrierten Slash-Commands (inkl. Unterbefehle):\n" + "\n".join(lines) if lines else "Keine Commands registriert."
     embed = discord.Embed(
-        title="ðŸ¤– VerfÃ¼gbare Commands",
+        title="🤖 Verfügbare Commands",
         description=description,
         color=0x2b90ff,
     )
     embed.add_field(
         name="Hinweis",
         value=(
-            "Dieser Bericht ist nur fÃ¼r dich sichtbar. Ein automatisches AusfÃ¼hren einzelner Slash-Commands "
-            "ist nicht mÃ¶glich, daher wird hier die Registrierung angezeigt."
+            "Dieser Bericht ist nur für dich sichtbar. Ein automatisches Ausführen einzelner Slash-Commands "
+            "ist nicht möglich, daher wird hier die Registrierung angezeigt."
         ),
         inline=False,
     )
@@ -12872,8 +12872,8 @@ async def send_test_report(interaction: discord.Interaction, visibility_key: str
 async def send_bot_status(interaction: discord.Interaction, visibility_key: str | None = None):
     view = BotStatusView(interaction.user.id)
     embed = discord.Embed(
-        title="ðŸ¤– Bot-Status setzen",
-        description="WÃ¤hle den gewÃ¼nschten Status:\nâ€¢ Online\nâ€¢ Abwesend\nâ€¢ Bitte nicht stÃ¶ren\nâ€¢ Unsichtbar",
+        title="🤖 Bot-Status setzen",
+        description="Wähle den gewünschten Status:\n• Online\n• Abwesend\n• Bitte nicht stören\n• Unsichtbar",
         color=0x2b90ff,
     )
     logging.info("Bot status requested by %s", interaction.user.id)
@@ -12946,8 +12946,8 @@ DEV_ACTION_OPTIONS: list[tuple[str, str]] = [
     ("Karten validate", "karten_validate"),
     ("Kanal erlauben (hier)", "cfg_add"),
     ("Kanal entfernen (hier)", "cfg_remove"),
-    ("Erlaubte KanÃ¤le anzeigen", "cfg_list"),
-    ("Intro zurÃ¼cksetzen (Kanal)", "reset_intro"),
+    ("Erlaubte Kanäle anzeigen", "cfg_list"),
+    ("Intro zurücksetzen (Kanal)", "reset_intro"),
     ("Vault ansehen", "vault_look"),
     ("Bot-Status setzen", "bot_status"),
     ("Command-Report", "test_report"),
@@ -12961,7 +12961,7 @@ class DevActionSelect(ui.Select):
         self,
         requester_id: int,
         options_list: list[tuple[str, str]] | None = None,
-        placeholder: str = "Dev-Tools wÃ¤hlen...",
+        placeholder: str = "Dev-Tools wählen...",
     ):
         self.requester_id = requester_id
         options_src = DEV_ACTION_OPTIONS if options_list is None else options_list
@@ -12978,12 +12978,12 @@ class DevSearchView(RestrictedView):
         self.requester_id = requester_id
         self.add_item(DevActionSelect(requester_id, placeholder="Tippe zum Suchen..."))
 
-    @ui.button(label="ZurÃ¼ck", style=discord.ButtonStyle.secondary)
+    @ui.button(label="Zurück", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
-        embed = discord.Embed(title="Dev/Tools", description="Aktionen wÃ¤hlen")
+        embed = discord.Embed(title="Dev/Tools", description="Aktionen wählen")
         await _edit_panel_message(interaction, embed=embed, view=DevPanelView(self.requester_id))
 
 class VisibilitySelectPagerView(RestrictedView):
@@ -12993,13 +12993,13 @@ class VisibilitySelectPagerView(RestrictedView):
         self.page = page
         self.visibility_map = visibility_map
         self.items = get_panel_visibility_items()
-        self.select = ui.Select(placeholder="Kategorie wÃ¤hlen...", min_values=1, max_values=1, options=[])
+        self.select = ui.Select(placeholder="Kategorie wählen...", min_values=1, max_values=1, options=[])
         self.select.callback = self.select_callback
         self.prev_button = ui.Button(label="Vorige Seite", style=discord.ButtonStyle.secondary, row=4)
         self.prev_button.callback = self.prev_page
-        self.next_button = ui.Button(label="NÃ¤chste Seite", style=discord.ButtonStyle.secondary, row=4)
+        self.next_button = ui.Button(label="Nächste Seite", style=discord.ButtonStyle.secondary, row=4)
         self.next_button.callback = self.next_page
-        self.back_button = ui.Button(label="ZurÃ¼ck zum Panel", style=discord.ButtonStyle.danger, row=4)
+        self.back_button = ui.Button(label="Zurück zum Panel", style=discord.ButtonStyle.danger, row=4)
         self.back_button.callback = self.back_to_panel
         self._render()
 
@@ -13013,7 +13013,7 @@ class VisibilitySelectPagerView(RestrictedView):
             current = _visibility_label(current_value)
             options.append(SelectOption(label=f"{label} ({current})", value=key, description=desc[:100]))
         if not options:
-            options = [SelectOption(label="Keine EintrÃ¤ge", value="__none__")]
+            options = [SelectOption(label="Keine Einträge", value="__none__")]
         self.select.options = options
         self.add_item(self.select)
         self.prev_button.disabled = self.page == 0
@@ -13024,7 +13024,7 @@ class VisibilitySelectPagerView(RestrictedView):
 
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         key = self.select.values[0]
         if key == "__none__":
@@ -13039,7 +13039,7 @@ class VisibilitySelectPagerView(RestrictedView):
         current = _visibility_label(current_value)
         embed = discord.Embed(
             title="Sichtbarkeit einstellen",
-            description=f"**{label}**\nAktuell: **{current}**\n\nWÃ¤hle die Sichtbarkeit:",
+            description=f"**{label}**\nAktuell: **{current}**\n\nWähle die Sichtbarkeit:",
         )
         await _edit_panel_message(
             interaction,
@@ -13049,7 +13049,7 @@ class VisibilitySelectPagerView(RestrictedView):
 
     async def prev_page(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         self.page = max(0, self.page - 1)
         self._render()
@@ -13057,7 +13057,7 @@ class VisibilitySelectPagerView(RestrictedView):
 
     async def next_page(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         if (self.page + 1) * 25 < len(self.items):
             self.page += 1
@@ -13066,9 +13066,9 @@ class VisibilitySelectPagerView(RestrictedView):
 
     async def back_to_panel(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
-        embed = discord.Embed(title="Dev/Tools", description="Aktionen wÃ¤hlen")
+        embed = discord.Embed(title="Dev/Tools", description="Aktionen wählen")
         await _edit_panel_message(interaction, embed=embed, view=DevPanelView(self.requester_id))
 
 class VisibilityToggleView(RestrictedView):
@@ -13082,15 +13082,15 @@ class VisibilityToggleView(RestrictedView):
         visibility_map = await get_visibility_map(interaction.guild_id)
         embed = discord.Embed(
             title="Sichtbarkeit",
-            description="WÃ¤hle eine Kategorie, um die Sichtbarkeit zu Ã¤ndern.",
+            description="Wähle eine Kategorie, um die Sichtbarkeit zu ändern.",
         )
         view = VisibilitySelectPagerView(self.requester_id, visibility_map, page=self.page)
         await _edit_panel_message(interaction, embed=embed, view=view)
 
-    @ui.button(label="Ã–ffentlich", style=discord.ButtonStyle.success)
+    @ui.button(label="Öffentlich", style=discord.ButtonStyle.success)
     async def set_public(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         await set_message_visibility(interaction.guild_id, self.message_key, VISIBILITY_PUBLIC)
         await self._back_to_list(interaction)
@@ -13098,15 +13098,15 @@ class VisibilityToggleView(RestrictedView):
     @ui.button(label="Nur sichtbar", style=discord.ButtonStyle.secondary)
     async def set_private(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         await set_message_visibility(interaction.guild_id, self.message_key, VISIBILITY_PRIVATE)
         await self._back_to_list(interaction)
 
-    @ui.button(label="ZurÃ¼ck", style=discord.ButtonStyle.danger)
+    @ui.button(label="Zurück", style=discord.ButtonStyle.danger)
     async def back(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         await self._back_to_list(interaction)
 
@@ -13114,14 +13114,14 @@ async def show_visibility_settings(interaction: discord.Interaction, requester_i
     visibility_map = await get_visibility_map(interaction.guild_id)
     embed = discord.Embed(
         title="Sichtbarkeit",
-        description="WÃ¤hle eine Kategorie, um die Sichtbarkeit zu Ã¤ndern.",
+        description="Wähle eine Kategorie, um die Sichtbarkeit zu ändern.",
     )
     view = VisibilitySelectPagerView(requester_id, visibility_map, page=page)
     await _edit_panel_message(interaction, embed=embed, view=view)
 
 async def handle_dev_action(interaction: discord.Interaction, requester_id: int, action: str):
     if interaction.user.id != requester_id:
-        await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+        await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
         return
     if not await require_owner_or_dev(interaction):
         return
@@ -13161,14 +13161,14 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
         await _send_with_visibility(interaction, "maintenance", content="Wartungsmodus deaktiviert.")
         return
     if action == "delete_user":
-        user_id, user_name = await _select_user(interaction, "WÃ¤hle den Nutzer fÃ¼r LÃ¶schen:")
+        user_id, user_name = await _select_user(interaction, "Wähle den Nutzer für Löschen:")
         if not user_id or user_name is None:
             return
         view = ConfirmDeleteUserView(interaction.user.id, user_id, user_name)
         await _send_with_visibility(
             interaction,
             "delete_user",
-            content=f"Wirklich alle Bot-Daten von {user_name} lÃ¶schen?",
+            content=f"Wirklich alle Bot-Daten von {user_name} löschen?",
             view=view,
         )
         return
@@ -13177,10 +13177,10 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
         await send_db_backup(interaction, visibility_key="db_backup")
         return
     if action == "give_dust":
-        user_id, user_name = await _select_user(interaction, "WÃ¤hle Nutzer fÃ¼r Dust:")
+        user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Dust:")
         if not user_id:
             return
-        amount = await _select_number(interaction, "Menge wÃ¤hlen", [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000])
+        amount = await _select_number(interaction, "Menge wählen", [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000])
         if not amount:
             return
         await add_infinitydust(user_id, int(amount))
@@ -13195,16 +13195,16 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
             command_name="entwicklerpanel",
             payload={"action": "give", "requested_amount": int(amount), "applied_amount": int(amount), "mode": "single"},
         )
-        await _send_with_visibility(interaction, "give_dust", content=f"{user_name} erhÃ¤lt {amount}x Infinitydust.")
+        await _send_with_visibility(interaction, "give_dust", content=f"{user_name} erhält {amount}x Infinitydust.")
         return
     if action == "grant_card":
-        user_id, user_name = await _select_user(interaction, "WÃ¤hle Nutzer fÃ¼r Karte vergeben:")
+        user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Karte vergeben:")
         if not user_id:
             return
-        card_name = await _select_card(interaction, "Karte auswÃ¤hlen:")
+        card_name = await _select_card(interaction, "Karte auswählen:")
         if not card_name:
             return
-        amount = await _select_number(interaction, "Anzahl wÃ¤hlen", [1, 2, 5, 10, 20, 50, 100])
+        amount = await _select_number(interaction, "Anzahl wählen", [1, 2, 5, 10, 20, 50, 100])
         if not amount:
             return
         await add_karte_amount(user_id, card_name, int(amount))
@@ -13220,16 +13220,16 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
             hero_name=card_name,
             payload={"amount": int(amount)},
         )
-        await _send_with_visibility(interaction, "grant_card", content=f"{user_name} erhÃ¤lt {amount}x {card_name}.")
+        await _send_with_visibility(interaction, "grant_card", content=f"{user_name} erhält {amount}x {card_name}.")
         return
     if action == "revoke_card":
-        user_id, user_name = await _select_user(interaction, "WÃ¤hle Nutzer fÃ¼r Karte abziehen:")
+        user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Karte abziehen:")
         if not user_id:
             return
-        card_name = await _select_card(interaction, "Karte auswÃ¤hlen:")
+        card_name = await _select_card(interaction, "Karte auswählen:")
         if not card_name:
             return
-        amount = await _select_number(interaction, "Anzahl wÃ¤hlen", [1, 2, 5, 10, 20, 50, 100])
+        amount = await _select_number(interaction, "Anzahl wählen", [1, 2, 5, 10, 20, 50, 100])
         if not amount:
             return
         new_amount = await remove_karte_amount(user_id, card_name, int(amount))
@@ -13248,7 +13248,7 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
         await _send_with_visibility(interaction, "revoke_card", content=f"Neue Menge {card_name} bei {user_name}: {new_amount}.")
         return
     if action == "set_daily":
-        user_id, user_name = await _select_user(interaction, "WÃ¤hle Nutzer fÃ¼r Daily-Reset:")
+        user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Daily-Reset:")
         if not user_id:
             return
         async with db_context() as db:
@@ -13259,10 +13259,10 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
             )
             await db.commit()
         logging.info("Daily reset: actor=%s target=%s", interaction.user.id, user_id)
-        await _send_with_visibility(interaction, "set_daily", content=f"Daily fÃ¼r {user_name} zurÃ¼ckgesetzt.")
+        await _send_with_visibility(interaction, "set_daily", content=f"Daily für {user_name} zurückgesetzt.")
         return
     if action == "set_mission":
-        user_id, user_name = await _select_user(interaction, "WÃ¤hle Nutzer fÃ¼r Mission-Reset:")
+        user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Mission-Reset:")
         if not user_id:
             return
         today_start = berlin_midnight_epoch()
@@ -13274,7 +13274,7 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
             )
             await db.commit()
         logging.info("Mission reset: actor=%s target=%s", interaction.user.id, user_id)
-        await _send_with_visibility(interaction, "set_mission", content=f"Mission-Reset fÃ¼r {user_name} gesetzt.")
+        await _send_with_visibility(interaction, "set_mission", content=f"Mission-Reset für {user_name} gesetzt.")
         return
     if action == "health":
         logging.info("Health requested by %s", interaction.user.id)
@@ -13285,7 +13285,7 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
         await send_db_debug(interaction, visibility_key="debug_db")
         return
     if action == "debug_user":
-        user_id, user_name = await _select_user(interaction, "WÃ¤hle Nutzer fÃ¼r Debug:")
+        user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Debug:")
         if not user_id or user_name is None:
             return
         logging.info("Debug user requested by %s target=%s", interaction.user.id, user_id)
@@ -13321,7 +13321,7 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
         await send_reset_intro(interaction, visibility_key="reset_intro")
         return
     if action == "vault_look":
-        user_id, user_name = await _select_user(interaction, "WÃ¤hle einen User fÃ¼r Vault-Look:")
+        user_id, user_name = await _select_user(interaction, "Wähle einen User für Vault-Look:")
         if not user_id or user_name is None:
             return
         await send_vaultlook(interaction, user_id, user_name, visibility_key="vault_look")
@@ -13349,7 +13349,7 @@ class DevPanelView(RestrictedView):
         self.prev_button.callback = self.prev_page
         self.add_item(self.prev_button)
 
-        self.next_button = ui.Button(label="NÃ¤chste Seite", style=discord.ButtonStyle.secondary, row=4)
+        self.next_button = ui.Button(label="Nächste Seite", style=discord.ButtonStyle.secondary, row=4)
         self.next_button.callback = self.next_page
         self.add_item(self.next_button)
 
@@ -13364,7 +13364,7 @@ class DevPanelView(RestrictedView):
 
     async def prev_page(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         self.page = max(0, self.page - 1)
         self._render()
@@ -13372,7 +13372,7 @@ class DevPanelView(RestrictedView):
 
     async def next_page(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         if (self.page + 1) * 25 < len(DEV_ACTION_OPTIONS):
             self.page += 1
@@ -13382,20 +13382,20 @@ class DevPanelView(RestrictedView):
     @ui.button(label="Suche", style=discord.ButtonStyle.secondary, row=3)
     async def search(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         if len(DEV_ACTION_OPTIONS) > 25:
-            await interaction.response.send_message("Zu viele Optionen fÃ¼r die Suche. Nutze die Seiten.", ephemeral=True)
+            await interaction.response.send_message("Zu viele Optionen für die Suche. Nutze die Seiten.", ephemeral=True)
             return
         embed = discord.Embed(title="Dev-Tools Suche", description="Tippe im Auswahlfeld, um zu filtern.")
         await _edit_panel_message(interaction, embed=embed, view=DevSearchView(self.requester_id))
 
-    @ui.button(label="ZurÃ¼ck", style=discord.ButtonStyle.secondary, row=3)
+    @ui.button(label="Zurück", style=discord.ButtonStyle.secondary, row=3)
     async def back(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
-        embed = discord.Embed(title="Panel", description="HauptmenÃ¼")
+        embed = discord.Embed(title="Panel", description="Hauptmenü")
         await _edit_panel_message(interaction, embed=embed, view=PanelHomeView(self.requester_id))
 
 class StatsPanelView(RestrictedView):
@@ -13406,16 +13406,16 @@ class StatsPanelView(RestrictedView):
     @ui.button(label="Balance Stats anzeigen", style=discord.ButtonStyle.primary)
     async def show_stats(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         await send_balance_stats(interaction)
 
-    @ui.button(label="ZurÃ¼ck", style=discord.ButtonStyle.secondary)
+    @ui.button(label="Zurück", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
-        embed = discord.Embed(title="Panel", description="HauptmenÃ¼")
+        embed = discord.Embed(title="Panel", description="Hauptmenü")
         await _edit_panel_message(interaction, embed=embed, view=PanelHomeView(self.requester_id))
 
 class PanelHomeView(RestrictedView):
@@ -13426,15 +13426,15 @@ class PanelHomeView(RestrictedView):
     @ui.button(label="Dev/Tools", style=discord.ButtonStyle.primary)
     async def dev_tools(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
-        embed = discord.Embed(title="Dev/Tools", description="Aktionen wÃ¤hlen")
+        embed = discord.Embed(title="Dev/Tools", description="Aktionen wählen")
         await _edit_panel_message(interaction, embed=embed, view=DevPanelView(self.requester_id))
 
     @ui.button(label="Stats", style=discord.ButtonStyle.secondary)
     async def stats(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         embed = discord.Embed(title="Stats", description="Statistik-Tools")
         await _edit_panel_message(interaction, embed=embed, view=StatsPanelView(self.requester_id))
@@ -13442,20 +13442,20 @@ class PanelHomeView(RestrictedView):
     @ui.button(label="Schliessen", style=discord.ButtonStyle.danger)
     async def close(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nicht dein MenÃ¼.", ephemeral=True)
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         await _edit_panel_message(interaction, content="Panel geschlossen.", embed=None, view=None)
 # =========================
-# PrÃ¤senz-Status Kreise + Live-User-Picker (wiederverwendbar fÃ¼r /kampf und /sammlung-ansehen)
+# Präsenz-Status Kreise + Live-User-Picker (wiederverwendbar für /kampf und /sammlung-ansehen)
 # =========================
 
-# Mapping: Discord Presence -> Farbe/Circle + Sort-PrioritÃ¤t
+# Mapping: Discord Presence -> Farbe/Circle + Sort-Priorität
 class StatusUserPickerView(RestrictedView):
     """
     Wiederverwendbarer Nutzer-Picker mit:
-    - farbigen Status-Kreisen vor dem Namen (grÃ¼n/orange/rot/schwarz)
-    - Sortierung: grÃ¼n, orange, rot, schwarz; innerhalb Gruppe stabile Reihenfolge
-    - Live-Update (Polling) ohne Flackern; identischer Mechanismus fÃ¼r /kampf und /sammlung-ansehen
+    - farbigen Status-Kreisen vor dem Namen (grün/orange/rot/schwarz)
+    - Sortierung: grün, orange, rot, schwarz; innerhalb Gruppe stabile Reihenfolge
+    - Live-Update (Polling) ohne Flackern; identischer Mechanismus für /kampf und /sammlung-ansehen
     """
     def __init__(
         self,
@@ -13475,7 +13475,7 @@ class StatusUserPickerView(RestrictedView):
         # Auswahl-Element
         self.value: str | None = None
         self.select = ui.Select(
-            placeholder="WÃ¤hle einen Nutzer...",
+            placeholder="Wähle einen Nutzer...",
             min_values=1,
             max_values=1,
             options=[SelectOption(label="Lade Nutzer...", value="__loading__")]
@@ -13483,16 +13483,16 @@ class StatusUserPickerView(RestrictedView):
         self.select.callback = self._on_select
         self.add_item(self.select)
 
-        # Interne Felder fÃ¼r Live-Update
+        # Interne Felder für Live-Update
         self._message: discord.Message | None = None
         self._task: asyncio.Task | None = None
         self._baseline_index: dict[int, int] = {}  # stabile Reihenfolge pro User-ID
-        self._last_signature: list[tuple[str, str]] = []  # [(value,label)] zur Ã„nderungs-Erkennung
+        self._last_signature: list[tuple[str, str]] = []  # [(value,label)] zur Änderungs-Erkennung
 
     async def start_auto_refresh(self, message: discord.Message):
         """Startet das periodische Aktualisieren der Optionsliste."""
         self._message = message
-        # Erste FÃ¼llung sofort
+        # Erste Füllung sofort
         await self._refresh_options(force=True)
         # Hintergrund-Task starten
         if self._task is None:
@@ -13514,12 +13514,12 @@ class StatusUserPickerView(RestrictedView):
         except asyncio.CancelledError:
             pass
         except Exception:
-            # Keine Exceptions nach auÃŸen leaken
+            # Keine Exceptions nach außen leaken
             pass
 
     async def _on_select(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("Nur der anfragende Nutzer kann wÃ¤hlen!", ephemeral=True)
+            await interaction.response.send_message("Nur der anfragende Nutzer kann wählen!", ephemeral=True)
             return
 
         choice = self.select.values[0]
@@ -13537,22 +13537,22 @@ class StatusUserPickerView(RestrictedView):
             await interaction.response.send_modal(modal)
             return
         if choice == "none":
-            await interaction.response.send_message("âŒ Keine Nutzer gefunden.", ephemeral=True)
+            await interaction.response.send_message("❌ Keine Nutzer gefunden.", ephemeral=True)
             return
 
-        # Auswahl Ã¼bernehmen und View schlieÃŸen
+        # Auswahl übernehmen und View schließen
         self.value = choice
         self.stop()
         await interaction.response.defer()
 
     async def _refresh_options(self, force: bool = False):
-        """Baut die Optionsliste neu und editiert die Nachricht nur bei Ã„nderungen."""
+        """Baut die Optionsliste neu und editiert die Nachricht nur bei Änderungen."""
         options = self._build_options()
 
         # Signatur zum Vergleich
         signature = [(opt.value, opt.label) for opt in options]
         if not force and signature == self._last_signature:
-            return  # Keine Ã„nderungen -> kein Edit (vermeidet Flackern)
+            return  # Keine Änderungen -> kein Edit (vermeidet Flackern)
 
         self._last_signature = signature
         self.select.options = options
@@ -13574,7 +13574,7 @@ class StatusUserPickerView(RestrictedView):
                 baseline.append(member.id)
             self._baseline_index = {uid: i for i, uid in enumerate(baseline)}
 
-        # Kandidaten sammeln (keine Bots), optional eigenen User ausschlieÃŸen
+        # Kandidaten sammeln (keine Bots), optional eigenen User ausschließen
         members: list[discord.Member] = []
         for m in self.guild.members:
             if m.bot:
@@ -13583,7 +13583,7 @@ class StatusUserPickerView(RestrictedView):
                 continue
             members.append(m)
 
-        # Sortieren nach Status (grÃ¼n, orange, rot, schwarz) und dann Baseline
+        # Sortieren nach Status (grün, orange, rot, schwarz) und dann Baseline
         def sort_key(m: discord.Member):
             color = _presence_to_color(m)
             pri = STATUS_PRIORITY_MAP.get(color, 3)
@@ -13593,17 +13593,17 @@ class StatusUserPickerView(RestrictedView):
         members_sorted = sorted(members, key=sort_key)
 
         # Optionen aufbauen
-        opts: list[SelectOption] = [SelectOption(label="ðŸ” Nach Name suchen", value="search")]
+        opts: list[SelectOption] = [SelectOption(label="🔍 Nach Name suchen", value="search")]
         if self.include_bot_option:
-            # Bot-Option unverÃ¤ndert wie in /kampf
-            opts.append(SelectOption(label="ðŸ¤– Bot", value="bot"))
+            # Bot-Option unverändert wie in /kampf
+            opts.append(SelectOption(label="🤖 Bot", value="bot"))
 
         # Maximal 25 Optionen insgesamt
         max_user_opts = 25 - len(opts)
 
         for m in members_sorted[:max_user_opts]:
             color = _presence_to_color(m)
-            circle = STATUS_CIRCLE_MAP.get(color, "âš«")
+            circle = STATUS_CIRCLE_MAP.get(color, "⚫")
             opts.append(
                 SelectOption(
                     label=safe_user_option_label(m, prefix=f"{circle} "),
@@ -13618,23 +13618,23 @@ class StatusUserPickerView(RestrictedView):
 
 # Starte den Bot
 # =========================
-# /bot-status â€“ Bot-PrÃ¤senz via AuswahlmenÃ¼ setzen
+# /bot-status – Bot-Präsenz via Auswahlmenü setzen
 # =========================
 
 class BotStatusSelect(ui.Select):
     def __init__(self, requester_id: int):
         self.requester_id = requester_id
         options = [
-            SelectOption(label="ðŸŸ¢ Online", value="online"),
-            SelectOption(label="ðŸŸ¡ Abwesend", value="idle"),
-            SelectOption(label="ðŸ”´ Bitte nicht stÃ¶ren", value="dnd"),
-            SelectOption(label="âš« Unsichtbar", value="invisible"),
+            SelectOption(label="🟢 Online", value="online"),
+            SelectOption(label="🟡 Abwesend", value="idle"),
+            SelectOption(label="🔴 Bitte nicht stören", value="dnd"),
+            SelectOption(label="⚫ Unsichtbar", value="invisible"),
         ]
-        super().__init__(placeholder="WÃ¤hle den neuen Bot-Status ...", min_values=1, max_values=1, options=options)
+        super().__init__(placeholder="Wähle den neuen Bot-Status ...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await send_interaction_response(interaction, content="Nicht dein MenÃ¼!", ephemeral=True)
+            await send_interaction_response(interaction, content="Nicht dein Menü!", ephemeral=True)
             return
         choice = self.values[0]
         new_status = BOT_STATUS_MAP.get(choice, discord.Status.online)
@@ -13642,7 +13642,7 @@ class BotStatusSelect(ui.Select):
             await interaction.client.change_presence(status=new_status)
         except discord.HTTPException as exc:
             logging.exception("Failed to change bot presence to %s", choice)
-            await send_interaction_response(interaction, content=f"âŒ Fehler beim Setzen des Status: {exc}", ephemeral=True)
+            await send_interaction_response(interaction, content=f"❌ Fehler beim Setzen des Status: {exc}", ephemeral=True)
             return
 
         try:
@@ -13651,7 +13651,7 @@ class BotStatusSelect(ui.Select):
             logging.exception("Failed to persist bot status %s", choice)
             await send_interaction_response(
                 interaction,
-                content="âŒ Status wurde gesetzt, aber konnte nicht in der Datenbank gespeichert werden.",
+                content="❌ Status wurde gesetzt, aber konnte nicht in der Datenbank gespeichert werden.",
                 ephemeral=True,
             )
             return
@@ -13666,7 +13666,7 @@ class BotStatusSelect(ui.Select):
         )
 
         embed = discord.Embed(
-            title="âœ… Bot-Status geÃ¤ndert",
+            title="✅ Bot-Status geändert",
             description=f"Neuer Status: {BOT_STATUS_LABELS.get(choice, 'Online')}",
             color=0x2b90ff
         )
@@ -13692,13 +13692,13 @@ fight = _gameplay_commands["fight"]
 _admin_commands = register_admin_commands(bot, sys.modules[__name__])
 
 
-@bot.tree.command(name="stats_e", description="Nur fÃ¼r Admins!!!")
+@bot.tree.command(name="stats_e", description="Nur für Admins!!!")
 async def stats_e(interaction: discord.Interaction):
     if not await is_channel_allowed(interaction):
         return
     if not await is_admin(interaction):
         await interaction.response.send_message(
-            "âŒ Du hast keine Berechtigung fÃ¼r diesen Command! Nur Admins/Owner kÃ¶nnen den Excel-Export anfordern.",
+            "❌ Du hast keine Berechtigung für diesen Command! Nur Admins/Owner können den Excel-Export anfordern.",
             ephemeral=True,
         )
         return
