@@ -72,32 +72,37 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         flammen_pfeil = _find_attack(hawkeye, "Flammen Pfeil")
         breakdown = flammen_pfeil.get("damage_breakdown", {})
         self.assertEqual(int(breakdown.get("start_damage", 0) or 0), 10)
-        self.assertEqual(int(breakdown.get("burn_damage_per_round", 0) or 0), 5)
-        self.assertEqual(int(breakdown.get("burn_duration_rounds", 0) or 0), 3)
+        self.assertEqual(int(breakdown.get("burn_damage_per_round", 0) or 0), 9)
+        self.assertEqual(int(breakdown.get("burn_duration_rounds", 0) or 0), 2)
+        burn_effect = next((e for e in flammen_pfeil.get("effects", []) if e.get("type") == "burning"), None)
+        self.assertIsNotNone(burn_effect)
+        assert burn_effect is not None
+        self.assertEqual(burn_effect.get("damage"), [8, 10])
 
         treffsicherheit = _find_attack(hawkeye, "Treffsicherheit")
         effects = treffsicherheit.get("effects", [])
         self.assertTrue(any(e.get("type") == "guaranteed_hit" for e in effects))
         self.assertTrue(any(e.get("type") == "force_max" for e in effects))
+        self.assertTrue(any(e.get("type") == "evade" and float(e.get("chance", 0.0) or 0.0) == 0.5 for e in effects))
         self.assertIn("Maximalschaden", str(treffsicherheit.get("info") or ""))
 
-        standard_pfeil = _find_attack(hawkeye, "Flammen Pfeil")
+        standard_pfeil = _find_attack(hawkeye, "Pfeil")
         self.assertTrue(bool(standard_pfeil.get("is_standard_attack")))
 
         triple = _find_attack(hawkeye, "Triple Arrow")
         mh = triple.get("multi_hit", {})
-        self.assertEqual(int(triple.get("cooldown_turns", 0) or 0), 4)
+        self.assertEqual(int(triple.get("cooldown_turns", 0) or 0), 5)
         self.assertEqual(mh.get("hits"), 3)
         self.assertAlmostEqual(float(mh.get("hit_chance")), 1.0)
-        self.assertEqual(mh.get("per_hit_damage"), [5, 10])
-        self.assertEqual(int(mh.get("guaranteed_min_per_hit", 0) or 0), 5)
+        self.assertEqual(mh.get("per_hit_damage"), [9, 13])
+        self.assertEqual(int(mh.get("guaranteed_min_per_hit", 0) or 0), 9)
         self.assertIn("3 Pfeile", str(triple.get("info") or ""))
 
     def test_daywalker_biss_info_mentions_damage_and_heal(self) -> None:
         blade = _find_card("Blade")
         bite = _find_attack(blade, "Daywalker-Biss")
         info = str(bite.get("info") or "")
-        self.assertIn("10-20", info)
+        self.assertIn("14-22", info)
         self.assertIn("50%", info)
 
     def test_ironman_overladung_specs(self) -> None:
@@ -110,21 +115,21 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(float(multiplier_effect.get("multiplier", 1.0)), 1.5)
         self.assertEqual(int(overladung.get("cooldown_turns", 0) or 0), 3)
 
-    def test_captain_america_shield_throw_requires_collect(self) -> None:
+    def test_captain_america_shield_throw_matches_word_damage(self) -> None:
         cap = _find_card("Captain America")
         shield_throw = _find_attack(cap, "Schildwurf")
-        self.assertTrue(bool(shield_throw.get("requires_reload")))
-        self.assertEqual(str(shield_throw.get("reload_name") or ""), "Aufsammeln")
+        self.assertEqual(shield_throw.get("damage"), [13, 18])
+        self.assertFalse(bool(shield_throw.get("requires_reload")))
 
     def test_hulk_gamma_dynamic_cooldown_spec(self) -> None:
         hulk = _find_card("Hulk")
         gamma = _find_attack(hulk, "Gammastrahl")
         effects = gamma.get("effects", [])
-        burn_effect = next((e for e in effects if e.get("type") == "burning"), None)
-        self.assertIsNotNone(burn_effect)
-        assert burn_effect is not None
-        self.assertEqual(burn_effect.get("duration"), [2, 7])
-        self.assertEqual(int(burn_effect.get("damage", 0) or 0), 5)
+        poison_effect = next((e for e in effects if e.get("type") == "poison"), None)
+        self.assertIsNotNone(poison_effect)
+        assert poison_effect is not None
+        self.assertEqual(poison_effect.get("duration"), [3, 3])
+        self.assertEqual(poison_effect.get("damage"), [4, 6])
 
     def test_outgoing_reduction_cards(self) -> None:
         star_lord = _find_card("Star Lord")
@@ -143,14 +148,14 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("enemy_next_attack_reduction_flat", web_types)
         self.assertIn("enemy_next_attack_reduction_percent", root_types)
 
-    def test_rocket_kleines_ziel_caps_to_attack_min(self) -> None:
+    def test_rocket_kleines_ziel_caps_to_word_range(self) -> None:
         rocket = _find_card("Rocket")
         kleines_ziel = _find_attack(rocket, "Kleines Ziel")
         effects = kleines_ziel.get("effects", [])
         cap_effect = next((e for e in effects if e.get("type") == "cap_damage"), None)
         self.assertIsNotNone(cap_effect)
         assert cap_effect is not None
-        self.assertEqual(str(cap_effect.get("max_damage") or ""), "attack_min")
+        self.assertEqual(cap_effect.get("max_damage"), [5, 10])
 
     def test_delayed_defense_and_airborne_specs(self) -> None:
         widow = _find_card("Black Widow")
@@ -172,7 +177,7 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(fliegen.get("damage"), [0, 0])
         fliegen_effects = fliegen.get("effects", [])
-        self.assertTrue(any(e.get("type") == "airborne_two_phase" and e.get("landing_damage") == [20, 40] for e in fliegen_effects))
+        self.assertTrue(any(e.get("type") == "airborne_two_phase" and e.get("landing_damage") == [20, 26] for e in fliegen_effects))
 
         spinnensinn_effects = spinnensinn.get("effects", [])
         self.assertTrue(any(e.get("type") == "evade" for e in spinnensinn_effects))
@@ -210,46 +215,46 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Carnage", pool_names)
         self.assertGreater(len(pool_names), len(ALPHA_PLAYABLE_CARD_NAMES))
 
-    def test_new_non_rare_cards_use_new_placeholder_image(self) -> None:
-        expected_names = {
-            "Venom",
-            "Captain Marvel",
-            "Ms Marvel",
-            "Ant-Man",
-            "Miles Morales",
-            "Namor",
-            "Nick Fury",
-            "Shang-Chi",
-            "She-Hulk",
-            "Sue Storm",
-            "Thor",
-            "Mr. Fantastic",
-            "The Thing",
-            "Human Torch",
-            "Cyclops",
-            "Loki",
-            "Ultron",
-            "Scarlet Witch",
-            "Deadpool",
-            "Carnage",
+    def test_new_cards_use_configured_images(self) -> None:
+        expected_images = {
+            "Venom": "https://i.imgur.com/bgUBwGJ.png",
+            "Captain Marvel": "https://i.imgur.com/yvhpvmi.png",
+            "Ms Marvel": "https://i.imgur.com/D9K8ejX.png",
+            "Ant-Man": "https://i.imgur.com/jYexZ0m.png",
+            "Miles Morales": "https://i.imgur.com/wZcU8wO.png",
+            "Namor": "https://i.imgur.com/4tERztv.png",
+            "Nick Fury": "https://i.imgur.com/xGxMqO9.png",
+            "Shang-Chi": "https://i.imgur.com/uwbJyZR.png",
+            "She-Hulk": "https://i.imgur.com/0f7dLbI.png",
+            "Sue Storm": "https://i.imgur.com/8jM2dhR.png",
+            "Thor": "https://i.imgur.com/ZBy2Woy.png",
+            "Mr. Fantastic": "https://i.imgur.com/Iqf34ri.png",
+            "The Thing": "https://i.imgur.com/ytacB5m.png",
+            "Human Torch": "https://i.imgur.com/AcEU973.png",
+            "Cyclops": "https://i.imgur.com/ZBTBTTv.png",
+            "Loki": "https://i.imgur.com/Mim2ZgG.png",
+            "Ultron": "https://i.imgur.com/QN71mkW.png",
+            "Scarlet Witch": "https://i.imgur.com/lSkWXxk.png",
+            "Deadpool": "https://i.imgur.com/aWrqxig.png",
+            "Carnage": "https://i.imgur.com/RUhNKqw.png",
         }
-        placeholder = "https://i.imgur.com/4mxNv2c.png"
-        found_names = {card.get("name") for card in karten if card.get("bild") == placeholder}
-        self.assertEqual(found_names, expected_names)
+        by_name = {str(card.get("name") or ""): card for card in karten}
+        for name, image_url in expected_images.items():
+            self.assertEqual(str(by_name[name].get("bild") or ""), image_url)
 
     def test_selected_cooldowns_follow_word_plus_one_rule(self) -> None:
         expectations = {
             ("Black Widow", "Taser"): 3,
             ("Iron-Man", "Überladung"): 3,
             ("Captain America", "Inspiration"): 5,
-            ("Hawkeye", "Triple Arrow"): 4,
+            ("Hawkeye", "Triple Arrow"): 5,
             ("Doctor Strange", "Strahlen der Vishanti"): 5,
             ("Star Lord", "Awesome Mix"): 6,
             ("Rocket", "Das dicke Ding"): 6,
             ("Spider-Man", "Spinnensinn"): 5,
-            ("Captain Marvel", "Sternenflug"): 7,
-            ("Thor", "Der Götterschlag"): 7,
-            ("Cyclops", "Mega-Optic-Blast"): 7,
+            ("Captain Marvel", "Sternenflug"): 6,
+            ("Thor", "Der Götterschlag"): 6,
+            ("Cyclops", "Mega-Optic-Blast"): 6,
         }
         for (card_name, attack_name), expected_cooldown in expectations.items():
             attack = _find_attack(_find_card(card_name), attack_name)
@@ -261,11 +266,6 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
             for attack in _find_card("Captain Marvel").get("attacks", [])
             if attack.get("cooldown_overrides_by_final_damage") == [{"threshold": 27, "turns": 6}]
         )
-        thor = next(
-            attack
-            for attack in _find_card("Thor").get("attacks", [])
-            if attack.get("cooldown_overrides_by_final_damage") == [{"threshold": 55, "turns": 8}]
-        )
         mr_fantastic = next(
             attack
             for attack in _find_card("Mr. Fantastic").get("attacks", [])
@@ -273,18 +273,7 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(captain_marvel.get("cooldown_overrides_by_final_damage"), [{"threshold": 27, "turns": 6}])
-        self.assertEqual(thor.get("cooldown_overrides_by_final_damage"), [{"threshold": 55, "turns": 8}])
-        self.assertEqual(
-            mr_fantastic.get("cooldown_overrides_by_final_damage"),
-            [{"threshold": 40, "turns": 7}, {"threshold": 55, "turns": 8}],
-        )
-        return
-        captain_marvel = _find_attack(_find_card("Captain Marvel"), "Binär-Schlag")
-        thor = _find_attack(_find_card("Thor"), "Der Götterschlag")
-        mr_fantastic = _find_attack(_find_card("Mr. Fantastic"), "Hyper-Intelligenz-Schlag")
-
-        self.assertEqual(captain_marvel.get("cooldown_overrides_by_final_damage"), [{"threshold": 27, "turns": 6}])
-        self.assertEqual(thor.get("cooldown_overrides_by_final_damage"), [{"threshold": 55, "turns": 8}])
+        self.assertIsNone(_find_attack(_find_card("Thor"), "Der Götterschlag").get("cooldown_overrides_by_final_damage"))
         self.assertEqual(
             mr_fantastic.get("cooldown_overrides_by_final_damage"),
             [{"threshold": 40, "turns": 7}, {"threshold": 55, "turns": 8}],
@@ -335,7 +324,7 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         heal_factor = _find_attack(wolverine, "Heilfaktor")
         info = str(heal_factor.get("info") or "")
         self.assertIn("nächsten 3 Runden", info)
-        self.assertIn("jeweils um 10 HP", info)
+        self.assertIn("jeweils um 10-12 HP", info)
 
 
 class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
@@ -2838,9 +2827,9 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         attack_buttons = [c for c in view.children if hasattr(c, "row") and c.row in (0, 1)][:4]
         self.assertIn("Flammen Pfeil", str(attack_buttons[0].label))
-        self.assertFalse(bool(attack_buttons[0].disabled))
+        self.assertTrue(bool(attack_buttons[0].disabled))
         self.assertIn("Pfeil", str(attack_buttons[1].label))
-        self.assertTrue(bool(attack_buttons[1].disabled))
+        self.assertFalse(bool(attack_buttons[1].disabled))
         self.assertTrue(all(bool(btn.disabled) for btn in (attack_buttons[2], attack_buttons[3])))
 
     async def test_hawkeye_treffsicherheit_makes_triple_arrow_max_damage(self) -> None:
@@ -3269,9 +3258,9 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         view.update_attack_buttons_mission()
         attack_buttons = [c for c in view.children if hasattr(c, "row") and c.row in (0, 1)][:4]
         self.assertIn("Flammen Pfeil", str(attack_buttons[0].label))
-        self.assertFalse(bool(attack_buttons[0].disabled))
+        self.assertTrue(bool(attack_buttons[0].disabled))
         self.assertIn("Pfeil", str(attack_buttons[1].label))
-        self.assertTrue(bool(attack_buttons[1].disabled))
+        self.assertFalse(bool(attack_buttons[1].disabled))
         self.assertTrue(all(bool(btn.disabled) for btn in (attack_buttons[2], attack_buttons[3])))
 
     async def test_mission_hawkeye_treffsicherheit_makes_triple_arrow_max_damage(self) -> None:
@@ -3289,11 +3278,11 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         await view.execute_attack(_DummyInteraction(1, _DummyMessage()), 2)
         await view.execute_attack(_DummyInteraction(1, _DummyMessage()), 3)
 
-        self.assertEqual(view.bot_hp, 70)
+        self.assertEqual(view.bot_hp, 61)
         player_triple_call = view._log_mission_attack_event.await_args_list[2]
-        self.assertEqual(player_triple_call.kwargs["actual_damage"], 30)
+        self.assertEqual(player_triple_call.kwargs["actual_damage"], 39)
         self.assertIn(
-            "Treffer: 3/3 | Schaden pro Treffer: 10, 10, 10 | Gesamt: 30.",
+            "Treffer: 3/3 | Schaden pro Treffer: 13, 13, 13 | Gesamt: 39.",
             player_triple_call.kwargs["effect_events"],
         )
 
@@ -3352,6 +3341,153 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         attack_buttons = [c for c in view.children if hasattr(c, "row") and c.row in (0, 1)][:4]
         self.assertIn("primary", str(attack_buttons[0].style).lower())
         self.assertIn("success", str(attack_buttons[1].style).lower())
+
+    def test_operation_broken_timeline_definition_matches_word_flow(self) -> None:
+        mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)
+        self.assertEqual(mission.get("mission_id"), "operation_broken_timeline")
+        self.assertEqual(int(mission.get("waves", 0) or 0), 4)
+        self.assertEqual(int(mission.get("unit_reward_after_wave", 0) or 0), 1)
+        encounters = mission.get("encounters", [])
+        self.assertEqual([encounter.get("name") for encounter in encounters], [
+            "Ödland-Plünderer",
+            "Gamma-Mutant",
+            "Umprogrammierter Hulkbuster",
+            "Maestro",
+        ])
+        self.assertEqual(
+            {str(encounter.get("name") or ""): str(encounter.get("bild") or "") for encounter in encounters},
+            {
+                "Ödland-Plünderer": "https://i.imgur.com/YPnvbdW.png",
+                "Gamma-Mutant": "https://i.imgur.com/sJKKeeG.png",
+                "Umprogrammierter Hulkbuster": "https://i.imgur.com/PvK2BHp.png",
+                "Maestro": "https://i.imgur.com/FnpMS1O.png",
+            },
+        )
+
+    async def test_mission_enemy_without_image_does_not_crash_embed(self) -> None:
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        bot_card = {
+            "name": "Ödland-Plünderer",
+            "hp": 40,
+            "attacks": [{"name": "Schild-Splitter", "damage": [12, 12], "info": "test"}],
+        }
+        view = MissionBattleView(player_card, bot_card, 1, 1, 4)
+        embed = view.create_current_embed()
+        self.assertIsNone(embed.thumbnail.url)
+
+    async def test_gamma_aura_recoils_only_after_hit(self) -> None:
+        mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        gamma = copy.deepcopy(mission["encounters"][1])
+        view = MissionBattleView(player_card, gamma, 1, 2, 4, mission_data=mission)
+        events: list[str] = []
+        view._apply_on_hit_passives(events, damage_dealt=0)
+        self.assertEqual(view.player_hp, 100)
+        view._apply_on_hit_passives(events, damage_dealt=10)
+        self.assertEqual(view.player_hp, 96)
+        self.assertTrue(any("Radioaktive Aura" in event for event in events))
+
+    async def test_hulkbuster_overheat_doubles_next_incoming_damage(self) -> None:
+        mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        hulkbuster = copy.deepcopy(mission["encounters"][2])
+        view = MissionBattleView(player_card, hulkbuster, 1, 3, 4, mission_data=mission)
+        effect_events: list[str] = []
+        effect = _find_attack(hulkbuster, "Schubdüsen-Ramme")["effects"][0]
+        handled = bot_module._apply_word_runtime_effect(
+            view,
+            effect_events,
+            eff_type=str(effect["type"]),
+            target_id=0,
+            attack_name="Schubdüsen-Ramme",
+            effect=effect,
+        )
+        self.assertTrue(handled)
+        damage, consumed = bot_module._consume_incoming_damage_multiplier(view.active_effects, 0, 10)
+        self.assertEqual(damage, 20)
+        self.assertIsNotNone(consumed)
+
+    async def test_maestro_execute_marks_and_forces_unblockable_attack(self) -> None:
+        mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        maestro = copy.deepcopy(mission["encounters"][3])
+        view = MissionBattleView(player_card, maestro, 1, 4, 4, mission_data=mission)
+        view.player_hp = 49
+        events: list[str] = []
+        view._mark_maestro_execute_if_needed(events)
+        self.assertTrue(view.maestro_execute_pending)
+        forced = view._forced_maestro_execute_attack(events)
+        self.assertEqual(forced["name"], "Gnadenschuss des Tyrannen")
+        self.assertEqual(forced["damage"], [999, 999])
+        self.assertTrue(bool(forced["unblockable"]))
+        self.assertFalse(view.maestro_execute_pending)
+
+    async def test_completed_wave_carries_player_hp_forward(self) -> None:
+        mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = MissionBattleView(player_card, copy.deepcopy(mission["encounters"][0]), 1, 1, 4, mission_data=mission)
+        view.player_hp = 37
+        interaction = _DummyInteraction(1, _DummyMessage())
+        with patch.object(bot_module, "_safe_send_channel", new=AsyncMock(return_value=None)), patch.object(
+            bot_module,
+            "_start_mission_wave_in_thread",
+            new=AsyncMock(return_value=None),
+        ) as start_mock:
+            await view._complete_wave(interaction, None, won=True)
+        state = start_mock.await_args.kwargs["mission_state"]
+        self.assertEqual(state["next_wave"], 2)
+        self.assertEqual(state["player_hp"], 37)
+        self.assertEqual(state["player_max_hp"], 100)
+
+    async def test_wave_three_awards_unit_full_heal_and_card_switch_pause(self) -> None:
+        mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        view = MissionBattleView(player_card, copy.deepcopy(mission["encounters"][2]), 1, 3, 4, mission_data=mission)
+        view.player_hp = 12
+        interaction = _DummyInteraction(1, _DummyMessage())
+        send_mock = AsyncMock(return_value=None)
+        with patch.object(bot_module, "_safe_send_channel", new=send_mock), patch.object(
+            bot_module,
+            "add_units",
+            new=AsyncMock(),
+        ) as units_mock:
+            await view._complete_wave(interaction, None, won=True)
+        units_mock.assert_awaited_once_with(1, 1)
+        pause_call = send_mock.await_args_list[-1]
+        pause_view = pause_call.kwargs["view"]
+        self.assertIsInstance(pause_view, bot_module.MissionPauseView)
+        self.assertTrue(pause_view.mission_state["full_heal"])
+        self.assertTrue(pause_view.mission_state["unit_awarded"])
 
 
 class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):

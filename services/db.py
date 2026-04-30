@@ -197,6 +197,14 @@ async def init_db():
     )
     await db.execute(
         """
+        CREATE TABLE IF NOT EXISTS user_units (
+            user_id INTEGER PRIMARY KEY,
+            amount INTEGER DEFAULT 0
+        )
+        """
+    )
+    await db.execute(
+        """
         CREATE TABLE IF NOT EXISTS user_card_buffs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,

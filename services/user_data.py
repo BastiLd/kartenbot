@@ -37,6 +37,25 @@ async def get_infinitydust(user_id):
         return row[0] if row and row[0] else 0
 
 
+async def add_units(user_id: int, amount: int = 1) -> None:
+    if amount <= 0:
+        return
+    async with db_context() as db:
+        await db.execute(
+            "INSERT INTO user_units (user_id, amount) VALUES (?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET amount = amount + excluded.amount",
+            (user_id, int(amount)),
+        )
+        await db.commit()
+
+
+async def get_units(user_id: int) -> int:
+    async with db_context() as db:
+        cursor = await db.execute("SELECT amount FROM user_units WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        return int(row[0] or 0) if row else 0
+
+
 async def spend_infinitydust(user_id, amount):
     async with db_context() as db:
         cursor = await db.execute("SELECT amount FROM user_infinitydust WHERE user_id = ?", (user_id,))
@@ -390,6 +409,7 @@ async def delete_user_data(user_id: int) -> None:
         await db.execute("DELETE FROM user_teams WHERE user_id = ?", (user_id,))
         await db.execute("DELETE FROM user_daily WHERE user_id = ?", (user_id,))
         await db.execute("DELETE FROM user_infinitydust WHERE user_id = ?", (user_id,))
+        await db.execute("DELETE FROM user_units WHERE user_id = ?", (user_id,))
         await db.execute("DELETE FROM user_card_buffs WHERE user_id = ?", (user_id,))
         await db.execute("DELETE FROM user_seen_channels WHERE user_id = ?", (user_id,))
         await db.execute("DELETE FROM tradingpost WHERE seller_id = ?", (user_id,))

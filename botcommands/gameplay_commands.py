@@ -1,7 +1,6 @@
 ﻿from __future__ import annotations
 
 import logging
-import random
 from types import ModuleType
 
 import discord
@@ -31,19 +30,10 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
                 )
                 return
 
-        waves = random.randint(2, 6)
-        reward_card = module.random_gameplay_card(module.karten, alpha_enabled=module.ALPHA_PHASE_ENABLED)
-        mission_title = f"Mission {mission_count + 1}/2" if not is_admin_user else "Mission (Admin)"
-        mission_description = "Hier kommt sp\u00e4ter die Story. Hier kommt sp\u00e4ter die Story."
-
-        mission_data = {
-            "waves": waves,
-            "reward_card": reward_card,
-            "current_wave": 0,
-            "player_card": None,
-            "title": mission_title,
-            "description": mission_description,
-        }
+        mission_data = module.build_operation_broken_timeline_mission(
+            mission_number=mission_count + 1,
+            is_admin=is_admin_user,
+        )
         embed = module._build_mission_embed(mission_data)
         mission_thread = await module._create_required_private_mission_thread(interaction)
         if mission_thread is None:

@@ -2,10 +2,13 @@ ALLOWED_EFFECT_TYPES = frozenset(
     {
         "absorb_store",
         "airborne_two_phase",
+        "attack_heal",
         "blind",
         "burning",
         "bleeding",
         "cap_damage",
+        "capped_damage_multiplier",
+        "clear_negative_effects",
         "damage_boost",
         "damage_reduction",
         "damage_reduction_flat",
@@ -26,6 +29,7 @@ ALLOWED_EFFECT_TYPES = frozenset(
         "interrupt_enemy_standard_or_heal_self",
         "mix_heal_or_max",
         "next_attack_flat_penalty",
+        "next_standard_damage_override",
         "reset_own_cooldown",
         "enemy_force_min_damage",
         "enemy_next_special_self_damage",
@@ -43,6 +47,7 @@ ALLOWED_EFFECT_TYPES = frozenset(
         "poison",
         "reflect",
         "regen",
+        "random_pym_debuff",
         "special_lock",
         "stun",
     }
@@ -197,12 +202,19 @@ def _validate_effect(effect, path: str, issues: list[str]) -> None:
 
     if effect_type in {"burning", "poison", "bleeding"}:
         _validate_amount_range(effect.get("duration"), path, "duration", issues, minimum=1)
-        _validate_int(effect.get("damage"), path, "damage", issues, minimum=1)
+        _validate_amount_range(effect.get("damage"), path, "damage", issues, minimum=1)
     elif effect_type == "damage_multiplier":
         _validate_number(effect.get("multiplier"), path, "multiplier", issues, minimum=0.0)
         _validate_int(effect.get("uses"), path, "uses", issues, minimum=1)
+    elif effect_type == "capped_damage_multiplier":
+        _validate_number(effect.get("multiplier"), path, "multiplier", issues, minimum=1.0)
+        _validate_amount_range(effect.get("max_bonus"), path, "max_bonus", issues, minimum=0)
+        _validate_int(effect.get("uses"), path, "uses", issues, minimum=1)
     elif effect_type == "damage_boost":
-        _validate_int(effect.get("amount"), path, "amount", issues, minimum=1)
+        _validate_amount_range(effect.get("amount"), path, "amount", issues, minimum=1)
+        _validate_int(effect.get("uses"), path, "uses", issues, minimum=1)
+    elif effect_type == "attack_heal":
+        _validate_amount_range(effect.get("amount"), path, "amount", issues, minimum=1)
         _validate_int(effect.get("uses"), path, "uses", issues, minimum=1)
     elif effect_type == "damage_reduction_sequence":
         sequence = effect.get("sequence")
@@ -216,13 +228,13 @@ def _validate_effect(effect, path: str, issues: list[str]) -> None:
         if defense not in ALLOWED_DEFENSES:
             issues.append(f"{path}: defense '{defense}' ist ungueltig")
     elif effect_type == "enemy_next_attack_reduction_flat":
-        _validate_int(effect.get("amount"), path, "amount", issues, minimum=0)
+        _validate_amount_range(effect.get("amount"), path, "amount", issues, minimum=0)
         _validate_int(effect.get("turns"), path, "turns", issues, minimum=1)
     elif effect_type == "enemy_next_attack_reduction_percent":
         _validate_probability(effect.get("percent"), path, "percent", issues)
         _validate_int(effect.get("turns"), path, "turns", issues, minimum=1)
     elif effect_type == "evade":
-        _validate_int(effect.get("counter"), path, "counter", issues, minimum=0)
+        _validate_amount_range(effect.get("counter"), path, "counter", issues, minimum=0)
     elif effect_type == "guaranteed_hit":
         _validate_int(effect.get("uses"), path, "uses", issues, minimum=1)
     elif effect_type == "mix_heal_or_max":
@@ -243,18 +255,18 @@ def _validate_effect(effect, path: str, issues: list[str]) -> None:
             if cap_value not in ALLOWED_CAP_DAMAGE_TOKENS:
                 issues.append(f"{path}: max_damage token '{cap_value}' ist ungueltig")
         elif cap_value is not None:
-            _validate_int(cap_value, path, "max_damage", issues, minimum=0)
+            _validate_amount_range(cap_value, path, "max_damage", issues, minimum=0)
         else:
             issues.append(f"{path}: max_damage fehlt")
     elif effect_type == "airborne_two_phase":
         _validate_amount_range(effect.get("landing_damage"), path, "landing_damage", issues, minimum=0)
     elif effect_type == "shield":
-        _validate_int(effect.get("hp"), path, "hp", issues, minimum=1)
+        _validate_amount_range(effect.get("hp"), path, "hp", issues, minimum=1)
         break_counter = effect.get("break_counter")
         if break_counter is not None:
             _validate_int(break_counter, path, "break_counter", issues, minimum=0)
     elif effect_type in {"enemy_attack_self_damage", "enemy_special_self_damage", "enemy_next_special_self_damage", "heal_curse"}:
-        _validate_int(effect.get("amount") or effect.get("damage"), path, "amount", issues, minimum=0)
+        _validate_amount_range(effect.get("amount") or effect.get("damage"), path, "amount", issues, minimum=0)
         turns = effect.get("turns")
         if turns is not None:
             _validate_int(turns, path, "turns", issues, minimum=1)
@@ -264,7 +276,12 @@ def _validate_effect(effect, path: str, issues: list[str]) -> None:
         _validate_int(effect.get("amount"), path, "amount", issues, minimum=1)
         _validate_int(effect.get("turns"), path, "turns", issues, minimum=1)
     elif effect_type == "next_attack_flat_penalty":
-        _validate_int(effect.get("amount"), path, "amount", issues, minimum=1)
+        _validate_amount_range(effect.get("amount"), path, "amount", issues, minimum=1)
+    elif effect_type == "next_standard_damage_override":
+        _validate_amount_range(effect.get("damage"), path, "damage", issues, minimum=0)
+        turns = effect.get("turns")
+        if turns is not None:
+            _validate_int(turns, path, "turns", issues, minimum=1)
     elif effect_type == "burn_multiplier":
         _validate_number(effect.get("multiplier"), path, "multiplier", issues, minimum=1.0)
         _validate_int(effect.get("uses"), path, "uses", issues, minimum=1)

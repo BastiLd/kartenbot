@@ -1,4 +1,5 @@
 import logging
+import random
 from typing import TypeAlias, TypedDict
 
 from services.battle import apply_outgoing_attack_modifier
@@ -43,6 +44,16 @@ def _safe_float(value: object, default: float = 0.0) -> float:
         except ValueError:
             return default
     return default
+
+
+def _roll_amount(value: object, default: int = 0) -> int:
+    if isinstance(value, list) and len(value) == 2:
+        min_value = max(0, _safe_int(value[0], default))
+        max_value = max(min_value, _safe_int(value[1], min_value))
+        if max_value <= min_value:
+            return min_value
+        return random.randint(min_value, max_value)
+    return max(0, _safe_int(value, default))
 
 
 class BattleRuntimeMaps(TypedDict):
@@ -252,7 +263,7 @@ def queue_delayed_defense(
     delayed_defense_queue: BattleEffectsMap,
     player_id: int,
     defense: str,
-    counter: int = 0,
+    counter: int | list[int] = 0,
     source: str | None = None,
 ) -> None:
     defense_mode = str(defense or "").strip().lower()
@@ -261,7 +272,7 @@ def queue_delayed_defense(
     delayed_defense_queue[player_id].append(
         {
             "defense": defense_mode,
-            "counter": max(0, int(counter)),
+            "counter": counter if isinstance(counter, list) else max(0, int(counter)),
             "source": str(source or "").strip() or None,
         }
     )
@@ -272,13 +283,13 @@ def queue_incoming_modifier(
     player_id: int,
     *,
     percent: float = 0.0,
-    flat: int = 0,
+    flat: int | list[int] = 0,
     reflect: float = 0.0,
     store_ratio: float = 0.0,
     max_store: int | None = None,
-    cap: int | str | None = None,
+    cap: int | list[int] | str | None = None,
     evade: bool = False,
-    counter: int = 0,
+    counter: int | list[int] = 0,
     turns: int = 1,
     source: str | None = None,
 ) -> None:
@@ -288,13 +299,17 @@ def queue_incoming_modifier(
         incoming_modifiers[player_id].append(
             {
                 "percent": max(0.0, float(percent)),
-                "flat": max(0, int(flat)),
+                "flat": flat if isinstance(flat, list) else max(0, int(flat)),
                 "reflect": max(0.0, float(reflect)),
                 "store_ratio": max(0.0, float(store_ratio)),
                 "max_store": (max(0, int(max_store)) if max_store is not None else None),
-                "cap": ("attack_min" if str(cap).strip().lower() == "attack_min" else (int(cap) if cap is not None else None)),
+                "cap": (
+                    "attack_min"
+                    if str(cap).strip().lower() == "attack_min"
+                    else (cap if isinstance(cap, list) else (int(cap) if cap is not None else None))
+                ),
                 "evade": bool(evade),
-                "counter": max(0, int(counter)),
+                "counter": counter if isinstance(counter, list) else max(0, int(counter)),
                 "source": str(source or "").strip() or None,
             }
         )
@@ -321,7 +336,7 @@ def activate_delayed_defense_after_attack(
         source = str(entry.get("source") or "").strip()
         source_prefix = f"{source}: " if source else ""
         if defense_mode == "evade":
-            counter = _safe_int(entry.get("counter", 0))
+            counter = entry.get("counter", 0)
             queue_incoming_modifier(
                 incoming_modifiers,
                 player_id,
@@ -489,7 +504,7 @@ def queue_outgoing_attack_modifier(
     player_id: int,
     *,
     percent: float = 0.0,
-    flat: int = 0,
+    flat: int | list[int] = 0,
     turns: int = 1,
     source: str | None = None,
 ) -> None:
@@ -499,7 +514,7 @@ def queue_outgoing_attack_modifier(
         outgoing_attack_modifiers[player_id].append(
             {
                 "percent": max(0.0, float(percent)),
-                "flat": max(0, int(flat)),
+                "flat": flat if isinstance(flat, list) else max(0, int(flat)),
                 "source": str(source or "").strip() or None,
             }
         )
@@ -516,7 +531,7 @@ def apply_outgoing_attack_modifiers(
     final_damage, overflow = apply_outgoing_attack_modifier(
         raw_damage,
         percent=_safe_float(modifier.get("percent", 0.0)),
-        flat=_safe_int(modifier.get("flat", 0)),
+        flat=_roll_amount(modifier.get("flat", 0)),
     )
     return final_damage, overflow, modifier
 
@@ -546,7 +561,7 @@ def resolve_incoming_modifiers(
     if ignore_all_defense:
         return max(0, int(raw_damage)), 0, False, 0, modifier
     if modifier.get("evade") and not ignore_evade:
-        return 0, 0, True, int(modifier.get("counter", 0) or 0), modifier
+        return 0, 0, True, _roll_amount(modifier.get("counter", 0)), modifier
 
     damage = max(0, int(raw_damage))
     prevented = 0
@@ -557,7 +572,7 @@ def resolve_incoming_modifiers(
         damage -= cut
         prevented += cut
 
-    flat = int(modifier.get("flat", 0) or 0)
+    flat = _roll_amount(modifier.get("flat", 0))
     if flat > 0:
         cut = min(flat, damage)
         damage -= cut
@@ -566,6 +581,8 @@ def resolve_incoming_modifiers(
     cap = modifier.get("cap")
     if isinstance(cap, str) and cap.strip().lower() == "attack_min":
         cap_value = max(0, int(incoming_min_damage or 0))
+    elif isinstance(cap, list):
+        cap_value = _roll_amount(cap)
     elif cap is not None:
         cap_value = max(0, int(cap))
     else:
@@ -578,7 +595,7 @@ def resolve_incoming_modifiers(
     reflect_ratio = float(modifier.get("reflect", 0.0) or 0.0)
     reflected = int(round(prevented * reflect_ratio)) if reflect_ratio > 0 else 0
     if prevented > 0:
-        reflected += max(0, int(modifier.get("reflect_flat", 0) or 0))
+        reflected += _roll_amount(modifier.get("reflect_flat", 0))
 
     store_ratio = float(modifier.get("store_ratio", 0.0) or 0.0)
     if store_ratio > 0 and prevented > 0:
@@ -602,7 +619,7 @@ def apply_regen_tick(
     for effect in active_effects.get(player_id, []):
         if effect.get("type") != "regen":
             continue
-        heal = int(effect.get("heal", 0) or 0)
+        heal = _roll_amount(effect.get("heal", 0))
         total += heal_player(hp_by_player, max_hp_by_player, player_id, heal)
         effect["duration"] = int(effect.get("duration", 0) or 0) - 1
         if effect["duration"] <= 0:

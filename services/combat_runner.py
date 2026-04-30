@@ -613,6 +613,8 @@ class CombatRunner:
             if eff_type == "stun" and bot_module._shield_has_stun_immunity(self.active_effects, target_id):
                 self._append_effect_event(effect_events, "Betaeubung abgewehrt: Schild schuetzt vor Stun.")
                 continue
+            if bot_module._apply_word_runtime_effect(self, effect_events, eff_type=eff_type, target_id=target_id, attack_name=attack_name):
+                continue
             if eff_type == "stealth":
                 self.grant_stealth(target_id)
             elif bot_module._is_dot_effect_type(eff_type):
@@ -634,15 +636,39 @@ class CombatRunner:
             elif eff_type == "stun":
                 self.stunned_next_turn[target_id] = True
             elif eff_type == "damage_boost":
-                amount = int(effect.get("amount", 0) or 0)
+                amount = bot_module._effect_amount(effect, "amount", 0)
                 uses = int(effect.get("uses", 1) or 1)
                 self.pending_flat_bonus[target_id] = max(self.pending_flat_bonus.get(target_id, 0), amount)
                 self.pending_flat_bonus_uses[target_id] = max(self.pending_flat_bonus_uses.get(target_id, 0), uses)
+            elif eff_type == "attack_heal":
+                uses = int(effect.get("uses", 1) or 1)
+                bot_module._append_active_effect(self.active_effects, target_id, "attack_heal", actor_id, amount=effect.get("amount", 0), uses=uses, source=attack_name)
             elif eff_type == "damage_multiplier":
                 mult = float(effect.get("multiplier", 1.0) or 1.0)
                 uses = int(effect.get("uses", 1) or 1)
                 self.pending_multiplier[target_id] = max(self.pending_multiplier.get(target_id, 1.0), mult)
                 self.pending_multiplier_uses[target_id] = max(self.pending_multiplier_uses.get(target_id, 0), uses)
+            elif eff_type == "capped_damage_multiplier":
+                bot_module._append_active_effect(
+                    self.active_effects,
+                    target_id,
+                    "capped_damage_multiplier",
+                    actor_id,
+                    multiplier=max(1.0, float(effect.get("multiplier", 1.0) or 1.0)),
+                    max_bonus=effect.get("max_bonus", 0),
+                    uses=max(1, int(effect.get("uses", 1) or 1)),
+                    source=attack_name,
+                )
+            elif eff_type == "next_standard_damage_override":
+                bot_module._append_active_effect(
+                    self.active_effects,
+                    target_id,
+                    "next_standard_damage_override",
+                    actor_id,
+                    turns=max(1, int(effect.get("turns", 1) or 1)),
+                    damage=effect.get("damage", 0),
+                    source=attack_name,
+                )
             elif eff_type == "force_max":
                 uses = int(effect.get("uses", 1) or 1)
                 self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
@@ -663,7 +689,7 @@ class CombatRunner:
                 turns = max(1, int(effect.get("turns", 1) or 1))
                 bot_module._append_active_effect(self.active_effects, target_id, "disable_enemy_evade_and_block", actor_id, turns=turns, source=attack_name)
             elif eff_type == "shield":
-                shield_hp = max(1, int(effect.get("hp", 1) or 1))
+                shield_hp = max(1, bot_module._effect_amount(effect, "hp", 1))
                 existing_shield = bot_module._shield_entry(self.active_effects, target_id)
                 if existing_shield is not None:
                     bot_module._remove_active_effect(self.active_effects, target_id, existing_shield)
@@ -691,7 +717,7 @@ class CombatRunner:
                     self.attack_cooldowns[defender_id][last_index] = max(0, int(self.attack_cooldowns[defender_id].get(last_index, 0) or 0)) + bonus
             elif eff_type == "incoming_damage_bonus":
                 turns = max(1, int(effect.get("turns", 1) or 1))
-                amount = max(0, int(effect.get("amount", 0) or 0))
+                amount = max(0, bot_module._effect_amount(effect, "amount", 0))
                 bot_module._append_active_effect(self.active_effects, target_id, "incoming_damage_bonus", actor_id, turns=turns, amount=amount, source=attack_name)
             elif eff_type == "interrupt_enemy_standard_or_heal_self":
                 turns = max(1, int(effect.get("turns", 1) or 1))
@@ -705,7 +731,7 @@ class CombatRunner:
                 bot_module._append_active_effect(self.active_effects, target_id, "heal_curse", actor_id, turns=turns, damage=int(effect.get("damage", effect.get("amount", 0)) or 0), source=attack_name)
             elif eff_type == "next_attack_flat_penalty":
                 turns = max(1, int(effect.get("turns", 1) or 1))
-                bot_module._append_active_effect(self.active_effects, target_id, "next_attack_flat_penalty", actor_id, turns=turns, amount=int(effect.get("amount", 0) or 0), source=attack_name)
+                bot_module._append_active_effect(self.active_effects, target_id, "next_attack_flat_penalty", actor_id, turns=turns, amount=effect.get("amount", 0), source=attack_name)
             elif eff_type == "enemy_force_min_damage":
                 turns = max(1, int(effect.get("turns", 1) or 1))
                 bot_module._append_active_effect(self.active_effects, target_id, "enemy_force_min_damage", actor_id, turns=turns, source=attack_name)
@@ -729,7 +755,7 @@ class CombatRunner:
                     for pct in sequence:
                         self.queue_incoming_modifier(target_id, percent=float(pct or 0.0), turns=1, source=attack_name)
             elif eff_type == "damage_reduction_flat":
-                amount = int(effect.get("amount", 0) or 0)
+                amount = effect.get("amount", 0)
                 turns = int(effect.get("turns", 1) or 1)
                 self.queue_incoming_modifier(target_id, flat=amount, turns=turns, source=attack_name)
             elif eff_type == "enemy_next_attack_reduction_percent":
@@ -737,13 +763,13 @@ class CombatRunner:
                 turns = int(effect.get("turns", 1) or 1)
                 self.queue_outgoing_attack_modifier(target_id, percent=percent, turns=turns, source=attack_name)
             elif eff_type == "enemy_next_attack_reduction_flat":
-                amount = int(effect.get("amount", 0) or 0)
+                amount = effect.get("amount", 0)
                 turns = int(effect.get("turns", 1) or 1)
                 self.queue_outgoing_attack_modifier(target_id, flat=amount, turns=turns, source=attack_name)
             elif eff_type == "reflect":
                 reduce_percent = float(effect.get("reduce_percent", 0.0) or 0.0)
                 reflect_ratio = float(effect.get("reflect_ratio", 0.0) or 0.0)
-                reflect_flat = int(effect.get("flat", 0) or 0)
+                reflect_flat = effect.get("flat", 0)
                 self.queue_incoming_modifier(target_id, percent=reduce_percent, reflect=reflect_ratio, flat=0, turns=1, source=attack_name)
                 if self.incoming_modifiers.get(target_id):
                     self.incoming_modifiers[target_id][-1]["reflect_flat"] = reflect_flat
@@ -756,9 +782,9 @@ class CombatRunner:
                 if str(cap_setting).strip().lower() == "attack_min":
                     self.queue_incoming_modifier(target_id, cap="attack_min", turns=1, source=attack_name)
                 else:
-                    self.queue_incoming_modifier(target_id, cap=int(cap_setting or 0), turns=1, source=attack_name)
+                    self.queue_incoming_modifier(target_id, cap=cap_setting, turns=1, source=attack_name)
             elif eff_type == "evade":
-                counter = int(effect.get("counter", 0) or 0)
+                counter = effect.get("counter", 0)
                 self.queue_incoming_modifier(target_id, evade=True, counter=counter, turns=1, source=attack_name)
             elif eff_type == "special_lock":
                 turns = max(1, int(effect.get("turns", 1) or 1))
@@ -768,7 +794,7 @@ class CombatRunner:
                 self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
             elif eff_type == "regen":
                 turns = int(effect.get("turns", 1) or 1)
-                heal = int(effect.get("heal", 0) or 0)
+                heal = effect.get("heal", 0)
                 self.active_effects[target_id].append({"type": "regen", "duration": turns, "heal": heal, "applier": actor_id})
             elif eff_type == "heal":
                 heal_data_effect = effect.get("amount", 0)
@@ -778,7 +804,7 @@ class CombatRunner:
                 bot_module._apply_mix_heal_or_max_effect(self, target_id, effect, effect_events)
             elif eff_type == "delayed_defense_after_next_attack":
                 defense_mode = str(effect.get("defense", "")).strip().lower()
-                counter = int(effect.get("counter", 0) or 0)
+                counter = effect.get("counter", 0)
                 self.queue_delayed_defense(target_id, defense_mode, counter=counter, source=attack_name)
             elif eff_type == "airborne_two_phase":
                 self.start_airborne_two_phase(target_id, effect.get("landing_damage", [20, 40]), effect_events, landing_attack=(effect.get("landing_attack") if isinstance(effect.get("landing_attack"), dict) else None), source_attack_index=attack_index if not is_forced_landing else None, cooldown_turns=bot_module._maybe_int(attack.get("cooldown_turns", 0)) or 0)
@@ -985,6 +1011,22 @@ class CombatRunner:
                     self.consume_stealth(defender_id)
 
             if attack_hits_enemy and actual_damage > 0:
+                before_override = int(actual_damage)
+                actual_damage, override_effect = bot_module._consume_next_standard_damage_override(
+                    self.active_effects,
+                    actor_id,
+                    attack_index=attack_index,
+                    standard_index=standard_idx,
+                    current_damage=actual_damage,
+                )
+                if override_effect is not None and actual_damage != before_override:
+                    source = str(override_effect.get("source") or "Effekt")
+                    self._append_effect_event(effect_events, f"{source}: Standardangriff {before_override} -> {actual_damage} Schaden.")
+                before_capped = int(actual_damage)
+                actual_damage, capped_bonus, capped_effect = bot_module._consume_capped_damage_multiplier(self.active_effects, actor_id, actual_damage)
+                if capped_effect is not None and capped_bonus > 0:
+                    source = str(capped_effect.get("source") or "Geheimakte")
+                    self._append_effect_event(effect_events, f"{source}: Schaden {before_capped} -> {actual_damage} (+{capped_bonus}, max. +{bot_module._effect_amount_label(capped_effect.get('max_bonus', 0))}).")
                 boost_text = bot_module._boosted_damage_effect_text(actual_damage, attack_multiplier, applied_flat_bonus_now)
                 if boost_text:
                     self._append_effect_event(effect_events, boost_text)
@@ -1038,6 +1080,11 @@ class CombatRunner:
                 if counter_damage > 0:
                     self._apply_non_heal_damage_with_event(effect_events, actor_id, counter_damage, source="Konter-Rueckschaden", self_damage=False)
                 self._guard_non_heal_damage_result(defender_id, defender_hp_before, "headless_player_attack")
+                hit_heal, heal_effect = bot_module._consume_attack_heal(self.active_effects, actor_id)
+                if hit_heal > 0:
+                    healed_now = self.heal_player(actor_id, hit_heal)
+                    if healed_now > 0:
+                        self._append_effect_event(effect_events, f"{str((heal_effect or {}).get('source') or 'Trefferheilung')}: Treffer heilt {healed_now} HP.")
             if not attack_hits_enemy or int(actual_damage or 0) <= 0:
                 is_critical = False
 
