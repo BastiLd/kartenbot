@@ -1,27 +1,28 @@
 ﻿from __future__ import annotations
 
 import logging
-from types import ModuleType
 
 import discord
 
+from botcore.facades import GameplayFacade
 
-def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
+
+def register_gameplay_commands(bot, api: GameplayFacade) -> dict[str, object]:
     @bot.tree.command(
         name="mission",
         description="Schicke dein Team auf eine Mission und erhalte eine Belohnung",
     )
     async def mission(interaction: discord.Interaction):
-        if not await module.is_channel_allowed(interaction):
+        if not await api.is_channel_allowed(interaction):
             return
         await interaction.response.defer(ephemeral=True)
-        is_admin_user = await module.is_admin(interaction)
+        is_admin_user = await api.is_admin(interaction)
 
         mission_count = 0
         if not is_admin_user:
-            mission_count = await module.get_mission_count(interaction.user.id)
+            mission_count = await api.get_mission_count(interaction.user.id)
             if mission_count >= 2:
-                await module._send_ephemeral(
+                await api._send_ephemeral(
                     interaction,
                     content=(
                         "\u274c Du hast heute bereits deine 2 Missionen "
@@ -30,33 +31,33 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
                 )
                 return
 
-        mission_data = module.build_operation_broken_timeline_mission(
+        mission_data = api.build_operation_broken_timeline_mission(
             mission_number=mission_count + 1,
             is_admin=is_admin_user,
         )
-        embed = module._build_mission_embed(mission_data)
-        mission_thread = await module._create_required_private_mission_thread(interaction)
+        embed = api._build_mission_embed(mission_data)
+        mission_thread = await api._create_required_private_mission_thread(interaction)
         if mission_thread is None:
             return
 
-        request_id = await module.create_mission_request(
+        request_id = await api.create_mission_request(
             guild_id=interaction.guild_id or 0,
             channel_id=mission_thread.id,
             user_id=interaction.user.id,
             mission_data=mission_data,
-            visibility=module.VISIBILITY_PRIVATE,
+            visibility=api.VISIBILITY_PRIVATE,
             is_admin=is_admin_user,
         )
-        mission_view = module.MissionAcceptView(
+        mission_view = api.MissionAcceptView(
             interaction.user.id,
             mission_data,
             request_id=request_id,
-            visibility=module.VISIBILITY_PRIVATE,
+            visibility=api.VISIBILITY_PRIVATE,
             is_admin=is_admin_user,
         )
-        message = await module._safe_send_channel(interaction, mission_thread, embed=embed, view=mission_view)
+        message = await api._safe_send_channel(interaction, mission_thread, embed=embed, view=mission_view)
         if isinstance(message, discord.Message):
-            await module.update_mission_request_message(request_id, message.id, message.channel.id)
+            await api.update_mission_request_message(request_id, message.id, message.channel.id)
             await interaction.followup.send(f"Mission-Thread erstellt: {mission_thread.mention}", ephemeral=True)
         else:
             await interaction.followup.send(
@@ -66,21 +67,21 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
 
     @bot.tree.command(name="geschichte", description="Starte eine interaktive Story")
     async def story(interaction: discord.Interaction):
-        if not await module.is_channel_allowed(interaction):
+        if not await api.is_channel_allowed(interaction):
             return
-        visibility_key = module.command_visibility_key_for_interaction(interaction)
+        visibility_key = api.command_visibility_key_for_interaction(interaction)
         visibility = (
-            await module.get_message_visibility(interaction.guild_id, visibility_key)
+            await api.get_message_visibility(interaction.guild_id, visibility_key)
             if visibility_key
-            else module.VISIBILITY_PRIVATE
+            else api.VISIBILITY_PRIVATE
         )
-        ephemeral = visibility != module.VISIBILITY_PUBLIC
-        view = module.StorySelectView(interaction.user.id)
+        ephemeral = visibility != api.VISIBILITY_PUBLIC
+        view = api.StorySelectView(interaction.user.id)
         embed = discord.Embed(
             title="\U0001F4D6 Story ausw\u00e4hlen",
             description="W\u00e4hle eine Story aus der Liste. Aktuell verf\u00fcgbar: **text**",
         )
-        await module._send_with_visibility(interaction, visibility_key, embed=embed, view=view)
+        await api._send_with_visibility(interaction, visibility_key, embed=embed, view=view)
         await view.wait()
         if not view.value:
             await interaction.followup.send(
@@ -89,13 +90,13 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
             )
             return
 
-        story_view = module.StoryPlayerView(interaction.user.id, view.value)
+        story_view = api.StoryPlayerView(interaction.user.id, view.value)
         start_embed = story_view.render_step_embed()
         await interaction.followup.send(embed=start_embed, view=story_view, ephemeral=ephemeral)
 
     @bot.tree.command(name="kampf", description="Fordere einen anderen Spieler im 1v1 heraus!")
     async def fight(interaction: discord.Interaction):
-        if not await module.is_channel_allowed(interaction):
+        if not await api.is_channel_allowed(interaction):
             return
 
         try:
@@ -108,7 +109,7 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
         if isinstance(interaction.channel, discord.Thread):
             public_result_channel_id = int(interaction.channel.parent_id or interaction.channel_id or 0)
 
-        user_karten = await module.get_user_karten(interaction.user.id)
+        user_karten = await api.get_user_karten(interaction.user.id)
         if not user_karten:
             await interaction.followup.send(
                 "Du brauchst mindestens 1 Karte f\u00fcr den Kampf!",
@@ -116,7 +117,7 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
             )
             return
 
-        card_select_view = module.CardSelectView(interaction.user.id, user_karten, 1)
+        card_select_view = api.CardSelectView(interaction.user.id, user_karten, 1)
         await interaction.followup.send(
             "W\u00e4hle deine Karte f\u00fcr den 1v1-Kampf:",
             view=card_select_view,
@@ -131,9 +132,9 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
             return
 
         selected_names = card_select_view.value
-        selected_cards = [await module.get_karte_by_name(name) for name in selected_names]
+        selected_cards = [await api.get_karte_by_name(name) for name in selected_names]
 
-        view = module.OpponentSelectView(interaction.user, interaction.guild)
+        view = api.OpponentSelectView(interaction.user, interaction.guild)
         await interaction.followup.send(
             "W\u00e4hle einen Gegner (User oder Bot):",
             view=view,
@@ -149,12 +150,12 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
 
         opponent_id = view.value
         if opponent_id == "bot":
-            fight_thread = await module._create_required_private_fight_thread(interaction)
+            fight_thread = await api._create_required_private_fight_thread(interaction)
             if fight_thread is None:
                 return
             target_channel = fight_thread
-            bot_card = module.random_gameplay_card(module.karten, alpha_enabled=module.ALPHA_PHASE_ENABLED)
-            battle_view = module.BattleView(
+            bot_card = api.random_gameplay_card(api.karten, alpha_enabled=api.ALPHA_PHASE_ENABLED)
+            battle_view = api.BattleView(
                 selected_cards[0],
                 bot_card,
                 interaction.user.id,
@@ -171,15 +172,15 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
                     self.mention = "**Bot**"
 
             bot_user = BotUser()
-            log_message = await module._safe_send_channel(
+            log_message = await api._safe_send_channel(
                 interaction,
                 target_channel,
-                embed=module.create_battle_log_embed(),
+                embed=api.create_battle_log_embed(),
             )
             if isinstance(log_message, discord.Message):
                 battle_view.battle_log_message = log_message
 
-            embed = module.create_battle_embed(
+            embed = api.create_battle_embed(
                 selected_cards[0],
                 bot_card,
                 battle_view.player1_hp,
@@ -187,11 +188,11 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
                 interaction.user.id,
                 interaction.user,
                 bot_user,
-                current_attack_infos=module._build_attack_info_lines(selected_cards[0]),
+                current_attack_infos=api._build_attack_info_lines(selected_cards[0]),
                 recent_log_lines=battle_view._recent_log_lines,
                 highlight_tone=battle_view._last_highlight_tone,
             )
-            battle_message = await module._safe_send_channel(interaction, target_channel, embed=embed, view=battle_view)
+            battle_message = await api._safe_send_channel(interaction, target_channel, embed=embed, view=battle_view)
             if battle_message is None:
                 return
             if isinstance(battle_message, discord.Message):
@@ -206,13 +207,13 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
         if not challenged:
             await interaction.followup.send("\u274c Gegner nicht gefunden!", ephemeral=True)
             return
-        fight_thread = await module._create_required_private_fight_thread(interaction, challenged=challenged)
+        fight_thread = await api._create_required_private_fight_thread(interaction, challenged=challenged)
         if fight_thread is None:
             return
         target_channel = fight_thread
         thread_created = True
 
-        request_id = await module.create_fight_request(
+        request_id = await api.create_fight_request(
             guild_id=interaction.guild_id or 0,
             origin_channel_id=public_result_channel_id or 0,
             message_channel_id=getattr(target_channel, "id", 0) or 0,
@@ -222,7 +223,7 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
             challenged_id=challenged.id,
             challenger_card=selected_cards[0]["name"],
         )
-        challenge_view = module.ChallengeResponseView(
+        challenge_view = api.ChallengeResponseView(
             interaction.user.id,
             challenged.id,
             selected_cards[0]["name"],
@@ -231,17 +232,17 @@ def register_gameplay_commands(bot, module: ModuleType) -> dict[str, object]:
             thread_id=fight_thread.id,
             thread_created=thread_created,
         )
-        message = await module._safe_send_channel(
+        message = await api._safe_send_channel(
             interaction,
             target_channel,
-            content=module._fight_challenge_prompt(challenged.mention, selected_cards[0]["name"]),
+            content=api._fight_challenge_prompt(challenged.mention, selected_cards[0]["name"]),
             view=challenge_view,
         )
         if message is None:
-            await module.claim_fight_request(request_id, "failed")
-            await module._maybe_delete_fight_thread(fight_thread.id if fight_thread else None, thread_created)
+            await api.claim_fight_request(request_id, "failed")
+            await api._maybe_delete_fight_thread(fight_thread.id if fight_thread else None, thread_created)
             return
-        await module.update_fight_request_message(request_id, message.id, getattr(message.channel, "id", None))
+        await api.update_fight_request_message(request_id, message.id, getattr(message.channel, "id", None))
         await interaction.followup.send(f"Warte auf Antwort von {challenged.mention}...", ephemeral=True)
 
     return {

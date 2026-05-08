@@ -26,6 +26,8 @@ from botcommands import (
     register_gameplay_commands,
     register_player_commands,
 )
+from botcore.command_api import build_command_api
+from botcore.facades import AdminFacade, GameplayFacade, PlayerFacade
 from botcore.bootstrap import BOT_START_TIME, build_bot, run_bot
 from botcore.interaction_utils import defer_interaction, edit_interaction_message, send_interaction_response
 from botcore.logging_utils import LOG_PATH, configure_logging, get_error_count
@@ -1689,6 +1691,45 @@ def _heal_label_for_attack(attack: dict) -> str | None:
     return None
 
 
+def _utility_label_for_attack(attack: dict) -> str | None:
+    effect_types: list[str] = []
+    for effect in attack.get("effects", []):
+        eff_type = str(effect.get("type") or "").strip().lower()
+        if eff_type:
+            effect_types.append(eff_type)
+
+    # Prefer concise, user-facing labels for non-damage actions.
+    labels: list[str] = []
+    for eff_type in effect_types:
+        if eff_type in {"force_max", "guaranteed_hit"}:
+            if "Maximalschaden" not in labels:
+                labels.append("Maximalschaden")
+        elif eff_type == "evade":
+            if "Ausweichen" not in labels:
+                labels.append("Ausweichen")
+        elif eff_type == "reflect":
+            if "Reflektieren" not in labels:
+                labels.append("Reflektieren")
+        elif eff_type == "shield":
+            if "Schild" not in labels:
+                labels.append("Schild")
+        elif eff_type in {"clear_negative_effects", "status_immunity"}:
+            if "Reinigen/Immun" not in labels:
+                labels.append("Reinigen/Immun")
+        elif eff_type in {"stun", "blind", "special_lock", "standard_lock"}:
+            if "Kontrolle" not in labels:
+                labels.append("Kontrolle")
+        elif eff_type in {"increase_last_enemy_special_cooldown", "increase_random_enemy_cooldown"}:
+            if "Cooldown" not in labels:
+                labels.append("Cooldown")
+
+    if labels:
+        return ", ".join(labels[:2])
+    if effect_types:
+        return "Effekt"
+    return None
+
+
 def _attack_has_heal_component(attack: dict) -> bool:
     heal_data = attack.get("heal")
     if isinstance(heal_data, list) and len(heal_data) == 2:
@@ -2041,6 +2082,12 @@ def _attack_display_parts(attack: dict, *, max_only_bonus: int = 0) -> tuple[str
         summary = f"{attack_name} — {heal_label}{effects_label}"
         return label, style, summary
     min_dmg, max_dmg = _attack_total_damage_range(attack, max_only_bonus=max_only_bonus, flat_bonus=0)
+    if min_dmg == 0 and max_dmg == 0:
+        utility = _utility_label_for_attack(attack) or "Effekt"
+        label = f"{attack_name} ({utility}){effects_label}"
+        style = _resolve_attack_button_style(attack, discord.ButtonStyle.secondary)
+        summary = f"{attack_name} — {utility}{effects_label}"
+        return label, style, summary
     damage_text = f"{min_dmg}-{max_dmg}"
     buff_text = f" (+{max_only_bonus} max)" if max_only_bonus > 0 else ""
     label = f"{attack_name} ({damage_text}{buff_text}){effects_label}"
@@ -8226,16 +8273,23 @@ class DustAmountSelect(ui.Select):
         super().__init__(placeholder="Wähle die Infinitydust-Menge...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        dust_amount = int(self.values[0])
+        # Respond quickly to avoid Discord's 3s interaction timeout.
+        await defer_interaction(interaction, ephemeral=True)
+        try:
+            dust_amount = int(self.values[0])
+        except Exception:
+            await send_interaction_response(interaction, content="❌ Ungültige Auswahl.", ephemeral=True)
+            return
+
         user_karten = await get_user_karten(interaction.user.id)
         if not user_karten:
-            await interaction.response.send_message("❌ Du hast keine Karten zum Verstärken!", ephemeral=True)
+            await send_interaction_response(interaction, content="❌ Du hast keine Karten zum Verstärken!", ephemeral=True)
             return
 
         next_view = FuseCardSelectView(interaction.user.id, dust_amount, user_karten)
         if self.view is not None:
             self.view.stop()
-        await interaction.response.edit_message(embed=next_view.build_embed(), view=next_view)
+        await edit_interaction_message(interaction, embed=next_view.build_embed(), view=next_view)
 
 
 class FuseCancelButton(ui.Button):
@@ -8243,9 +8297,15 @@ class FuseCancelButton(ui.Button):
         super().__init__(label="Abbrechen", style=discord.ButtonStyle.danger, row=2)
 
     async def callback(self, interaction: discord.Interaction):
+        await defer_interaction(interaction, ephemeral=True)
         if self.view is not None:
             self.view.stop()
-        await interaction.response.edit_message(content="❌ Verstärkung abgebrochen.", embed=None, view=None)
+        await edit_interaction_message(
+            interaction,
+            content="❌ Verstärkung abgebrochen.",
+            embed=None,
+            view=None,
+        )
 
 
 class FuseCardActionSelect(ui.Select):
@@ -8356,7 +8416,7 @@ class FuseCardSelectView(FuseFlowView):
         search_query: str | None = None,
         page: int = 0,
     ):
-        super().__init__(requester_id, timeout=120)
+        super().__init__(requester_id, timeout=600)
         self.dust_amount = int(dust_amount)
         self.user_karten = list(user_karten)
         self.mode = str(mode or "root")
@@ -8487,8 +8547,17 @@ class FuseCardSelectView(FuseFlowView):
                 source_message=_interaction_message_or_none(interaction),
                 parent_view=self,
             )
-            await interaction.response.send_modal(modal)
+            # Modals must be sent as the initial response (no defer beforehand).
+            try:
+                await interaction.response.send_modal(modal)
+            except Exception:
+                await send_interaction_response(
+                    interaction,
+                    content="❌ Konnte das Suchfenster nicht öffnen.",
+                    ephemeral=True,
+                )
             return
+        await defer_interaction(interaction, ephemeral=True)
         if selected_value == FUSE_CARD_ACTION_BROWSE_ALL:
             next_view = FuseCardSelectView(
                 self.requester_id,
@@ -8499,21 +8568,22 @@ class FuseCardSelectView(FuseFlowView):
                 page=0,
             )
             self.stop()
-            await interaction.response.edit_message(embed=next_view.build_embed(), view=next_view)
+            await edit_interaction_message(interaction, embed=next_view.build_embed(), view=next_view)
             return
         if selected_value == FUSE_CARD_ACTION_BACK:
             next_view = FuseCardSelectView(self.requester_id, self.dust_amount, self.user_karten)
             self.stop()
-            await interaction.response.edit_message(embed=next_view.build_embed(), view=next_view)
+            await edit_interaction_message(interaction, embed=next_view.build_embed(), view=next_view)
 
     async def handle_card_selection(self, interaction: discord.Interaction, selected_card: str) -> None:
+        await defer_interaction(interaction, ephemeral=True)
         if selected_card == FUSE_CARD_EMPTY:
-            await interaction.response.send_message("❌ Du hast aktuell keine Karten zum Verstärken.", ephemeral=True)
+            await send_interaction_response(interaction, content="❌ Du hast aktuell keine Karten zum Verstärken.", ephemeral=True)
             return
 
         karte_data = await get_karte_by_name(selected_card)
         if not karte_data:
-            await interaction.response.send_message("❌ Karte nicht gefunden!", ephemeral=True)
+            await send_interaction_response(interaction, content="❌ Karte nicht gefunden!", ephemeral=True)
             return
 
         user_buffs = await get_card_buffs(interaction.user.id, selected_card)
@@ -8525,27 +8595,30 @@ class FuseCardSelectView(FuseFlowView):
             user_buffs,
         )
         self.stop()
-        await interaction.response.edit_message(
+        await edit_interaction_message(
+            interaction,
             embed=_build_fuse_buff_type_embed(selected_card, karte_data, user_buffs),
             view=next_view,
         )
 
     async def _on_prev_page(self, interaction: discord.Interaction) -> None:
+        await defer_interaction(interaction, ephemeral=True)
         if self.page > 0:
             self.page -= 1
         self._render()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        await edit_interaction_message(interaction, embed=self.build_embed(), view=self)
 
     async def _on_next_page(self, interaction: discord.Interaction) -> None:
+        await defer_interaction(interaction, ephemeral=True)
         if self.page < (self._page_count() - 1):
             self.page += 1
         self._render()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        await edit_interaction_message(interaction, embed=self.build_embed(), view=self)
 
 
 class BuffTypeSelectView(FuseFlowView):
     def __init__(self, requester_id, dust_amount, selected_card, karte_data, user_buffs):
-        super().__init__(requester_id, timeout=60)
+        super().__init__(requester_id, timeout=600)
         self.dust_amount = int(dust_amount)
         self.selected_card = selected_card
         self.add_item(BuffTypeSelect(self.dust_amount, selected_card, karte_data, user_buffs))
@@ -8600,16 +8673,17 @@ class BuffTypeSelect(ui.Select):
         super().__init__(placeholder="Wähle was verstärkt werden soll...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
+        await defer_interaction(interaction, ephemeral=True)
         buff_choice = str(self.values[0] or "")
         if buff_choice == "change_card":
             user_karten = await get_user_karten(interaction.user.id)
             if not user_karten:
-                await interaction.response.send_message("❌ Du hast keine Karten zum Verstärken!", ephemeral=True)
+                await send_interaction_response(interaction, content="❌ Du hast keine Karten zum Verstärken!", ephemeral=True)
                 return
             view = FuseCardSelectView(interaction.user.id, self.dust_amount, user_karten)
             if self.view is not None:
                 self.view.stop()
-            await interaction.response.edit_message(embed=view.build_embed(), view=view)
+            await edit_interaction_message(interaction, embed=view.build_embed(), view=view)
             return
 
         buff_type, attack_num = buff_choice.split("_")
@@ -8617,7 +8691,7 @@ class BuffTypeSelect(ui.Select):
 
         karte_data = await get_karte_by_name(self.selected_card)
         if not karte_data:
-            await interaction.response.send_message("❌ Karte nicht gefunden!", ephemeral=True)
+            await send_interaction_response(interaction, content="❌ Karte nicht gefunden!", ephemeral=True)
             return
         user_buffs = await get_card_buffs(interaction.user.id, self.selected_card)
 
@@ -8628,11 +8702,11 @@ class BuffTypeSelect(ui.Select):
         if buff_type == "damage":
             attacks = karte_data.get("attacks", [])
             if attack_number <= 0 or attack_number > len(attacks):
-                await interaction.response.send_message("❌ Ungültige Attacke.", ephemeral=True)
+                await send_interaction_response(interaction, content="❌ Ungültige Attacke.", ephemeral=True)
                 return
             selected_attack = attacks[attack_number - 1]
             if not _attack_is_damage_upgradeable(selected_attack):
-                await interaction.response.send_message(
+                await send_interaction_response(
                     "❌ Nur reine Schadens-Attacken ohne Zusatzeffekte können aktuell verbessert werden.",
                     ephemeral=True,
                 )
@@ -8652,7 +8726,7 @@ class BuffTypeSelect(ui.Select):
             upgrade_cap = _attack_upgrade_max_bonus(selected_attack)
             current_max_damage = int(max_base_damage) + int(existing_buffs)
             if existing_buffs >= upgrade_cap:
-                await interaction.response.send_message(
+                await send_interaction_response(
                     "❌ Dieses Upgrade hat bereits sein Maximum erreicht.",
                     ephemeral=True,
                 )
@@ -8660,7 +8734,7 @@ class BuffTypeSelect(ui.Select):
 
             next_max_damage = current_max_damage + upgrade_step
             if next_max_damage > MAX_ATTACK_DAMAGE_PER_HIT:
-                await interaction.response.send_message(
+                await send_interaction_response(
                     (
                         f"❌ **Maximal {MAX_ATTACK_DAMAGE_PER_HIT} Schaden pro Angriff erlaubt!**\n\n"
                         f"Aktuell: **{current_max_damage}**\n"
@@ -8708,8 +8782,9 @@ class BuffTypeSelect(ui.Select):
         except Exception:
             logging.exception("Failed to apply card buff for %s", self.selected_card)
             await add_infinitydust(interaction.user.id, self.dust_amount)
-            await interaction.response.send_message(
-                "❌ Die Verstärkung ist fehlgeschlagen. Dein Infinitydust wurde zurückerstattet.",
+            await send_interaction_response(
+                interaction,
+                content="❌ Die Verstärkung ist fehlgeschlagen. Dein Infinitydust wurde zurückerstattet.",
                 ephemeral=True,
             )
             return
@@ -8742,7 +8817,7 @@ class BuffTypeSelect(ui.Select):
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
         if self.view is not None:
             self.view.stop()
-        await interaction.response.edit_message(embed=embed, view=None)
+        await edit_interaction_message(interaction, embed=embed, view=None)
 
 class InviteUserSelectView(RestrictedView):
     def __init__(self, inviter_id, available_user_ids):
@@ -8864,7 +8939,7 @@ class InviteUserSelect(ui.Select):
 
 class DustAmountView(FuseFlowView):
     def __init__(self, requester_id: int, user_dust: int):
-        super().__init__(requester_id, timeout=60)
+        super().__init__(requester_id, timeout=600)
         self.add_item(DustAmountSelect(int(user_dust)))
         self.add_item(FuseCancelButton())
 
@@ -12225,6 +12300,28 @@ class MissionBattleView(DurableView):
             # Reduce Cooldowns for User nach Bot-Zug
             self.reduce_cooldowns_user()
     
+            # Falls der Bot sich selbst/über Effekte besiegt hat, Welle sofort beenden.
+            if self.bot_hp <= 0:
+                self.result = True
+                self.stop()
+                await self._complete_wave(
+                    interaction,
+                    message,
+                    won=True,
+                    detail_text=f"🏆 **Welle {self.wave_num} gewonnen!** Du hast **{self.bot_card['name']}** besiegt!",
+                )
+                return
+            if self.player_hp <= 0:
+                self.result = False
+                self.stop()
+                await self._complete_wave(
+                    interaction,
+                    message,
+                    won=False,
+                    detail_text=f"❌ **Welle {self.wave_num} verloren!** Der Bot hat dich besiegt.",
+                )
+                return
+
             # Update UI für nächsten Spieler-Zug
             embed = discord.Embed(title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
                                   description=f"Bot hat **{bot_attack_name}** verwendet! Dein HP: {self.player_hp}\nDu bist wieder an der Reihe!")
@@ -12252,6 +12349,28 @@ class MissionBattleView(DurableView):
                 self._consume_airborne_evade_marker(self.user_id)
             self.reduce_cooldowns_user()
             self.update_attack_buttons_mission()
+
+            # Safety: falls Bot/Spieler schon 0 HP hat, Welle beenden statt UI weiterlaufen zu lassen.
+            if self.bot_hp <= 0:
+                self.result = True
+                self.stop()
+                await self._complete_wave(
+                    interaction,
+                    message,
+                    won=True,
+                    detail_text=f"🏆 **Welle {self.wave_num} gewonnen!** Du hast **{self.bot_card['name']}** besiegt!",
+                )
+                return
+            if self.player_hp <= 0:
+                self.result = False
+                self.stop()
+                await self._complete_wave(
+                    interaction,
+                    message,
+                    won=False,
+                    detail_text=f"❌ **Welle {self.wave_num} verloren!** Der Bot hat dich besiegt.",
+                )
+                return
             
             embed = discord.Embed(title=f"⚔️ Welle {self.wave_num}/{self.total_waves}", 
                                   description=f"🤖 Bot hat keine Attacken verfügbar! Du bist wieder an der Reihe!")
@@ -14430,19 +14549,20 @@ class BotStatusView(RestrictedView):
         super().__init__(timeout=60)
         self.add_item(BotStatusSelect(requester_id))
 
-_player_commands = register_player_commands(bot, sys.modules[__name__])
+_command_api = build_command_api(globals())
+_player_commands = register_player_commands(bot, PlayerFacade(_command_api))
 daily_command = _player_commands["täglich"]
 eingeladen = _player_commands["eingeladen"]
 fuse = _player_commands["fuse"]
 vault = _player_commands["vault"]
 anfang = _player_commands["anfang"]
 
-_gameplay_commands = register_gameplay_commands(bot, sys.modules[__name__])
+_gameplay_commands = register_gameplay_commands(bot, GameplayFacade(_command_api))
 mission = _gameplay_commands["mission"]
 story = _gameplay_commands["story"]
 fight = _gameplay_commands["fight"]
 
-_admin_commands = register_admin_commands(bot, sys.modules[__name__])
+_admin_commands = register_admin_commands(bot, AdminFacade(_command_api))
 
 
 @bot.tree.command(name="stats_e", description="Nur für Admins!!!")

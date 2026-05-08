@@ -857,7 +857,7 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
         wolverine = _find_card("Wolverine")
         lines = bot_module._build_attack_info_lines(wolverine)
         heal_line = next(line for line in lines if "Heilfaktor" in line)
-        self.assertIn("Heilt 10 HP für 3 Runden", heal_line)
+        self.assertIn("Heilt 10-12 HP für 3 Runden", heal_line)
         self.assertNotIn("+10x3", heal_line)
 
     async def test_get_card_buffs_removes_invalid_damage_buffs(self) -> None:
@@ -2847,10 +2847,10 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         await self._execute_attack_without_buffs(view, acting_user_id=2, attack_index=0)
         await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=3)
 
-        self.assertEqual(view.player2_hp, 70)
+        self.assertEqual(view.player2_hp, 61)
         full_log = view._full_battle_log_text()
         self.assertIn("Triple Arrow (Fähigkeit)", full_log)
-        self.assertIn("Treffer: 3/3 | Schaden pro Treffer: 10, 10, 10 | Gesamt: 30.", full_log)
+        self.assertIn("Treffer: 3/3 | Schaden pro Treffer: 13, 13, 13 | Gesamt: 39.", full_log)
 
     async def test_battle_reload_button_for_shield_throw(self) -> None:
         player_card = {

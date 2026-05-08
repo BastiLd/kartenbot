@@ -1,13 +1,14 @@
 ﻿from __future__ import annotations
 
 import logging
-from types import ModuleType
 
 import discord
 from discord import app_commands
 
+from botcore.facades import PlayerFacade
 
-def register_player_commands(bot, module: ModuleType) -> dict[str, object]:
+
+def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
     @bot.tree.command(name="t\u00e4glich", description="Hole deine t\u00e4gliche Belohnung ab")
     async def taeglich(interaction: discord.Interaction):
         visibility_key = module.command_visibility_key_for_interaction(interaction)

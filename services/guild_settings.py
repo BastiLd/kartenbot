@@ -1,4 +1,3 @@
-import sqlite3
 import time
 
 from db import db_context
@@ -118,7 +117,7 @@ async def get_latest_anfang_message(guild_id: int | None):
                 (guild_id,),
             )
             row = await cursor.fetchone()
-        except sqlite3.OperationalError as exc:
+        except Exception as exc:
             if "no such table" in str(exc) and "guild_anfang_message" in str(exc):
                 await _ensure_anfang_table(db)
                 return None
@@ -144,7 +143,7 @@ async def set_latest_anfang_message(guild_id: int, channel_id: int, message_id: 
                 (guild_id, channel_id, message_id, author_id, int(time.time())),
             )
             await db.commit()
-        except sqlite3.OperationalError as exc:
+        except Exception as exc:
             if "no such table" in str(exc) and "guild_anfang_message" in str(exc):
                 await _ensure_anfang_table(db)
                 await db.execute(
@@ -174,7 +173,7 @@ async def get_visibility_override(guild_id: int | None, message_key: str) -> str
                 (guild_id, message_key),
             )
             row = await cursor.fetchone()
-        except sqlite3.OperationalError as exc:
+        except Exception as exc:
             if "no such table" in str(exc) and "guild_message_visibility" in str(exc):
                 await _ensure_visibility_table(db)
                 cursor = await db.execute(
@@ -217,7 +216,7 @@ async def get_visibility_map(guild_id: int | None) -> dict[str, str]:
                 (guild_id,),
             )
             rows = await cursor.fetchall()
-        except sqlite3.OperationalError as exc:
+        except Exception as exc:
             if "no such table" in str(exc) and "guild_message_visibility" in str(exc):
                 await _ensure_visibility_table(db)
                 cursor = await db.execute(
@@ -240,7 +239,7 @@ async def set_message_visibility(guild_id: int | None, message_key: str, visibil
                 "ON CONFLICT(guild_id, message_key) DO UPDATE SET visibility = excluded.visibility",
                 (guild_id, message_key, visibility),
             )
-        except sqlite3.OperationalError as exc:
+        except Exception as exc:
             if "no such table" in str(exc) and "guild_message_visibility" in str(exc):
                 await _ensure_visibility_table(db)
                 await db.execute(

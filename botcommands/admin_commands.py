@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from types import ModuleType
-
 import discord
 from discord import app_commands
 
+from botcore.facades import AdminFacade
 
-def register_admin_commands(bot, module: ModuleType) -> dict[str, object]:
+
+def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
     configure_group = app_commands.Group(name="konfigurieren", description="Nur f\u00fcr Admins!!!")
 
     def _target_label(guild: discord.Guild | None, user_id: int) -> str:

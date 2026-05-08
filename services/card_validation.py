@@ -55,7 +55,26 @@ ALLOWED_EFFECT_TYPES = frozenset(
 ALLOWED_RARITY_KEYS = frozenset({"common", "rare", "epic", "legendary"})
 ALLOWED_TARGETS = frozenset({"self", "enemy"})
 ALLOWED_DEFENSES = frozenset({"stealth", "evade"})
-ALLOWED_BUTTON_STYLES = frozenset({"primary", "secondary", "success", "danger"})
+ALLOWED_BUTTON_STYLES = frozenset(
+    {
+        # discord.py ButtonStyle names
+        "primary",
+        "secondary",
+        "success",
+        "danger",
+        # common color aliases (EN/DE) supported by the bot
+        "blue",
+        "blau",
+        "grey",
+        "gray",
+        "grau",
+        "red",
+        "rot",
+        "green",
+        "gruen",
+        "grün",
+    }
+)
 ALLOWED_CAP_DAMAGE_TOKENS = frozenset({"attack_min"})
 
 RARITY_ALIASES = {
