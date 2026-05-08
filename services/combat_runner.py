@@ -534,6 +534,16 @@ class CombatRunner:
             flat_bonus = int(self.pending_flat_bonus.get(player_id, 0) or 0)
             min_damage += flat_bonus
             max_damage += flat_bonus
+        if max_damage > 0:
+            restricted_bonus, _restricted_effect = bot_module._matching_restricted_flat_damage_bonus(
+                self.active_effects,
+                player_id,
+                selection.attack,
+                attack_index=selection.attack_index,
+                standard_index=selection.standard_index,
+            )
+            min_damage += restricted_bonus
+            max_damage += restricted_bonus
         if max_damage > 0 and self.pending_multiplier_uses.get(player_id, 0) > 0:
             multiplier = float(self.pending_multiplier.get(player_id, 1.0) or 1.0)
             min_damage = int(round(min_damage * multiplier))
@@ -638,8 +648,16 @@ class CombatRunner:
             elif eff_type == "damage_boost":
                 amount = bot_module._effect_amount(effect, "amount", 0)
                 uses = int(effect.get("uses", 1) or 1)
-                self.pending_flat_bonus[target_id] = max(self.pending_flat_bonus.get(target_id, 0), amount)
-                self.pending_flat_bonus_uses[target_id] = max(self.pending_flat_bonus_uses.get(target_id, 0), uses)
+                bot_module._queue_flat_damage_boost(
+                    self,
+                    effect_events,
+                    target_id=target_id,
+                    applier_id=actor_id,
+                    attack_name=str(attack_name),
+                    amount=amount,
+                    uses=uses,
+                    effect=effect,
+                )
             elif eff_type == "attack_heal":
                 uses = int(effect.get("uses", 1) or 1)
                 bot_module._append_active_effect(self.active_effects, target_id, "attack_heal", actor_id, amount=effect.get("amount", 0), uses=uses, source=attack_name)
@@ -909,6 +927,16 @@ class CombatRunner:
                 self.pending_flat_bonus_uses[actor_id] -= 1
                 if self.pending_flat_bonus_uses[actor_id] <= 0:
                     self.pending_flat_bonus[actor_id] = 0
+            restricted_bonus_now, _restricted_bonus_effect = bot_module._consume_restricted_flat_damage_bonus(
+                self.active_effects,
+                actor_id,
+                attack,
+                attack_index=attack_index,
+                standard_index=standard_idx,
+            )
+            if restricted_bonus_now > 0:
+                damage_buff += restricted_bonus_now
+                applied_flat_bonus_now += max(0, restricted_bonus_now)
             if self.pending_multiplier_uses.get(actor_id, 0) > 0:
                 attack_multiplier = float(self.pending_multiplier.get(actor_id, 1.0) or 1.0)
                 self.pending_multiplier_uses[actor_id] -= 1

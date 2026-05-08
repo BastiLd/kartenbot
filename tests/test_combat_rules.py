@@ -3442,6 +3442,49 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(bool(forced["unblockable"]))
         self.assertFalse(view.maestro_execute_pending)
 
+    async def test_maestro_artifact_damage_bonus_only_matches_configured_attack(self) -> None:
+        mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        maestro = copy.deepcopy(mission["encounters"][3])
+        view = MissionBattleView(player_card, maestro, 1, 4, 4, mission_data=mission)
+        trophy = _find_attack(maestro, "Trophäensaal-Raub")
+        events: list[str] = []
+        with patch.object(bot_module.random, "random", return_value=0.75):
+            handled = bot_module._apply_word_runtime_effect(
+                view,
+                events,
+                eff_type="maestro_artifact",
+                target_id=0,
+                attack_name="Trophäensaal-Raub",
+                effect=trophy["effects"][0],
+            )
+        self.assertTrue(handled)
+
+        gamma = _find_attack(maestro, "Gamma-Eruption")
+        bonus, _effect = bot_module._consume_restricted_flat_damage_bonus(
+            view.active_effects,
+            0,
+            gamma,
+            attack_index=3,
+            standard_index=0,
+        )
+        self.assertEqual(bonus, 0)
+
+        tyrant = _find_attack(maestro, "Tyrannen-Schlag")
+        bonus, _effect = bot_module._consume_restricted_flat_damage_bonus(
+            view.active_effects,
+            0,
+            tyrant,
+            attack_index=0,
+            standard_index=0,
+        )
+        self.assertEqual(bonus, 15)
+
     async def test_completed_wave_carries_player_hp_forward(self) -> None:
         mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)
         player_card = {
@@ -3463,6 +3506,33 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["next_wave"], 2)
         self.assertEqual(state["player_hp"], 37)
         self.assertEqual(state["player_max_hp"], 100)
+
+    async def test_completed_wave_can_carry_player_cooldowns_by_attack_name(self) -> None:
+        mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [
+                {"name": "Hit", "damage": [10, 10], "info": "test"},
+                {"name": "Big Hit", "damage": [20, 20], "cooldown_turns": 4, "info": "test"},
+            ],
+        }
+        view = MissionBattleView(player_card, copy.deepcopy(mission["encounters"][0]), 1, 1, 4, mission_data=mission)
+        view.user_attack_cooldowns[1] = 3
+        interaction = _DummyInteraction(1, _DummyMessage())
+        with patch.object(bot_module, "should_carry_cooldowns", return_value=True), patch.object(
+            bot_module,
+            "_safe_send_channel",
+            new=AsyncMock(return_value=None),
+        ), patch.object(
+            bot_module,
+            "_start_mission_wave_in_thread",
+            new=AsyncMock(return_value=None),
+        ) as start_mock:
+            await view._complete_wave(interaction, None, won=True)
+        state = start_mock.await_args.kwargs["mission_state"]
+        self.assertEqual(state["player_attack_cooldowns_by_name"], {"Big Hit": 3})
 
     async def test_wave_three_awards_unit_full_heal_and_card_switch_pause(self) -> None:
         mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)
