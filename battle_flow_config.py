@@ -12,6 +12,14 @@ COOLDOWN_CARRYOVER: dict[str, bool] = {
     "story": False,
 }
 
+# Feineinstellung fuer Missionen:
+# - lackeys: Uebernahme zwischen normalen Wellen
+# - boss: Uebernahme in die Boss-Welle / fuer Boss-Folge
+MISSION_COOLDOWN_CARRYOVER: dict[str, bool] = {
+    "lackeys": True,
+    "boss": False,
+}
+
 
 def should_carry_cooldowns(mode: str) -> bool:
     key = str(mode or "").strip().lower()
@@ -22,3 +30,7 @@ def should_carry_cooldowns(mode: str) -> bool:
     }
     key = aliases.get(key, key)
     return bool(COOLDOWN_CARRYOVER.get(key, False))
+
+
+def should_carry_mission_cooldowns(*, is_boss_wave: bool) -> bool:
+    return bool(MISSION_COOLDOWN_CARRYOVER.get("boss" if is_boss_wave else "lackeys", False))

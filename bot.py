@@ -57,7 +57,7 @@ from karten import (
     DOT_TYPE_DEFAULTS,
     karten as RAW_KARTEN,
 )
-from battle_flow_config import should_carry_cooldowns
+from battle_flow_config import should_carry_cooldowns, should_carry_mission_cooldowns
 import game_ui_texts
 from mission_enemies import (
     get_operation_broken_timeline_encounters,
@@ -1794,6 +1794,10 @@ def build_anfang_intro_text() -> str:
         "Wenn du bereit für den echten Einsatz bist, stehen dir jeden Tag zwei Missionen zur Verfügung. Schließe sie ab und ich garantiere dir, du bekommst jeweils eine Karte als Belohnung `[/mission im Chat schreiben]`.\n\n"
         "Für die Verrückten da draußen, die meinen, sie wären unschlagbar: Es gibt den Story-Modus. Du hast drei Leben, um die gesamte Geschichte zu überleben. Schaffst du das, wartet eine mysteriöse Belohnung auf dich `[/geschichte im Chat schreiben]`.\n\n"
     )
+    text += (
+        "Wurdest du von jemandem eingeladen? Dann bestätige das mit `[/eingeladen im Chat schreiben]`, "
+        "damit Belohnungen korrekt verteilt werden.\n\n"
+    )
     text += "**Also los jetzt. Sag mir, was du tun willst. Wir haben keine Zeit zu verlieren.**"
     return text
 
@@ -2635,6 +2639,27 @@ async def on_message(message: discord.Message):
                 except Exception:
                     logging.exception("Failed to patch managed fight session %s", session.get("session_id"))
 
+    try:
+        async with db_context() as db:
+            cursor = await db.execute(
+                "SELECT 1 FROM user_seen_channels WHERE user_id = ? AND guild_id = ? AND channel_id = ?",
+                (message.author.id, message.guild.id, message.channel.id),
+            )
+            already_seen = await cursor.fetchone()
+            if not already_seen:
+                await db.execute(
+                    "INSERT OR IGNORE INTO user_seen_channels (user_id, guild_id, channel_id) VALUES (?, ?, ?)",
+                    (message.author.id, message.guild.id, message.channel.id),
+                )
+                await db.commit()
+                await message.channel.send(
+                    f"{message.author.mention} {game_ui_texts.INTRO_PROMPT_MESSAGE}",
+                    view=IntroEphemeralPromptView(message.author.id),
+                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+                )
+    except Exception:
+        logging.exception("Failed to handle intro prompt for first channel message")
+
     # Commands weiter verarbeiten lassen
     await bot.process_commands(message)
 
@@ -2774,57 +2799,22 @@ def build_operation_broken_timeline_mission(*, mission_number: int | None = None
 
 
 MISSION_OPERATION_DEFS: dict[str, dict[str, object]] = {
-    "operation_broken_timeline": {
-        "label": "Operation Broken Timeline (Maestro)",
-        "title": "Operation Broken Timeline",
-        "description": game_ui_texts.OPERATION_BROKEN_TIMELINE_DESCRIPTION,
-        "encounters_getter": get_operation_broken_timeline_encounters,
-    },
-    "operation_technischer_kollaps": {
-        "label": "Operation Technischer Kollaps (M.O.D.O.K.)",
-        "title": "Operation Technischer Kollaps",
-        "description": (
-            "A.I.M. hat M.O.D.O.K. auf das globale Verteidigungsnetz losgelassen. "
-            "Kämpfe dich durch Laborwachen und Mechs bis zum Kernrechner."
-        ),
-        "encounters_getter": get_operation_technischer_kollaps_encounters,
-    },
-    "operation_gruener_terror": {
-        "label": "Operation Grüner Terror (Green Goblin)",
-        "title": "Operation Grüner Terror",
-        "description": (
-            "Norman Osborn will die Stadt mit Goblin-Gas überziehen. "
-            "Stoppe seine Truppen und stürze den Green Goblin vom Dach."
-        ),
-        "encounters_getter": get_operation_gruener_terror_encounters,
-    },
-    "operation_goldener_kaefig": {
-        "label": "Operation Goldener Käfig (Kingpin)",
-        "title": "Operation Goldener Käfig",
-        "description": (
-            "Wilson Fisk kontrolliert Tower und Unterwelt. "
-            "Räume die Etagen und beende den Kampf im Penthouse."
-        ),
-        "encounters_getter": get_operation_goldener_kaefig_encounters,
-    },
-    "operation_hexenfeuer": {
-        "label": "Operation Hexenfeuer (Agatha Harkness)",
-        "title": "Operation Hexenfeuer",
-        "description": (
-            "Agatha Harkness reißt die Grenze zur dunklen Dimension auf. "
-            "Besiege ihre Wächter und durchbrich den Hexenkreis."
-        ),
-        "encounters_getter": get_operation_hexenfeuer_encounters,
-    },
+    operation_id: {
+        "label": str((payload or {}).get("label") or operation_id),
+        "title": str((payload or {}).get("title") or "Operation"),
+        "description": str((payload or {}).get("description") or "Eine gefährliche Operation wartet auf dich."),
+        "encounters_getter": {
+            "operation_broken_timeline": get_operation_broken_timeline_encounters,
+            "operation_technischer_kollaps": get_operation_technischer_kollaps_encounters,
+            "operation_gruener_terror": get_operation_gruener_terror_encounters,
+            "operation_goldener_kaefig": get_operation_goldener_kaefig_encounters,
+            "operation_hexenfeuer": get_operation_hexenfeuer_encounters,
+        }.get(operation_id),
+    }
+    for operation_id, payload in game_ui_texts.MISSION_OPERATION_TEXTS.items()
 }
 
-MISSION_OPERATION_ORDER: tuple[str, ...] = (
-    "operation_broken_timeline",
-    "operation_technischer_kollaps",
-    "operation_gruener_terror",
-    "operation_goldener_kaefig",
-    "operation_hexenfeuer",
-)
+MISSION_OPERATION_ORDER: tuple[str, ...] = game_ui_texts.mission_operation_order()
 
 
 def mission_operation_options() -> list[SelectOption]:
@@ -7834,7 +7824,8 @@ async def _start_mission_wave_in_thread(
         if carry_max_hp is not None and carry_max_hp > 0:
             mission_view.player_max_hp = max(mission_view.player_max_hp, carry_max_hp)
         mission_view.player_hp = min(mission_view.player_max_hp, max(1, int(carry_hp)))
-    if should_carry_cooldowns("mission"):
+    is_boss_wave = bool(wave_num >= total_waves)
+    if should_carry_cooldowns("mission") and should_carry_mission_cooldowns(is_boss_wave=is_boss_wave):
         carried_cooldowns = _cooldowns_from_attack_names(
             [atk for atk in mission_view.attacks if isinstance(atk, dict)],
             mission_state.get("player_attack_cooldowns_by_name"),
@@ -9573,6 +9564,44 @@ class IntroEphemeralPromptView(DurableView):
         text = build_anfang_intro_text()
         await interaction.response.send_message(content=text, view=view, ephemeral=True)
 
+
+class MaintenanceConfirmView(RestrictedView):
+    def __init__(self, requester_id: int, *, enable: bool):
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        self.enable = bool(enable)
+
+    @ui.button(label=game_ui_texts.MAINTENANCE_CONFIRM_BTN_YES, style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        if interaction.guild is None:
+            await _send_with_visibility(interaction, "maintenance", content=SERVER_ONLY)
+            return
+        await set_maintenance_mode(interaction.guild.id, self.enable)
+        event_name = "admin_maintenance_on" if self.enable else "admin_maintenance_off"
+        await _log_event_safe(
+            event_name,
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+            thread_id=_thread_id_for_channel(interaction.channel),
+            actor_user_id=interaction.user.id,
+            command_name="entwicklerpanel",
+        )
+        await interaction.response.edit_message(
+            content=(game_ui_texts.MAINTENANCE_ENABLED if self.enable else game_ui_texts.MAINTENANCE_DISABLED),
+            view=None,
+            embed=None,
+        )
+
+    @ui.button(label=game_ui_texts.MAINTENANCE_CONFIRM_BTN_NO, style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        await interaction.response.edit_message(content=game_ui_texts.MAINTENANCE_CANCELLED, view=None, embed=None)
+
 class UserSelectView(RestrictedView):
     def __init__(self, user_id, guild):
         super().__init__(timeout=60)
@@ -10600,6 +10629,7 @@ class MissionBattleView(DurableView):
         self._last_damage_roll_meta: dict | None = None
         self._optional_attack_confirmations: dict[int, dict[str, object]] = {}
         self.maestro_execute_pending = bool(self.mission_data.get("maestro_execute_pending", False))
+        self._mission_actor_turn = "player"
         
         # Setze Button-Labels (evtl. nach init_with_buffs erneut aufrufen)
         self.update_attack_buttons_mission()
@@ -10797,7 +10827,7 @@ class MissionBattleView(DurableView):
     def create_bot_spotlight_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
-            description=game_ui_texts.BOT_SPOTLIGHT_DESCRIPTION.format(bot_name=self.bot_card["name"]),
+            description=game_ui_texts.ENEMY_TURN_DESCRIPTION.format(enemy_name=self.bot_card["name"]),
         )
         player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
         bot_label = f"🟦 Gegner{self._status_icons(0)}"
@@ -10918,7 +10948,8 @@ class MissionBattleView(DurableView):
             "player_hp": int(self.player_hp),
             "player_max_hp": int(self.player_max_hp),
         }
-        if should_carry_cooldowns("mission"):
+        next_is_boss_wave = bool(next_wave >= self.total_waves)
+        if should_carry_cooldowns("mission") and should_carry_mission_cooldowns(is_boss_wave=next_is_boss_wave):
             next_state["player_attack_cooldowns_by_name"] = _cooldowns_by_attack_name(
                 [atk for atk in self.attacks if isinstance(atk, dict)],
                 self.user_attack_cooldowns,
@@ -11493,9 +11524,11 @@ class MissionBattleView(DurableView):
         # Finde alle vier Angriffs-Buttons in den Zeilen 0 und 1
         attack_buttons = [child for child in self.children if isinstance(child, ui.Button) and child.row in (0, 1)]
         attack_buttons = attack_buttons[:4]
-        standard_idx = _standard_attack_index(self.attacks)
+        is_bot_turn = str(getattr(self, "_mission_actor_turn", "player")) == "bot"
+        current_attacks = list(self.bot_card.get("attacks", [])) if is_bot_turn else list(self.attacks)
+        standard_idx = _standard_attack_index(current_attacks)
 
-        pending_landing = self.airborne_pending_landing.get(self.user_id)
+        pending_landing = self.airborne_pending_landing.get(self.user_id if not is_bot_turn else 0)
         if pending_landing:
             landing_slot = _pending_landing_slot_index(pending_landing)
             raw_landing_attack = pending_landing.get("attack")
@@ -11508,7 +11541,7 @@ class MissionBattleView(DurableView):
             landing_name = str(landing_attack.get("name") or "Landungsschlag")
             for i, btn in enumerate(attack_buttons):
                 btn.style = discord.ButtonStyle.secondary
-                if i >= len(self.attacks):
+                if i >= len(current_attacks):
                     btn.label = "—"
                     btn.disabled = True
                     continue
@@ -11517,37 +11550,38 @@ class MissionBattleView(DurableView):
                     btn.label = f"{landing_name} ({dmg_text}) ✈️"
                     btn.disabled = False
                     continue
-                blocked_attack = self.attacks[i]
+                blocked_attack = current_attacks[i]
                 blocked_name = str(blocked_attack.get("name") or f"Angriff {i+1}")
-                if self.is_attack_on_cooldown_user(i):
-                    cooldown_turns = self.user_attack_cooldowns.get(i, 0)
+                if (self.is_attack_on_cooldown_bot(i) if is_bot_turn else self.is_attack_on_cooldown_user(i)):
+                    cooldown_turns = (self.bot_attack_cooldowns if is_bot_turn else self.user_attack_cooldowns).get(i, 0)
                     btn.label = f"{blocked_name} ({_format_cooldown_label(blocked_attack, cooldown_turns)})"
                 else:
                     btn.label = f"{blocked_name} (Blockiert)"
                 btn.disabled = True
             return
 
-        if self.special_lock_next_turn.get(self.user_id, 0) > 0:
+        lock_target_id = 0 if is_bot_turn else self.user_id
+        if self.special_lock_next_turn.get(lock_target_id, 0) > 0:
             for i, button in enumerate(attack_buttons):
                 button.style = discord.ButtonStyle.secondary
-                if i >= len(self.attacks):
+                if i >= len(current_attacks):
                     button.label = "—"
                     button.disabled = True
                     continue
-                attack = self.attacks[i]
+                attack = current_attacks[i]
                 if i == standard_idx:
-                    dmg_max_bonus = self.damage_bonuses.get(i + 1, 0)
+                    dmg_max_bonus = 0 if is_bot_turn else self.damage_bonuses.get(i + 1, 0)
                     display_label, display_style, _ = _attack_display_parts(
                         attack,
                         max_only_bonus=dmg_max_bonus,
                     )
-                    is_on_cooldown = self.is_attack_on_cooldown_user(i)
-                    is_reload_action = bool(attack.get("requires_reload") and self.is_reload_needed(self.user_id, i))
+                    is_on_cooldown = self.is_attack_on_cooldown_bot(i) if is_bot_turn else self.is_attack_on_cooldown_user(i)
+                    is_reload_action = False if is_bot_turn else bool(attack.get("requires_reload") and self.is_reload_needed(self.user_id, i))
                     if is_on_cooldown:
-                        cooldown_turns = self.user_attack_cooldowns[i]
+                        cooldown_turns = (self.bot_attack_cooldowns if is_bot_turn else self.user_attack_cooldowns)[i]
                         button.label = f"{attack['name']} ({_format_cooldown_label(attack, cooldown_turns)})"
                         button.disabled = True
-                    elif is_reload_action:
+                    elif is_reload_action and (not is_bot_turn):
                         button.style = discord.ButtonStyle.primary
                         button.label = str(attack.get("reload_name") or "Nachladen")
                         button.disabled = False
@@ -11557,8 +11591,8 @@ class MissionBattleView(DurableView):
                         button.disabled = False
                     continue
                 attack_name = str(attack.get("name") or f"Angriff {i+1}")
-                if self.is_attack_on_cooldown_user(i):
-                    cooldown_turns = self.user_attack_cooldowns.get(i, 0)
+                if (self.is_attack_on_cooldown_bot(i) if is_bot_turn else self.is_attack_on_cooldown_user(i)):
+                    cooldown_turns = (self.bot_attack_cooldowns if is_bot_turn else self.user_attack_cooldowns).get(i, 0)
                     button.label = f"{attack_name} ({_format_cooldown_label(attack, cooldown_turns)})"
                 else:
                     button.label = f"{attack_name} (Gesperrt)"
@@ -11566,30 +11600,31 @@ class MissionBattleView(DurableView):
             return
         
         for i, button in enumerate(attack_buttons):
-            if i < len(self.attacks):
-                attack = self.attacks[i]
-                dmg_max_bonus = self.damage_bonuses.get(i + 1, 0)
+            if i < len(current_attacks):
+                attack = current_attacks[i]
+                dmg_max_bonus = 0 if is_bot_turn else self.damage_bonuses.get(i + 1, 0)
                 display_label, display_style, _ = _attack_display_parts(
                     attack,
                     max_only_bonus=dmg_max_bonus,
                 )
-                is_on_cooldown = self.is_attack_on_cooldown_user(i)
-                is_reload_action = bool(attack.get("requires_reload") and self.is_reload_needed(self.user_id, i))
+                is_on_cooldown = self.is_attack_on_cooldown_bot(i) if is_bot_turn else self.is_attack_on_cooldown_user(i)
+                is_reload_action = False if is_bot_turn else bool(attack.get("requires_reload") and self.is_reload_needed(self.user_id, i))
                 if is_on_cooldown:
                     button.style = discord.ButtonStyle.secondary
-                    cooldown_turns = self.user_attack_cooldowns[i]
+                    cooldown_turns = (self.bot_attack_cooldowns if is_bot_turn else self.user_attack_cooldowns)[i]
                     button.label = f"{attack['name']} ({_format_cooldown_label(attack, cooldown_turns)})"
                     button.disabled = True
-                elif is_reload_action:
+                elif is_reload_action and (not is_bot_turn):
                     button.style = discord.ButtonStyle.primary
                     button.label = str(attack.get("reload_name") or "Nachladen")
                     button.disabled = False
                 else:
                     button.style = display_style
                     button.label = display_label
-                    button.disabled = False
+                    button.disabled = bool(is_bot_turn)
             else:
                 button.label = f"Angriff {i+1}"
+                button.disabled = True
 
     # Angriffs-Buttons (rot, 2x2 Grid)
     @ui.button(label="Angriff 1", style=discord.ButtonStyle.danger, row=0, custom_id="mission_battle:attack1")
@@ -12390,9 +12425,11 @@ class MissionBattleView(DurableView):
         # Bot-Zug: kurz große Gegnerkarte, dann Ablauf
         if message is not None:
             try:
+                self._mission_actor_turn = "bot"
+                self.update_attack_buttons_mission()
                 await message.edit(
                     embed=self.create_bot_spotlight_embed(),
-                    view=None,
+                    view=self,
                 )
             except Exception:
                 logging.exception("Failed to update mission battle before bot turn")
@@ -12413,6 +12450,7 @@ class MissionBattleView(DurableView):
             if self.airborne_pending_landing.get(self.user_id):
                 self._consume_airborne_evade_marker(self.user_id)
             self.reduce_cooldowns_user()
+            self._mission_actor_turn = "player"
             self.update_attack_buttons_mission()
             embed = discord.Embed(
                 title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
@@ -13164,6 +13202,7 @@ class MissionBattleView(DurableView):
             _add_attack_info_field(embed, self.player_card)
     
             # Update attack buttons für neuen Spieler-Zug
+            self._mission_actor_turn = "player"
             self.update_attack_buttons_mission()
     
             if message is not None:
@@ -13176,6 +13215,7 @@ class MissionBattleView(DurableView):
             if self.airborne_pending_landing.get(self.user_id):
                 self._consume_airborne_evade_marker(self.user_id)
             self.reduce_cooldowns_user()
+            self._mission_actor_turn = "player"
             self.update_attack_buttons_mission()
 
             # Safety: falls Bot/Spieler schon 0 HP hat, Welle beenden statt UI weiterlaufen zu lassen.
@@ -14857,36 +14897,22 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
         return
 
     if action == "maintenance_on":
-        if interaction.guild is None:
-            await _send_with_visibility(interaction, "maintenance", content=SERVER_ONLY)
-            return
-        await set_maintenance_mode(interaction.guild.id, True)
-        logging.info("Maintenance ON by %s in guild %s", interaction.user.id, interaction.guild_id)
-        await _log_event_safe(
-            "admin_maintenance_on",
-            guild_id=interaction.guild_id,
-            channel_id=interaction.channel_id,
-            thread_id=_thread_id_for_channel(interaction.channel),
-            actor_user_id=interaction.user.id,
-            command_name="entwicklerpanel",
+        view = MaintenanceConfirmView(interaction.user.id, enable=True)
+        await _send_with_visibility(
+            interaction,
+            "maintenance",
+            content=f"**{game_ui_texts.MAINTENANCE_CONFIRM_ON_TITLE}**\n\n{game_ui_texts.MAINTENANCE_CONFIRM_ON_TEXT}",
+            view=view,
         )
-        await _send_with_visibility(interaction, "maintenance", content="Wartungsmodus aktiviert.")
         return
     if action == "maintenance_off":
-        if interaction.guild is None:
-            await _send_with_visibility(interaction, "maintenance", content=SERVER_ONLY)
-            return
-        await set_maintenance_mode(interaction.guild.id, False)
-        logging.info("Maintenance OFF by %s in guild %s", interaction.user.id, interaction.guild_id)
-        await _log_event_safe(
-            "admin_maintenance_off",
-            guild_id=interaction.guild_id,
-            channel_id=interaction.channel_id,
-            thread_id=_thread_id_for_channel(interaction.channel),
-            actor_user_id=interaction.user.id,
-            command_name="entwicklerpanel",
+        view = MaintenanceConfirmView(interaction.user.id, enable=False)
+        await _send_with_visibility(
+            interaction,
+            "maintenance",
+            content=f"**{game_ui_texts.MAINTENANCE_CONFIRM_OFF_TITLE}**\n\n{game_ui_texts.MAINTENANCE_CONFIRM_OFF_TEXT}",
+            view=view,
         )
-        await _send_with_visibility(interaction, "maintenance", content="Wartungsmodus deaktiviert.")
         return
     if action == "delete_user":
         user_id, user_name = await _select_user(interaction, "Wähle den Nutzer für Löschen:")

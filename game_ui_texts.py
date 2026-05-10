@@ -41,6 +41,9 @@ PREVIEW_BTN_CHANGE_HERO = "Held wechseln"
 # Bot-Zug Spotlight
 BOT_SPOTLIGHT_DESCRIPTION = "🎯 **{bot_name}** ist am Zug …"
 
+# Gegner-Zug Ansicht
+ENEMY_TURN_DESCRIPTION = "🎯 **{enemy_name}** ist am Zug. Unten siehst du seine Attacken."
+
 # Maestro Kampflog (nicht die Karten-Fähigkeitstexte)
 MAESTRO_EXECUTE_MARKED = (
     "Gnadenschuss des Tyrannen vorbereitet: Spieler unter 50 HP, Maestro nutzt in seiner nächsten Runde 999 unblockbaren Schaden."
@@ -74,6 +77,76 @@ INVITE_SUCCESS = (
     "🎉 Einladung bestätigt!\n"
     "**{inviter}** und **{invitee}** haben die Zuordnung bestätigt."
 )
+
+# Intro-Autoprompt
+INTRO_PROMPT_MESSAGE = (
+    "Klicke auf den Button, um dir die Start-Anleitung anzeigen zu lassen. "
+    "Danach weißt du direkt, wie `/eingeladen` und die anderen Befehle funktionieren."
+)
+
+# Dev-Tools: Wartungsmodus
+MAINTENANCE_CONFIRM_ON_TITLE = "Wartungsmodus einschalten?"
+MAINTENANCE_CONFIRM_OFF_TITLE = "Wartungsmodus ausschalten?"
+MAINTENANCE_CONFIRM_ON_TEXT = (
+    "Wenn Wartungsmodus **AN** ist, können normale Nutzer keine Commands benutzen. "
+    "Nur Owner/Dev/Admin können weiterarbeiten.\n\n"
+    "Willst du das wirklich einschalten?"
+)
+MAINTENANCE_CONFIRM_OFF_TEXT = (
+    "Wenn Wartungsmodus **AUS** ist, können wieder alle Nutzer normal Commands benutzen.\n\n"
+    "Willst du das wirklich ausschalten?"
+)
+MAINTENANCE_CONFIRM_BTN_YES = "Bestätigen"
+MAINTENANCE_CONFIRM_BTN_NO = "Abbrechen"
+MAINTENANCE_ENABLED = "Wartungsmodus aktiviert."
+MAINTENANCE_DISABLED = "Wartungsmodus deaktiviert."
+MAINTENANCE_CANCELLED = "Änderung am Wartungsmodus abgebrochen."
+
+# Missionen: zentrale Operationstexte
+# Neue Operationen müssen nur hier ergänzt werden.
+MISSION_OPERATION_TEXTS: dict[str, dict[str, str]] = {
+    "operation_broken_timeline": {
+        "label": "Operation Broken Timeline (Maestro)",
+        "title": "Operation Broken Timeline",
+        "description": OPERATION_BROKEN_TIMELINE_DESCRIPTION,
+    },
+    "operation_technischer_kollaps": {
+        "label": "Operation Technischer Kollaps (M.O.D.O.K.)",
+        "title": "Operation Technischer Kollaps",
+        "description": (
+            "A.I.M. hat M.O.D.O.K. auf das globale Verteidigungsnetz losgelassen. "
+            "Kämpfe dich durch Laborwachen und Mechs bis zum Kernrechner."
+        ),
+    },
+    "operation_gruener_terror": {
+        "label": "Operation Grüner Terror (Green Goblin)",
+        "title": "Operation Grüner Terror",
+        "description": (
+            "Norman Osborn will die Stadt mit Goblin-Gas überziehen. "
+            "Stoppe seine Truppen und stürze den Green Goblin vom Dach."
+        ),
+    },
+    "operation_goldener_kaefig": {
+        "label": "Operation Goldener Käfig (Kingpin)",
+        "title": "Operation Goldener Käfig",
+        "description": (
+            "Wilson Fisk kontrolliert Tower und Unterwelt. "
+            "Räume die Etagen und beende den Kampf im Penthouse."
+        ),
+    },
+    "operation_hexenfeuer": {
+        "label": "Operation Hexenfeuer (Agatha Harkness)",
+        "title": "Operation Hexenfeuer",
+        "description": (
+            "Agatha Harkness reißt die Grenze zur dunklen Dimension auf. "
+            "Besiege ihre Wächter und durchbrich den Hexenkreis."
+        ),
+    },
+}
+
+
+def mission_operation_order() -> tuple[str, ...]:
+    return tuple(MISSION_OPERATION_TEXTS.keys())
 
 
 def operation_broken_timeline_title(*, is_admin: bool, suffix: str) -> str:
