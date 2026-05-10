@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 from typing import Iterable
 
+from reward_spawn_config import card_effective_weight
 from services.battle_types import CardData
 from services.card_variants import base_card_name, build_runtime_card, reward_runtime_cards
 
@@ -106,8 +107,23 @@ def filter_owned_cards_for_gameplay(
     return [(canonical_card_name(name), int(amount)) for name, amount in owned_cards]
 
 
-def random_gameplay_card(cards: Iterable[CardData], *, alpha_enabled: bool) -> CardData:
+def random_gameplay_card(
+    cards: Iterable[CardData],
+    *,
+    alpha_enabled: bool,
+    context: str | None = None,
+) -> CardData:
     pool = reward_runtime_cards(gameplay_cards(cards, alpha_enabled=alpha_enabled))
     if not pool:
         raise ValueError("No playable cards available for the current mode")
-    return random.choice(pool)
+    weights = [card_effective_weight(context, c) for c in pool]
+    total = sum(weights)
+    if total <= 0:
+        return random.choice(pool)
+    r = random.uniform(0, total)
+    acc = 0.0
+    for card, w in zip(pool, weights):
+        acc += w
+        if r <= acc:
+            return card
+    return pool[-1]

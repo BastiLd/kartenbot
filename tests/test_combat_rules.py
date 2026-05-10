@@ -3357,10 +3357,10 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             {str(encounter.get("name") or ""): str(encounter.get("bild") or "") for encounter in encounters},
             {
-                "Ödland-Plünderer": "https://i.imgur.com/YPnvbdW.png",
-                "Gamma-Mutant": "https://i.imgur.com/sJKKeeG.png",
-                "Umprogrammierter Hulkbuster": "https://i.imgur.com/PvK2BHp.png",
-                "Maestro": "https://i.imgur.com/FnpMS1O.png",
+                "Ödland-Plünderer": "https://i.imgur.com/4mxNv2c.png",
+                "Gamma-Mutant": "https://i.imgur.com/4mxNv2c.png",
+                "Umprogrammierter Hulkbuster": "https://i.imgur.com/4mxNv2c.png",
+                "Maestro": "https://i.imgur.com/4mxNv2c.png",
             },
         )
 
@@ -3441,6 +3441,27 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(forced["damage"], [999, 999])
         self.assertTrue(bool(forced["unblockable"]))
         self.assertFalse(view.maestro_execute_pending)
+
+    async def test_maestro_execute_cancelled_when_healed_above_50_before_bot_turn(self) -> None:
+        mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        maestro = copy.deepcopy(mission["encounters"][3])
+        view = MissionBattleView(player_card, maestro, 1, 4, 4, mission_data=mission)
+        view.player_hp = 49
+        events: list[str] = []
+        view._mark_maestro_execute_if_needed(events)
+        self.assertTrue(view.maestro_execute_pending)
+        view.player_hp = 55
+        sync_events: list[str] = []
+        view._sync_maestro_execute_for_current_hp(sync_events)
+        self.assertFalse(view.maestro_execute_pending)
+        forced = view._forced_maestro_execute_attack(events)
+        self.assertIsNone(forced)
 
     async def test_maestro_artifact_damage_bonus_only_matches_configured_attack(self) -> None:
         mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)

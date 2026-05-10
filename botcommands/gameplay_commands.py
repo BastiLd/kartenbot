@@ -3,11 +3,34 @@
 import logging
 
 import discord
+from discord import SelectOption, ui
 
 from botcore.facades import GameplayFacade
 
 
 def register_gameplay_commands(bot, api: GameplayFacade) -> dict[str, object]:
+    class MissionOperationSelectView(ui.View):
+        def __init__(self, user_id: int, options: list[SelectOption]):
+            super().__init__(timeout=60)
+            self.user_id = user_id
+            self.value: str | None = None
+            self.select = ui.Select(
+                placeholder="Wähle eine Operation...",
+                min_values=1,
+                max_values=1,
+                options=options[:25],
+            )
+            self.select.callback = self._on_select
+            self.add_item(self.select)
+
+        async def _on_select(self, interaction: discord.Interaction):
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("Nur der Mission-User kann wählen!", ephemeral=True)
+                return
+            self.value = str(self.select.values[0] or "").strip() or None
+            await interaction.response.defer()
+            self.stop()
+
     @bot.tree.command(
         name="mission",
         description="Schicke dein Team auf eine Mission und erhalte eine Belohnung",
@@ -31,7 +54,22 @@ def register_gameplay_commands(bot, api: GameplayFacade) -> dict[str, object]:
                 )
                 return
 
-        mission_data = api.build_operation_broken_timeline_mission(
+        operation_view = MissionOperationSelectView(
+            interaction.user.id,
+            api.mission_operation_options(),
+        )
+        await interaction.followup.send(
+            "Wähle zuerst die Operation für deine Mission:",
+            view=operation_view,
+            ephemeral=True,
+        )
+        await operation_view.wait()
+        if not operation_view.value:
+            await interaction.followup.send("⏰ Keine Operation gewählt. Mission abgebrochen.", ephemeral=True)
+            return
+
+        mission_data = api.build_mission_from_operation(
+            operation_view.value,
             mission_number=mission_count + 1,
             is_admin=is_admin_user,
         )

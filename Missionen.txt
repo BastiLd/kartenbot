@@ -1,0 +1,604 @@
+Missionen
+1.	Operation Broken Timeline
+(Ein Hologramm von Nick Fury erscheint auf dem Bildschirm. Er wirkt angespannt.)
+Fury: „Hören Sie gut zu, Rekrut. Wir haben ein Problem, das größer ist als alles, was 
+wir bisher kannten. In einer alternativen Zeitlinie ist Banner durchgedreht. Er nennt 
+sich Maestro. Er hat jeden Helden seiner Welt besiegt und regiert nun über eine 
+radioaktive Wüste.
+Unsere Aufklärer melden, dass er einen 'Chronos-Anker' baut, um in unsere Realität 
+überzuspringen. Wenn er das schafft, war’s das mit der Nachbarschaft. Wir schicken 
+Sie direkt in seine Festung. Kämpfen Sie sich durch seine Wachen. Sobald der Weg frei 
+ist, schicken wir Ihnen ein medizinisches Versorgungspaket für das finale Duell. 
+Maestro ist kein gewöhnlicher Hulk – er ist klug, er ist grausam und er wartet nur 
+darauf, dass Sie schwach werden. Weggetreten!“
+
+Die Vor-Wellen (Der Weg zur Festung)
+Welle 1: Ödland-Plünderer (HP: 40)
+1.	Schild-Splitter: 12 Schaden. (Standard)
+2.	Netz-Falle: 5 Schaden. Der Spieler kann in der nächsten Runde keine 
+"Bewegungs-Fähigkeiten" (wie Fliegen/Tarnung) nutzen. (CD: 3)
+3.	Pfeil-Hagel: Verursacht 3 Runden lang 6 Schaden. (CD: 4)
+4.	Plünder-Glück: Findet ein altes Medipack und heilt 15 HP. (CD: 5)
+
+
+
+
+
+Welle 2: Gamma-Mutant (HP: 60)
+1.	Gamma-Pranke: 15 Schaden.
+2.	Radioaktive Aura: Passiv: Jedes Mal, wenn der Mutant angegriffen wird, 
+erleidet der Spieler 4 Schaden. 
+3.	Zell-Mutation: Der Mutant erhöht seinen Schaden permanent um +3 
+(stapelbar). (CD: 4)
+4.	Instabiler Kollaps: Der Mutant explodiert. Verursacht 25 Schaden, zieht ihm 
+selbst aber 15 HP ab. (CD: 6)
+Welle 3: Umprogrammierter Hulkbuster (HP: 110)
+1.	Hydraulik-Hammer: 18 Schaden. (Standard)
+2.	Schubdüsen-Ramme: 25 Schaden, aber der Hulkbuster erleidet nächste Runde 
+100% mehr Schaden (Systemüberhitzung). (CD: 5)
+3.	Reparatur-Naniten: Blockt den nächsten Angriff komplett und heilt 10 HP. (CD: 
+4)
+4.	Schwere Salve: Feuert 4 Raketen ab, die jeweils 6 Schaden verursachen (insg. 
+24). (CD: 6)
+ 
+3. Story-Einbindung (+ 1 Units als Belohnung)
+Fury: „Beeindruckend. Der Weg ist frei. Eine Versorgungskapsel ist unterwegs. Heilen 
+Sie sich zusammen, Rekrut. Maestro betritt gerade den Thronsaal. Das ist die einzige 
+Chance, die wir haben. Zeigen Sie ihm, warum wir Helden sind!“
+*	
+
+
+
+
+
+
+
+
+Der Boss: Maestro (HP: 200)
+Spezial-Taktik: "Gnadenschuss des Tyrannen" Sobald die HP des Spielers unter 50 HP 
+fallen, nutzt Maestro in seiner nächsten Runde automatisch eine Spezial-Aktion, die 
+999 Schaden verursacht. Der Spieler MUSS seine HP über 50 halten oder Maestro 
+besiegen, bevor er diese Schwelle erreicht.
+
+BOSS: Maestro (HP: 200) Taktik: Besiegt Spieler unter 50 HP sofort.
+1.	Tyrannen-Schlag: 20 Schaden. (Standard)
+2.	Trophäensaal-Raub: Nutzt ein Artefakt eines Helden: Entweder ein Schild 
+(blockt 20) oder eine Waffe (nächster Angriff macht +15 Schaden). (Zufall, CD: 
+4)
+3.	Maestros Hohn: Verringert den Schaden des nächsten Angriffs des Spielers auf 
+0 (Maestro lacht über die Schwäche). (CD: 5)
+4.	Gamma-Eruption: 40 Schaden. (CD: 6)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+2.	Operation Roter Schatten 
+(Fury steht vor einem Bildschirm, der eine geheime Hydra-Basis in den Alpen zeigt.)
+Fury: „Rekrut, wir haben eine Funkfrequenz abgefangen, die uns direkt zu Red Skull 
+geführt hat. Er hat eine alte Technologie aus der Zeit des Zweiten Weltkriegs 
+reaktiviert – einen 'Willens-Indoktrinator'. Er plant, das globale Kommunikationsnetz 
+zu hacken, um die Gedanken der Weltbevölkerung zu kontrollieren.
+Hydra hat die Basis mit Elite-Soldaten und mechanischen Monstrositäten verriegelt. 
+Brechen Sie durch ihre Verteidigungslinien. Sobald Sie den inneren Zirkel erreichen, 
+werfen wir eine medizinische Notfallkapsel ab. Aber Vorsicht: Red Skull kämpft nicht 
+fair. Er studiert Ihre Bewegungen. Wenn Sie vorhersehbar werden, wird er Sie 
+zerquetschen. Viel Glück. Ende.“
+
+Die Vor-Wellen (Der Sturm auf die Basis)
+Welle 1: Hydra-Stoßtrupp (HP: 45)
+5.	Gewehrfeuer: 12 Schaden.
+6.	Blendgranate: 6 Schaden. Die Abklingzeiten des Spielers verringern sich diese 
+Runde nicht. (CD: 3)
+7.	Hydra-Schild: Blockt die nächsten 12 Schaden. (CD: 4)
+8.	Gezielter Schuss: 22 Schaden. (CD: 5)
+
+Welle 2: Hydra-Attentäterin (HP: 60)
+5.	Vibranium-Dolche: 15 Schaden.
+6.	Nervengas: 8 Schaden + Nächste Runde macht der Spieler 10 Schaden weniger. 
+(CD: 3)
+7.	Schatten-Schritt: Weicht dem nächsten Angriff zu 100% aus. (CD: 5)
+8.	Präzisionsstich: 25 Schaden. Ignoriert alle Schilde/Verteidigungsboni des 
+Spielers. (CD: 4)
+
+
+
+Welle 3: Hydra-Kampfpanzer "Behemoth" (HP: 110)
+5.	Gatling-Kanone: 20 Schaden
+6.	Raketensalve: 30 Schaden. (CD: 5)
+7.	Reaktive Panzerung: Reduziert jeden eingehenden Schaden für 2 Runden um 
+10. (CD: 4)
+8.	Schockwelle: 15 Schaden + Der Spieler muss nächste Runde eine Fähigkeit 
+wählen, die danach einen extra CD von +1 bekommt. (CD: 6)
+ 
+
+Story-Einbindung (+ 1 Units als Belohnung)
+Fury: „Gute Arbeit. Der Indoktrinator ist direkt hinter diesen Türen. Die Heilkapsel ist 
+gelandet – nutzen Sie sie. Red Skull hat Ihre Kampfdaten bereits analysiert. Er weiß, 
+wie Sie kämpfen. Überraschen Sie ihn!“
+*	
+Der Boss: Red Skull (HP: 230)
+Spezial-Taktik: "Gnadenschuss des Tyrannen" Wenn der Spieler eine Fähigkeit 
+einsetzt, die mehr als 35 Schaden verursacht (einschließlich Buffs), aktiviert Red Skull 
+sofort seinen "Strategischen Konter": Er erleidet nur 50% des Schadens und fügt dem 
+Spieler sofort 25 Schaden als Rückstoß zu. Der Spieler muss also mit kleineren, 
+konstanten Angriffen arbeiten oder den Konter klug einplanen.
+
+BOSS: Red Skull (HP: 230)
+5.	Mauser-Schuss: Verursacht 18–22 Schaden.
+6.	Hydras Biss: 15 Schaden + Verringert den Schaden des nächsten Spieler-
+Angriffs um 15. (CD: 3)
+7.	Psychologischer Terror: Red Skull verunsichert den Helden. Der Spieler erleidet 
+20 Schaden und alle seine aktiven Cooldowns werden um 1 erhöht. (CD: 5)
+8.	Staub der Bestie: Red Skull nutzt ein Gas. Der Spieler verliert 40 HP über die 
+nächsten 4 Runden (10 pro Runde) und kann in dieser Zeit keine Schilde 
+nutzen. (CD: 6)
+
+
+
+3.	Operation Technischer Kollaps 
+(Fury steht vor einer digitalen Karte, die ein unterirdisches A.I.M.-Labor zeigt.)
+Fury: „A.I.M. hat es mal wieder übertrieben. Sie haben eine künstliche Intelligenz 
+namens M.O.D.O.K. erschaffen, die nun das gesamte Verteidigungsnetzwerk der 
+Regierung gehackt hat. Er berechnet gerade die Wahrscheinlichkeit unseres 
+Untergangs – und im Moment sieht es nicht gut aus.
+Sie müssen in das Rechenzentrum eindringen. M.O.D.O.K. hat den Komplex mit seinen 
+mechanischen Soldaten und Sicherheits-Mechs abgeriegelt. Er wird versuchen, Ihre 
+Strategie zu analysieren. Sobald Sie vor ihm stehen, lassen wir Ihnen die Heilkapsel 
+zukommen. Seien Sie vorsichtig: Er greift nicht nur Ihren Körper an, sondern auch 
+Ihren Verstand.“
+
+Die Vor-Wellen (Infiltration des A.I.M.-Labors)
+Welle 1: A.I.M.-Laborwache (HP: 40)
+9.	Laser-Gewehr: 12 Schaden.
+10.	Betäubungsschuss: 8 Schaden + Die Cooldowns des Spielers verringern sich 
+diese Runde nicht. (CD: 4)
+11.	Schild-Generator: Blockt die nächsten 10 Schaden. (CD: 3)
+12.	Ziel-Erfassung: Der nächste Angriff macht +10 Schaden. (CD: 5)
+
+Welle 2: A.I.M.-Wissenschaftler (HP: 60)
+9.	Schall-Impuls: 14 Schaden.
+10.	Daten-Diebstahl: Der Spieler macht nächste Runde 10 Schaden weniger, der 
+Wissenschaftler heilt sich um 10 HP. (CD: 4)
+11.	Reparatur-Drohne: Heilt sofort 20 HP. (CD: 5)
+12.	Naniten-Injektion: Verursacht 5 Schaden pro Runde für 3 Runden. (CD: 4)
+
+
+
+
+Welle 3: Schwerer Kampf-Mech (HP: 120)
+9.	Rammstoß: 18 Schaden.
+10.	Gatling-Kanone: 28 Schaden. (CD: 4)
+11.	Energieschild: Blockt den nächsten Angriff komplett (100% 
+Schadensreduktion). (CD: 6)
+12.	Selbstzerstörungs-Protokoll: Verursacht 45 Schaden, aber der Mech stirbt 
+sofort. (Wird nur aktiviert, wenn der Mech unter 20 HP fällt).
+ 
+Story-Einbindung (+ 1 Units als Belohnung)
+M.O.D.O.K.: „Unlogisch. Ihre Erfolgschance lag bei 0,003%. Ich werde die Variablen 
+korrigieren müssen...“
+Fury: „Hören Sie ihn nicht an! Die Heilkapsel ist direkt vor dem Serverraum gelandet. 
+Nutzen Sie sie jetzt. M.O.D.O.K. wird versuchen, Ihre stärksten Fähigkeiten gegen Sie 
+zu verwenden. Bleiben Sie variabel!“
+*	
+Der Boss: M.O.D.O.K. (HP: 240)
+Spezial-Taktik: Wenn der Spieler eine Fähigkeit einsetzt, die eine Abklingzeit von 5 
+oder höher hat, erleidet der Spieler durch ein neuronales Feedback sofort 20 Schaden.
+Dies zwingt den Spieler dazu, zu entscheiden: Nutze ich meine starken Angriffe und 
+nehme den Schaden in Kauf, oder besiege ich ihn langsam mit Standard-Angriffen?
+
+BOSS: M.O.D.O.K. (HP: 240)
+9.	Gedankenstrahl: Verursacht 20–24 Schaden.
+10.	System-Hack: 15 Schaden + Der Spieler kann in der nächsten Runde keine 
+Fähigkeiten mit Cooldown nutzen (nur Standard-Angriffe). (CD: 4)
+11.	Berechnete Heilung: M.O.D.O.K. heilt sich um 30 HP. Falls der Spieler in der 
+Vorrunde eine Fähigkeit mit Cooldown genutzt hat, heilt er sich um 50 HP. (CD: 
+5)
+12.	Gehirn-Explosion: Ein gewaltiger psychischer Stoß. Verursacht 40 Schaden. 
+(CD: 6)
+4.	Mission: Operation Grüner Terror 
+(Fury steht vor einer digitalen Karte, die ein unterirdisches A.I.M.-Labor zeigt.)
+Fury: „Hören Sie das Lachen? Das ist Osborn. Er hat eine Chemiefabrik von Oscorp 
+übernommen und droht, ein modifiziertes 'Goblin-Gas' über der Stadt zu versprühen. 
+Wenn das Zeug in die Belüftung gelangt, haben wir morgen Millionen von 
+Psychopathen auf den Straßen.
+Er hat den Komplex mit seinen persönlichen Sicherheitskräften und automatisierten 
+Gleiter-Drohnen verriegelt. Er wartet auf Sie – er liebt das Spiel. Kämpfen Sie sich 
+durch, wir schicken die Heilkapsel, sobald Sie das Dach erreichen. Aber passen Sie auf: 
+Der Goblin spielt mit Ihren Erwartungen. Bei ihm ist nichts so, wie es scheint.“
+
+Die Vor-Wellen (Der Aufstieg zum Oscorp-Dach)
+Welle 1: Oscorp-Sicherheitsdrohne (HP: 40)
+13.	Puls-Laser: 12 Schaden.
+14.	Ziel-Markierung: Erhöht den Schaden des nächsten Drohnen-Angriffs um 10. 
+(CD: 3)
+15.	Ausweich-Manöver: Die Drohne weicht dem nächsten Angriff zu 50% aus. (CD: 
+4)
+16.	Blend-Blitz: Der nächste Angriff des Spielers verursacht 10 Schaden weniger. 
+(CD: 4)
+
+Welle 2: Goblin-Scherge (HP: 60)
+13.	Nagel-Keule: 14 Schaden.
+14.	Instabile Kürbisbombe: 10 Schaden sofort + 5 Schaden in der nächsten Runde 
+durch Feuer. (CD: 3)
+15.	Wahnsinniges Gelächter: Der Scherge heilt sich um 15 HP, verliert aber in der 
+nächsten Runde 5 Schaden auf seinen Angriff. (CD: 5)
+16.	Splittergranate: 22 Schaden. (CD: 4)
+
+
+
+
+Welle 3: Prototyp-Kampfgleiter (HP: 115)
+13.	MG-Sperrfeuer: 18 Schaden.
+14.	Turbinen-Schock: 15 Schaden + Der Spieler darf in der nächsten Runde nur 
+seinen Standard-Angriff nutzen. (CD: 5)
+15.	Hitzesuchende Rakete: 30 Schaden. (CD: 6)
+16.	Täuschkörper: Blockt die nächste Spezialfähigkeit des Spielers komplett ab. 
+(CD:5)
+ 
+
+Story-Einbindung (+ 1 Units als Belohnung)
+Fury: „Sie sind auf dem Dach. Die Luft ist hier oben schon dünn wegen des Gases. Die 
+Heilkapsel ist unterwegs. Atmen Sie tief durch, solange Sie noch können. Osborn ist 
+direkt über Ihnen auf seinem Gleiter. Er wird versuchen, Sie mit seinen Bomben in die 
+Enge zu treiben. Bleiben Sie in Bewegung!“
+*	
+Der Boss: Green Goblin (HP: 240)
+Spezial-Taktik: Alle 3 Runden wirft der Goblin eine "Mega-Kürbisbombe". Diese 
+explodiert nach genau 2 Runden und verursacht 50 Schaden.
+Der Spieler kann die Bombe entschärfen, indem er dem Goblin in der Zeit, in der die 
+Bombe tickt, insgesamt mindestens 40 Schaden zufügt. Schafft er das nicht, kassiert er 
+den massiven Schaden. Dies zwingt den Spieler, seine starken Attacken für die 
+"Bomben-Phasen" aufzusparen.
+BOSS: Green Goblin (HP: 240)
+13.	Goblin-Handschuh: Verursacht Verursacht 22 Schaden.
+14.	Gleiter-Ramme: 20 Schaden. Falls der Spieler im nächsten Zug eine 
+Spezialfähigkeit nutzt, erleidet er 10 Rückstoß-Schaden. (CD: 4)
+15.	Halluzinogenes Gas: Verursacht 10 Schaden. Der Spieler hat in der nächsten 
+Runde eine 50% Chance, seinen Angriff komplett zu verfehlen. (CD: 5)
+16.	Kürbisbomben-Teppich: Der Goblin wirft 3 kleine Bomben. Verursacht 
+insgesamt 36 Schaden (3x12). (CD: 6)
+
+5.	Mission: Operation Tentakel-Griff
+(Fury steht vor einer digitalen Karte, die ein unterirdisches A.I.M.-Labor zeigt.)
+Fury: „Hören Sie gut zu. Otto Octavius hat sich in einem Unterwasser-Labor im 
+Atlantik verschanzt. Er hat die Kontrolle über das lokale Energienetz übernommen und 
+nutzt es, um ein experimentelles Fusions-Kraftwerk zu überlasten. Wenn das Ding 
+hochgeht, ziehen wir eine Flutwelle nach New York, die alles wegspült.
+Das Labor ist ein Labyrinth aus Sicherheitssystemen und seinen neuesten 'Octo-Bots'. 
+Kämpfen Sie sich durch die Korridore. Wir haben eine wasserfeste Heilkapsel in die 
+Luftschleuse geschossen – nutzen Sie sie, bevor Sie den Kern erreichen. Doc Ock ist 
+ein Genie, aber sein Ego ist seine größte Schwäche. Er wird versuchen, Sie 
+festzuhalten, während er Sie analysiert. Lassen Sie das nicht zu!“
+
+Die Vor-Wellen (Der Weg zum Reaktor-Kern)
+Welle 1: Mikro-Octobot (HP: 40)
+17.	Laser-Schnitt: 12 Schaden.
+18.	Magnet-Impuls: 6 Schaden. Der nächste Angriff des Spielers verursacht 8 
+Schaden weniger (CD: 3)
+19.	Haft-Mine: Verursacht in der übernächsten Runde automatisch 15 Schaden. 
+(CD: 4)
+20.	System-Scan: Die Drohne analysiert den Spieler. Sie weicht dem nächsten 
+Angriff zu 50% aus. (CD: 5)
+
+Welle 2: Forschungs-Sicherheitswache (HP: 60)
+17.	Schock-Stab: 14 Schaden.
+18.	Kryo-Granate: 8 Schaden. Der Spieler kann in der nächsten Runde keine 
+Spezialfähigkeiten mit einer Abklingzeit von 5 oder höher nutzen. (CD: 4)
+19.	Adrenalin-Injektion: Heilt sofort 20 HP (CD: 5)
+20.	Schall-Pistole: 22 Schaden. (CD: 4)
+
+
+
+
+Welle 3: Prototyp-Greifarm-Bot (HP: 110)
+17.	Zangen-Schlag: 18 Schaden.
+18.	Fesseln: 12 Schaden. Der Spieler verliert in der nächsten Runde seine Fähigkeit 
+auszuweichen (z. B. Spider-Mans Spinnensinn oder Miles Morales' Camouflage). 
+(CD: 5)
+19.	Kohlenstoff-Verbundpanzerung: Blockt die nächsten 25 Schaden. (CD: 4)
+20.	Überlastungs-Stoß: 32 Schaden, aber der Bot erleidet nächste Runde selbst 10 
+Schaden durch Kurzschluss. (CD:6)
+ 
+
+Story-Einbindung (+ 1 Units als Belohnung)
+Fury: „Sie sind fast da. Die Luftschleuse öffnet sich. Greifen Sie sich die Vorräte in der 
+Kapsel und atmen Sie kurz durch. Octavius wartet im Zentrum des Reaktors. Er hat 
+seine Arme auf die neue Energiequelle kalibriert. Das wird kein Spaziergang – er wird 
+versuchen, Ihre stärksten Attacken zu unterdrücken.“
+*	
+Der Boss: Doctor Octopus (HP: 240)
+Spezial-Taktik: Alle 4 Runden setzt Doc Ock seinen "Präzisions-Griff" ein. Er blockiert 
+für 2 Runden einen zufälligen Spezialfähigkeit-Slot des Spielers (Slot 2, 3 oder 4). 
+Während dieser Zeit kann die Fähigkeit nicht genutzt werden, und falls sie bereits eine 
+Abklingzeit hatte, pausiert diese (sie zählt nicht weiter herunter). 
+BOSS Doctor Octopus: (HP: 240)
+17.	Metallischer Hieb: Verursacht 22 Schaden.
+18.	Tentakel-Schild: Doc Ock wirbelt seine Arme. Er blockt den nächsten Angriff 
+komplett und wirft 12 Schaden auf den Spieler zurück. (CD: 4)
+19.	Trümmerwurf: Er greift sich Teile des Reaktors. Verursacht 28 Schaden. Falls 
+der Spieler in dieser Runde blockt, wird der Block ignoriert. (CD: 5)
+20.	Reaktor-Überladung: Doc Ock zapft den Kern an. Verursacht 35 Schaden und 
+setzt die Abklingzeit einer zufälligen Spielerfähigkeit auf ihren Maximalwert 
+zurück. (CD: 6)
+
+6.	Mission: Operation Goldener Käfig
+(Fury steht in einem dunklen Büro, im Hintergrund sieht man die Skyline von New York.)
+Fury: „Rekrut, wir haben Wilson Fisk – den Kingpin – zu lange gewähren lassen. Er hat 
+ein neues unterirdisches Kasino-Netzwerk aufgebaut, das als Waschsalon für Gelder 
+internationaler Terrororganisationen dient. Wenn wir den Geldfluss nicht stoppen, 
+kauft er sich morgen ein eigenes Land.
+Fisk hat sich in seinem Penthouse im Fisk Tower verschanzt. Um zu ihm zu gelangen, 
+müssen Sie sich durch seine Straßenschläger, korrupte Sicherheitskräfte und seinen 
+persönlichen Leibwächter kämpfen. Sobald Sie oben sind, schicken wir die Heilkapsel 
+per Hubschrauber. Aber Vorsicht: Fisk ist kein einfacher Gangster. Er ist ein Berg aus 
+Muskeln und wird versuchen, Sie mit seinem Einfluss zu erdrücken.“
+
+Die Vor-Wellen (Der Aufstieg im Fisk Tower)
+Welle 1: Fisk-Straßenschläger (HP: 45)
+21.	Schlagring-Hieb: 13 Schaden.
+22.	Taschen-Sand: 5 Schaden + Blend-Effekt: Der nächste Angriff des Spielers hat 
+eine 50% Chance, komplett zu verfehlen (CD: 3)
+23.	Schutzgeld-Erpressung: Der Schläger stiehlt 10 HP (Schaden am Spieler, 
+Heilung für Schläger). (CD: 5)
+24.	Verstärkung rufen: Der nächste Angriff des Schlägers verursacht +10 Schaden. 
+(CD: 4)
+
+Welle 2: Korrupte SWAT-Einheit (HP: 65)
+21.	Schlagstock: 15 Schaden.
+22.	Blendgranate: 10 Schaden. Der Spieler kann in der nächsten Runde keine 
+Spezialfähigkeiten nutzen (nur Standard-Angriffe) (CD: 4)
+23.	Einsatzschild: Blockt die nächsten 20 Schaden komplett ab (CD: 5)
+24.	Tränengas: Verursacht 6 Schaden pro Runde für 3 Runden (Giftschaden). (CD: 
+4)
+
+
+
+
+Welle 3: Fisks persönlicher „Enforcer“ (HP: 115)
+21.	Schwerer Schwinger: 18 Schaden.
+22.	Bären-Umklammerung: 15 Schaden. Der Spieler verursacht in seiner nächsten 
+Runde 50% weniger Schaden). (CD: 5)
+23.	Kevlar-Weste: Reduziert jeden erlittenen Schaden für die nächsten 2 Runden 
+um 10. (CD: 6)
+24.	Kopfstoß: 25 Schaden. Falls der Spieler unter 100 HP ist, wird er für 1 Runde 
+betäubt (setzt aus). (CD:5)
+ 
+Story-Einbindung (+ 1 Units als Belohnung)
+Fury: „Gute Arbeit. Die Etage gehört uns. Die Heilkapsel ist auf dem Balkon gelandet – 
+frischen Sie Ihre Vorräte auf. Fisk wartet bereits im Büro. Er hat keine Angst vor Ihnen. 
+Er glaubt, dass jeder Mensch einen Preis hat. Beweisen Sie ihm das Gegenteil!“
+*	
+Der Boss: Kingpin (HP: 280)
+Spezial-Taktik: Alle 4 Runden aktiviert Kingpin den Effekt „Gekaufte Informationen“. 
+Der nächste Angriff des Spielers (egal wie stark) verursacht 0 Schaden an Kingpin und 
+heilt Kingpin stattdessen um genau diesen Schadenswert.
+Der Spieler muss diese Runde mit einem schwachen Standard-Angriff „verschwenden“, 
+um danach wieder mit starken Fähigkeiten wie dem Götterschlag (Thor) oder Giant-
+Man (Ant-Man) angreifen zu können.
+
+BOSS Kingpin: (HP: 280)
+21.	Stockhieb: Verursacht 24 Schaden.
+22.	Sumo-Ansturm: 22 Schaden + Der Spieler verliert alle aktiven Schilde oder 
+Verteidigungs-Buffs. (CD: 4)
+23.	Bestechungs-Versuch: Kingpin heilt sich um 35 HP. Falls der Spieler in dieser 
+Runde keinen Schaden verursacht hat, heilt er sich stattdessen um 60 HP. (CD: 
+5)
+24.	Zermalmender Griff: Kingpin packt den Helden. Verursacht 40 Schaden. Falls 
+der Spieler unter 60 HP ist, verursacht dieser Angriff 60 Schaden. (CD: 6)
+7.	Mission: Operation Jenseits
+(Fury steht vor einem flimmernden Bildschirm, der violette Risse im Raum-Zeit-Gefüge 
+zeigt.)
+Fury: „Rekrut, wir haben einen direkten Übergriff aus der Unterwelt. Hela hat 
+begonnen, die Barriere zwischen Hel und unserer Welt einzureißen. Sie zieht die 
+Seelen ganzer Städte in ihr Reich, um ihre Armee der Untoten zu vergrößern.
+Sie müssen den Ankerpunkt ihrer Macht finden – die Katakomben der Verzweiflung. 
+Dort wimmelt es von Draugr-Kriegern und Bestien, die keinen Schmerz kennen. Wir 
+schmeißen die Heilkapsel direkt vor dem Thronsaal ab. Aber Vorsicht: Hela nährt sich 
+von der Lebensenergie anderer. Je mehr Sie versuchen zu überleben, desto hungriger 
+wird sie. Machen wir dem Spuk ein Ende!“
+
+Die Vor-Wellen (Der Abstieg nach Hel)
+Welle 1: Draugr-Krieger (HP: 45)
+25.	Verrottete Klinge: 13 Schaden.
+26.	Grabeskälte: 8 Schaden. Der Spieler macht in der nächsten Runde 5 Schaden 
+weniger, da seine Glieder gefrieren (CD: 3)
+27.	Wiedergänger: Falls der Draugr besiegt wird, kehrt er in der nächsten Runde 
+mit 10 HP zurück (nur einmalig). (CD: 6)
+28.	Schild aus Knochen: Blockt die nächsten 15 Schaden (CD: 5)
+
+Welle 2: Hel-Bestie (HP: 65)
+25.	Zerfleischen: 12 Schaden + 4 Blutungsschaden für 2 Runden
+26.	Furchterregendes Geheul: Der Spieler darf in der nächsten Runde keine Buffs 
+(Schadenserhöhungen) nutzen (CD: 4)
+27.	Schatten-Sprung: Die Bestie weicht dem nächsten Angriff komplett aus (CD: 5)
+28.	Todesbiss: 26 Schaden. Falls der Spieler bereits blutet, heilt sich die Bestie um 
+10 HP. (CD: 4)
+
+
+
+
+Welle 3: Frost-Wächter (HP: 125)
+25.	Eis-Keule: 20 Schaden.
+26.	Eis-Panzer: Reduziert jeden eingehenden Schaden für 3 Runden um 8. (CD: 5)
+27.	Einfrieren: Der Spieler kann in der nächsten Runde keine Spezialfähigkeiten 
+nutzen, die einen CD von 4 oder niedriger haben. (CD: 6)
+28.	Gletscher-Einsturz: 30 Schaden. Der Spieler verliert seinen nächsten Schild-
+Effekt sofort. (CD:5)
+ 
+Story-Einbindung (+ 1 Units als Belohnung)
+Fury: „Sie sind im Zentrum. Die Heilkapsel ist gelandet. Nutzen Sie sie, aber seien Sie 
+gewarnt: Wir haben Berichte, dass Hela jede Heilung in Ihrer Nähe spüren kann. Sie 
+wird diese Energie nutzen, um ihre Klingen zu schärfen. Bleiben Sie wachsam!“
+*	
+Der Boss: Hela (HP: 260)
+Spezial-Taktik: Jedes Mal, wenn der Spieler eine Fähigkeit nutzt, die ihn heilt (z. B. 
+Wolverines Heilfaktor oder Groots Wachstumsschub) oder einen Schild/Block erzeugt 
+(z. B. Captain Americas Schild-Block oder Venoms Symbionten-Schild), wird Hela 
+zornig. Ihr nächster Angriff verursacht zusätzlich +15 Schaden und kann nicht geblockt 
+werden.
+Dies zwingt den Spieler dazu, Heilung nur im absoluten Notfall einzusetzen und 
+stattdessen auf pure Offensive zu setzen.
+
+BOSS Hela: (HP: 260)
+25.	Nekro-Schwerter: Verursacht 24 Schaden.
+26.	Seelen-Entzug: 15 Schaden. Hela heilt sich um die Menge an Schaden, die der 
+Spieler in dieser Runde durch Blutung oder Gift erleidet. (CD: 4)
+27.	Todesurteil: Hela markiert den Spieler. In 3 Runden erleidet der Spieler 
+automatisch 40 Schaden, es sei denn, er fügt Hela in dieser Zeit mindestens 50 
+Schaden zu. (CD: 5)
+28.	Armee der Toten: Hela beschwört Schatten. Der Spieler erleidet in dieser 
+Runde 15 Schaden und in der nächsten Runde 25 Schaden. (CD: 6)
+
+8.	Mission: Operation Spiegelbild
+(Fury steht vor einem flimmernden Bildschirm, der violette Risse im Raum-Zeit-Gefüge 
+zeigt.)
+Fury: „Hören Sie gut zu. Wir haben ein Problem in einer unserer geheimen 
+Trainingseinrichtungen in den Rocky Mountains. Taskmaster ist dort eingebrochen und 
+hat die gesamte Basis übernommen. Er nutzt unsere eigene Ausrüstung, um eine neue 
+Generation von Söldnern auszubilden – mit Ihren Kampfdaten als Vorlage.
+Sie müssen dort rein und den Laden dichtmachen. Er hat die Einrichtung mit seinen 
+Schülern und automatisierten Mimik-Drohnen gesichert. Die Heilkapsel landet auf 
+dem Übungsplatz vor dem Hauptquartier. Aber seien Sie gewarnt: Taskmaster hat Ihr 
+Dossier gelesen. Er kennt jeden Schlag, den Sie ausführen werden, bevor Sie ihn 
+überhaupt planen. Überraschen Sie ihn – wenn das überhaupt möglich ist.“
+Die Vor-Wellen (Der Sturm auf die Trainingsbasis)
+Welle 1: Söldner-Rekrut (HP: 45)
+29.	Militär-Messer: 13 Schaden.
+30.	Blendgranate: 5 Schaden. Der nächste Angriff des Spielers hat eine 50% 
+Chance, daneben zu gehen (CD: 3)
+31.	Deckung suchen: Blockt die nächsten 12 Schaden (CD: 4)
+32.	Präzisionsschuss: 22 Schaden (CD: 5)
+
+Welle 2: Mimik-Drohne (HP: 65)
+29.	Laser-Puls: 14 Schaden
+30.	Daten-Scan: Die Drohne analysiert den Spieler. Nächste Runde erleidet der 
+Spieler 100% mehr Schaden durch den Standard-Angriff der Drohne (CD: 4)
+31.	Schutz-Matrix: Die Drohne kopiert den letzten Verteidigungs-Effekt des 
+Spielers (Schild oder Block). (CD: 5)
+32.	Feedback-Strahl: 20 Schaden. Falls der Spieler in dieser Runde eine 
+Spezialfähigkeit nutzt, erleidet er 10 Rückstoß-Schaden (CD: 4)
+
+
+
+
+Welle 3: Taskmasters Meisterschüler (HP: 115)
+29.	Breitschwert-Hieb: 18 Schaden.
+30.	Schild-Stoß: 15 Schaden + Der Spieler darf in der nächsten Runde keine 
+Fähigkeiten nutzen, die ihn heilen oder schützen. (CD: 5)
+31.	Bogen-Salve: 3 Pfeile à 8 Schaden (Gesamt: 24) (CD: 4)
+32.	Kampf-Analyse: Der Meisterschüler weicht dem nächsten Angriff des Spielers 
+zu 100% aus und kontert sofort mit 15 Schaden (CD:6)
+ 
+Story-Einbindung (+ 1 Units als Belohnung)
+Fury: „Die Rekruten sind Geschichte. Gute Arbeit. Die Heilkapsel ist auf dem 
+Landeplatz direkt vor Ihnen. Nutzen Sie sie jetzt. Taskmaster beobachtet Sie bereits 
+vom Balkon aus. Er hat jede Ihrer Bewegungen im Kampf gegen seine Schüler 
+analysiert. Gehen Sie da rein und zeigen Sie ihm etwas, das nicht in seinen Akten 
+steht!“
+*	
+Der Boss: Taskmaster (HP: 240)
+Spezial-Taktik: Jedes Mal, wenn der Spieler eine Spezialfähigkeit (CD > 0) einsetzt, 
+„kopiert“ Taskmaster die Wucht dieses Angriffs. Sein nächster Angriff verursacht 
+zusätzlich 50% des Schadens, den die Spezialfähigkeit des Spielers gerade an ihm 
+verursacht hat.
+Die Lösung: Der Spieler muss abwägen, ob ein massiver Schlag (wie Thors Götterschlag 
+mit bis zu 48 Schaden) das Risiko wert ist, im nächsten Zug einen extrem verstärkten 
+Konter zu kassieren.
+
+BOSS Taskmaster: (HP: 240)
+29.	Waffenmeister-Kombination: Verursacht 22 Schaden. Taskmaster wechselt 
+blitzschnell zwischen Schwert und Schild.
+30.	Perfekte Kopie: Taskmaster nutzt eine Version deines eigenen Standard-
+Angriffs. Verursacht den Maximalschaden deines Standard-Angriffs + 5. (CD: 4)
+31.	Schwachstellen-Analyse: 15 Schaden. Erhöht die Abklingzeit der zuletzt vom 
+Spieler genutzten Fähigkeit um +2. (CD: 5)
+32.	Ultimatives Echo: Er nutzt eine Kombination aus den Stilen von Cap, Hawkeye 
+und Black Widow. Verursacht 35 Schaden und ignoriert alle Schilde/Blocks. 
+(CD: 6)
+9.	Mission: Operation Hexenfeuer
+(Fury steht vor einem flimmernden Bildschirm, der violette Risse im Raum-Zeit-Gefüge 
+zeigt.)
+Fury: „Hören Sie gut zu, Rekrut. Wir haben eine magische Anomalie in einer Kleinstadt 
+registriert. Agatha Harkness hat das 'Darkhold' benutzt, um einen Riss in die dunkle 
+Dimension zu öffnen. Wenn wir sie nicht stoppen, wird sie die Lebenskraft der 
+gesamten Ostküste absaugen, um ihre eigene Macht zu nähren.
+Der Wald um ihr Versteck ist verhext. Sie werden gegen Marionetten und 
+Schattenwesen kämpfen müssen, bevor Sie zu ihr durchdringen. Wir haben eine mit 
+Runen geschützte Heilkapsel in die Zone geschickt. Aber Vorsicht: Agatha ist eine 
+Meisterin der Manipulation. Sie wird versuchen, Ihre Strategie gegen Sie zu 
+verwenden. Wenn Sie in ein Muster verfallen, hat sie Sie bereits besiegt.“
+Die Vor-Wellen (Der verzauberte Wald)
+Welle 1: Verhexte Marionette (HP: 40)
+33.	Holz-Hieb: 12 Schaden.
+34.	Faden-Zug: 6 Schaden. Die nächste Spezialfähigkeit des Spielers kostet ihn 
+zusätzlich 5 eigene HP (CD: 3)
+35.	Starre: Die Marionette blockt den nächsten Angriff zu 100%, kann aber nächste 
+Runde nicht angreifen (CD: 5)
+36.	Gliedmaßen-Wurf: 20 Schaden, danach heilt sich die Marionette um 5 HP (CD: 
+4)
+
+Welle 2: Schatten-Dämon (HP: 65)
+33.	Spektral-Kralle: 14 Schaden
+34.	Furcht-Aura: 10 Schaden. Der nächste Angriff des Spielers verursacht 50% 
+weniger Schaden (CD: 4)
+35.	Phasen-Shift: Der Dämon wird unsichtbar und weicht dem nächsten Angriff 
+komplett aus. (CD: 5)
+36.	Lebensentzug: 15 Schaden. Der Dämon heilt sich um den verursachten 
+Schaden (CD: 4)
+
+
+
+
+Welle 3: Wächter des Dunkelbuchs (HP: 115)
+33.	Runen-Stab: 18 Schaden.
+34.	Chaos-Schild: Erzeugt einen Schild von 25 HP. Solange der Schild hält, 
+verursachen Angriffe auf den Wächter 5 Rückstoß-Schaden. (CD: 5)
+35.	Fluch der Langsamkeit: Erhöht alle aktuellen Abklingzeiten des Spielers um +1 
+Runde.  (CD: 6)
+36.	Höllenfeuer-Stoß: 30 Schaden. Falls der Spieler einen aktiven Schild hat, wird 
+dieser sofort zerstört (CD:5)
+ 
+Story-Einbindung (+ 1 Units als Belohnung)
+Fury: „Sie haben die Wächter erledigt. Agatha wartet auf der Lichtung. Die Heilkapsel 
+ist direkt vor Ihnen gelandet – nutzen Sie die Vorräte. Denken Sie daran: Agatha liebt 
+es, wenn man berechenbar ist. Brechen Sie das Muster, oder Sie enden als eine ihrer 
+Marionetten!“
+*	
+Der Boss: Agatha Harkness (HP: 245)
+Spezial-Taktik: Agatha bestraft Spieler, die zweimal hintereinander denselben 
+Aktionstyp wählen. Sie möchte, dass der Kampf nach ihren Regeln abläuft.
+*	Die Taktik: Wenn der Spieler zwei Runden hintereinander eine Spezialfähigkeit 
+(CD > 0) nutzt, erleidet er sofort 25 Schaden durch magisches Feedback.
+*	Die Taktik: Wenn der Spieler zwei Runden hintereinander nur seinen Standard-
+Angriff nutzt, heilt sich Agatha sofort um 25 HP.
+*	Die Lösung: Der Spieler muss zwingend abwechseln: Standard -> Spezial -> 
+Standard -> Spezial.
+
+
+
+
+
+
+BOSS Agatha Harkness: (HP: 245)
+33.	Chaos-Energie-Ball: Verursacht 22 Schaden.
+34.	Darkhold-Fluch: 15 Schaden. Verringert den Heilungseffekt der nächsten 
+Spielerfähigkeit (z. B. Wolverines Heilfaktor) um 100%. (CD: 4)
+35.	Lila Illusion: Agatha erschafft Duplikate. Der nächste Angriff des Spielers trifft 
+garantiert nicht und Agatha kontert mit 15 Schaden. (CD: 5)
+36.	Hexen-Sabbat: 35 Schaden. Falls der Spieler in dieser Runde eine 
+Spezialfähigkeit genutzt hat, wird seine Abklingzeit für diese Fähigkeit auf den 
+Maximalwert gesetzt. (CD: 6)
+

@@ -34,7 +34,11 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
             await db.commit()
 
         user_id = interaction.user.id
-        karte = module.random_gameplay_card(module.karten, alpha_enabled=module.ALPHA_PHASE_ENABLED)
+        karte = module.random_gameplay_card(
+            module.karten,
+            alpha_enabled=module.ALPHA_PHASE_ENABLED,
+            context="daily",
+        )
 
         is_new_card = await module.check_and_add_karte(user_id, karte)
         card_name_text = str(karte.get("name") or "Unbekannte Karte")
@@ -82,7 +86,7 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
 
     @bot.tree.command(
         name="eingeladen",
-        description="W\u00e4hle, wer dich eingeladen hat - beide erhalten 1x Infinitydust [Einmalig]",
+        description="Wer hat dich eingeladen? Best\u00e4tigung im Kanal \u2013 Regeln stehen im Embed.",
     )
     async def eingeladen(interaction: discord.Interaction):
         try:
@@ -145,15 +149,23 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
             view = module.InviteUserSelectView(user_id, list(all_user_ids))
             if is_admin_user:
                 description = (
-                    "W\u00e4hle aus, wer dich eingeladen hat!\n\n"
-                    "**Beide erhaltet ihr 1x Infinitydust** \U0001F48E\n\n"
-                    "\U0001F5DD **Du bist Admin - kannst unendlich oft einladen!**"
+                    "W\u00e4hle aus, wer dich eingeladen hat.\n\n"
+                    "Es erscheint eine \u00f6ffentliche Nachricht: **Einlader**, **Eingeladener** "
+                    "und ggf. ein **Admin** m\u00fcssen best\u00e4tigen.\n\n"
+                    "Bei der **ersten** abgeschlossenen Einladung eines Einladers: "
+                    "Einlader erh\u00e4lt eine **Karte**, Eingeladener **5 Infinitydust**. "
+                    "Danach: **je 5 Infinitydust**.\n\n"
+                    "\U0001F5DD **Du bist Admin** \u2013 der `/eingeladen`-Limit f\u00fcr dich gilt nicht."
                 )
             else:
                 description = (
-                    "W\u00e4hle aus, wer dich eingeladen hat!\n\n"
-                    "**Beide erhaltet ihr 1x Infinitydust** \U0001F48E\n\n"
-                    "\u26a0\ufe0f **Dieser Command kann nur einmal verwendet werden!**"
+                    "W\u00e4hle aus, wer dich eingeladen hat.\n\n"
+                    "Es erscheint eine \u00f6ffentliche Nachricht: **Einlader** und **du** "
+                    "m\u00fcssen best\u00e4tigen (ab der 6. Einladung desselben Einladers zus\u00e4tzlich ein **Admin**).\n\n"
+                    "Bei der **ersten** abgeschlossenen Einladung dieses Einladers: "
+                    "Er erh\u00e4lt eine **Karte**, du **5 Infinitydust**. "
+                    "Danach: **je 5 Infinitydust**.\n\n"
+                    "\u26a0\ufe0f **Du kannst diesen Ablauf nur einmal abschlie\u00dfen** (au\u00dfer du bist Admin)."
                 )
 
             embed = discord.Embed(

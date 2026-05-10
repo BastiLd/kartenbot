@@ -327,6 +327,33 @@ async def init_db():
     )
     await db.execute(
         """
+        CREATE TABLE IF NOT EXISTS invite_stats (
+            user_id INTEGER PRIMARY KEY,
+            completed_invites INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS invite_pending (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            message_id INTEGER,
+            inviter_id INTEGER NOT NULL,
+            invitee_id INTEGER NOT NULL,
+            invitee_is_admin INTEGER NOT NULL DEFAULT 0,
+            need_admin INTEGER NOT NULL DEFAULT 0,
+            inviter_ok INTEGER NOT NULL DEFAULT 0,
+            invitee_ok INTEGER NOT NULL DEFAULT 0,
+            admin_ok INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+        )
+        """
+    )
+    await db.execute(
+        """
         CREATE TABLE IF NOT EXISTS analytics_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at INTEGER,

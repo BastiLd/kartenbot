@@ -322,7 +322,7 @@ async def remove_karte_amount(user_id, karten_name, amount: int) -> int:
 
 
 async def add_mission_reward(user_id, *, alpha_enabled: bool = True):
-    karte = random_gameplay_card(karten, alpha_enabled=alpha_enabled)
+    karte = random_gameplay_card(karten, alpha_enabled=alpha_enabled, context="mission_reward")
     is_new_card = await check_and_add_karte(user_id, karte)
     return karte, is_new_card
 

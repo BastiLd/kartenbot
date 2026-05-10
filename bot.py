@@ -58,7 +58,14 @@ from karten import (
     karten as RAW_KARTEN,
 )
 from battle_flow_config import should_carry_cooldowns
-from mission_enemies import get_operation_broken_timeline_encounters
+import game_ui_texts
+from mission_enemies import (
+    get_operation_broken_timeline_encounters,
+    get_operation_goldener_kaefig_encounters,
+    get_operation_gruener_terror_encounters,
+    get_operation_hexenfeuer_encounters,
+    get_operation_technischer_kollaps_encounters,
+)
 from services.battle import (
     STATUS_CIRCLE_MAP,
     STATUS_PRIORITY_MAP,
@@ -106,6 +113,14 @@ from services.guild_settings import (
     set_latest_anfang_message as store_latest_anfang_message,
     set_maintenance_mode,
     set_message_visibility,
+)
+from services.invite_store import (
+    create_invite_pending,
+    finalize_invite_pending_if_ready,
+    get_invite_completed_count,
+    load_invite_pending,
+    mark_invite_pending_flag,
+    set_invite_pending_message_id,
 )
 from services.request_store import (
     claim_fight_request,
@@ -203,7 +218,9 @@ VIEW_KIND_MISSION_ACCEPT = "mission_accept"
 VIEW_KIND_MISSION_CARD_SELECT = "mission_card_select"
 VIEW_KIND_MISSION_PAUSE = "mission_pause"
 VIEW_KIND_MISSION_NEW_CARD_SELECT = "mission_new_card_select"
+VIEW_KIND_MISSION_ENCOUNTER_PREVIEW = "mission_encounter_preview"
 VIEW_KIND_MISSION_BATTLE = "mission_battle"
+VIEW_KIND_INVITE_CONFIRM = "invite_confirm"
 
 THREAD_KIND_FIGHT = "fight"
 THREAD_KIND_MISSION = "mission"
@@ -917,7 +934,7 @@ def _preferred_attack_index_for_restricted_bonus(
 
 
 def _queue_flat_damage_boost(
-    owner: object,
+    owner: _WordRuntimeOwner,
     effect_events: list[str],
     *,
     target_id: int,
@@ -1041,7 +1058,7 @@ def _consume_capped_damage_multiplier(
     effect = _find_active_effect(active_effects, player_id, "capped_damage_multiplier")
     if effect is None:
         return current_damage, 0, None
-    multiplier = max(1.0, float(effect.get("multiplier", 1.0) or 1.0))
+    multiplier = max(1.0, float(_maybe_float(effect.get("multiplier")) or 1.0))
     max_bonus = max(0, _effect_amount(effect, "max_bonus", 0))
     raw_bonus = max(0, int(round(current_damage * (multiplier - 1.0))))
     bonus = min(raw_bonus, max_bonus) if max_bonus > 0 else raw_bonus
@@ -1084,7 +1101,7 @@ def _clear_negative_active_effects(
 
 
 def _apply_word_runtime_effect(
-    owner: object,
+    owner: _WordRuntimeOwner,
     effect_events: list[str],
     *,
     eff_type: str,
@@ -1094,7 +1111,7 @@ def _apply_word_runtime_effect(
 ) -> bool:
     effect = effect or {}
     if eff_type == "clear_negative_effects":
-        active_effects = getattr(owner, "active_effects")
+        active_effects = owner.active_effects
         removed = _clear_negative_active_effects(active_effects, target_id)
         if hasattr(owner, "special_lock_next_turn"):
             owner.special_lock_next_turn[target_id] = 0
@@ -1125,8 +1142,8 @@ def _apply_word_runtime_effect(
         owner._append_effect_event(effect_events, _effect_source_text(attack_name, f"Dauerhafte Schadenssteigerung: +{amount} Schaden (stapelbar)."))
         return True
     if eff_type == "incoming_damage_multiplier":
-        multiplier = max(0.0, float(effect.get("multiplier", 1.0) or 1.0))
-        uses = max(1, int(effect.get("uses", 1) or 1))
+        multiplier = max(0.0, float(_maybe_float(effect.get("multiplier")) or 1.0))
+        uses = max(1, int(_maybe_int(effect.get("uses")) or 1))
         _append_active_effect(
             getattr(owner, "active_effects"),
             target_id,
@@ -2009,6 +2026,20 @@ class _SupportsMixHealOrMax(Protocol):
     def _append_effect_event(self, events: list[str], text: str) -> None: ...
 
 
+class _WordRuntimeOwner(Protocol):
+    active_effects: dict[int, list[dict[str, object]]]
+    pending_flat_bonus: dict[int, int]
+    pending_flat_bonus_uses: dict[int, int]
+    special_lock_next_turn: dict[int, int]
+    blind_next_attack: dict[int, float]
+
+    def _append_effect_event(self, events: list[str], text: str) -> None: ...
+
+    def queue_outgoing_attack_modifier(self, target_id: int, *, flat: int, turns: int, source: str | None = None) -> None: ...
+
+    def queue_incoming_modifier(self, target_id: int, *, flat: int, turns: int, source: str | None = None) -> None: ...
+
+
 def _apply_mix_heal_or_max_effect(
     owner: _SupportsMixHealOrMax,
     target_id: int,
@@ -2720,31 +2751,126 @@ def _build_mission_embed(mission_data: dict) -> discord.Embed:
 
 
 def build_operation_broken_timeline_mission(*, mission_number: int | None = None, is_admin: bool = False) -> dict[str, Any]:
-    reward_card = random_gameplay_card(karten, alpha_enabled=ALPHA_PHASE_ENABLED)
+    reward_card = random_gameplay_card(
+        karten,
+        alpha_enabled=ALPHA_PHASE_ENABLED,
+        context="mission_build_reward",
+    )
     suffix = "Admin" if is_admin else f"{mission_number or 1}/2"
     return {
         "mission_id": "operation_broken_timeline",
-        "title": f"Operation Broken Timeline ({suffix})",
-        "description": (
-            "**Nick Furys Hologramm flackert auf.**\n\n"
-            "Agent, wir haben ein Problem, das jede normale Bedrohung wie ein Trainingsprogramm aussehen lässt. "
-            "In einer gebrochenen Zeitlinie ist Bruce Banner nicht Hulk geblieben, sondern Maestro geworden. "
-            "Er hat die Helden dieser Welt besiegt, herrscht über ein radioaktives Ödland und baut einen Chronos-Anker, "
-            "mit dem er unsere Realität erreichen kann.\n\n"
-            "Du gehst durch die Außenwellen seiner Festung, sicherst die Route und stellst dich danach Maestro selbst."
-        ),
+        "title": game_ui_texts.operation_broken_timeline_title(is_admin=is_admin, suffix=suffix),
+        "description": game_ui_texts.OPERATION_BROKEN_TIMELINE_DESCRIPTION,
         "waves": 4,
         "unit_reward_after_wave": 1,
         "interlude_after_wave": 3,
-        "interlude_title": "Furys Versorgungskapsel",
-        "interlude_text": (
-            "Beeindruckend. Die Route ist frei. Ich schicke dir jetzt eine Versorgungskapsel. "
-            "Heile dich, sortiere deine Ausrüstung und mach dich bereit. Maestro wartet im Thronsaal."
-        ),
+        "interlude_title": game_ui_texts.INTERLUDE_TITLE_DEFAULT,
+        "interlude_text": game_ui_texts.INTERLUDE_TEXT_DEFAULT,
         "reward_card": reward_card,
         "current_wave": 0,
         "player_card": None,
         "encounters": get_operation_broken_timeline_encounters(),
+    }
+
+
+MISSION_OPERATION_DEFS: dict[str, dict[str, object]] = {
+    "operation_broken_timeline": {
+        "label": "Operation Broken Timeline (Maestro)",
+        "title": "Operation Broken Timeline",
+        "description": game_ui_texts.OPERATION_BROKEN_TIMELINE_DESCRIPTION,
+        "encounters_getter": get_operation_broken_timeline_encounters,
+    },
+    "operation_technischer_kollaps": {
+        "label": "Operation Technischer Kollaps (M.O.D.O.K.)",
+        "title": "Operation Technischer Kollaps",
+        "description": (
+            "A.I.M. hat M.O.D.O.K. auf das globale Verteidigungsnetz losgelassen. "
+            "Kämpfe dich durch Laborwachen und Mechs bis zum Kernrechner."
+        ),
+        "encounters_getter": get_operation_technischer_kollaps_encounters,
+    },
+    "operation_gruener_terror": {
+        "label": "Operation Grüner Terror (Green Goblin)",
+        "title": "Operation Grüner Terror",
+        "description": (
+            "Norman Osborn will die Stadt mit Goblin-Gas überziehen. "
+            "Stoppe seine Truppen und stürze den Green Goblin vom Dach."
+        ),
+        "encounters_getter": get_operation_gruener_terror_encounters,
+    },
+    "operation_goldener_kaefig": {
+        "label": "Operation Goldener Käfig (Kingpin)",
+        "title": "Operation Goldener Käfig",
+        "description": (
+            "Wilson Fisk kontrolliert Tower und Unterwelt. "
+            "Räume die Etagen und beende den Kampf im Penthouse."
+        ),
+        "encounters_getter": get_operation_goldener_kaefig_encounters,
+    },
+    "operation_hexenfeuer": {
+        "label": "Operation Hexenfeuer (Agatha Harkness)",
+        "title": "Operation Hexenfeuer",
+        "description": (
+            "Agatha Harkness reißt die Grenze zur dunklen Dimension auf. "
+            "Besiege ihre Wächter und durchbrich den Hexenkreis."
+        ),
+        "encounters_getter": get_operation_hexenfeuer_encounters,
+    },
+}
+
+MISSION_OPERATION_ORDER: tuple[str, ...] = (
+    "operation_broken_timeline",
+    "operation_technischer_kollaps",
+    "operation_gruener_terror",
+    "operation_goldener_kaefig",
+    "operation_hexenfeuer",
+)
+
+
+def mission_operation_options() -> list[SelectOption]:
+    options: list[SelectOption] = []
+    for operation_id in MISSION_OPERATION_ORDER:
+        payload = MISSION_OPERATION_DEFS.get(operation_id) or {}
+        label = str(payload.get("label") or operation_id)
+        options.append(SelectOption(label=label[:100], value=operation_id))
+    return options
+
+
+def build_mission_from_operation(
+    operation_id: str,
+    *,
+    mission_number: int | None = None,
+    is_admin: bool = False,
+) -> dict[str, Any]:
+    if operation_id == "operation_broken_timeline":
+        return build_operation_broken_timeline_mission(mission_number=mission_number, is_admin=is_admin)
+    payload = MISSION_OPERATION_DEFS.get(str(operation_id or "").strip()) or {}
+    encounters_getter = payload.get("encounters_getter")
+    encounters: list[dict[str, Any]] = []
+    if callable(encounters_getter):
+        encounters = list(encounters_getter())
+    reward_card = random_gameplay_card(
+        karten,
+        alpha_enabled=ALPHA_PHASE_ENABLED,
+        context="mission_build_reward",
+    )
+    title = str(payload.get("title") or "Operation")
+    description = str(payload.get("description") or "Eine gefährliche Operation wartet auf dich.")
+    return {
+        "mission_id": str(operation_id or "operation_unknown"),
+        "title": title,
+        "description": description,
+        "waves": max(1, len(encounters)),
+        "unit_reward_after_wave": 1,
+        "interlude_after_wave": max(1, len(encounters) - 1),
+        "interlude_title": game_ui_texts.INTERLUDE_TITLE_DEFAULT,
+        "interlude_text": game_ui_texts.INTERLUDE_TEXT_DEFAULT,
+        "reward_card": reward_card,
+        "current_wave": 0,
+        "player_card": None,
+        "encounters": encounters,
+        "mission_number": mission_number or 1,
+        "is_admin": bool(is_admin),
     }
 
 
@@ -2761,6 +2887,83 @@ def _mission_encounter_for_wave(mission_data: dict[str, Any], wave_num: int) -> 
     if 0 <= idx < len(encounters):
         return cast(dict[str, Any], _json_clone(encounters[idx]))
     return None
+
+
+def _mission_preview_slides(mission_data: dict[str, Any], mode: str) -> list[dict[str, Any]]:
+    enc = _mission_encounters(mission_data)
+    if not enc:
+        return []
+    if str(mode or "").strip().lower() == "boss":
+        return [cast(dict[str, Any], _json_clone(enc[-1]))]
+    return [cast(dict[str, Any], _json_clone(e)) for e in enc[:3]]
+
+
+def _strip_mission_preview_keys(mission_state: dict[str, Any]) -> dict[str, Any]:
+    st = dict(mission_state)
+    st.pop("preview_index", None)
+    return st
+
+
+def _should_offer_boss_preview(mission_state: dict[str, Any]) -> bool:
+    nw = int(mission_state.get("next_wave", 1) or 1)
+    tw = int(mission_state.get("total_waves", 1) or 1)
+    if nw != tw:
+        return False
+    md = _dict_str_any(mission_state.get("mission_data"))
+    return bool(_mission_encounters(md))
+
+
+def _build_mission_enemy_preview_embed(
+    enemy: dict[str, Any],
+    *,
+    mode: str,
+    index: int,
+    total: int,
+) -> discord.Embed:
+    name = str(enemy.get("name") or "Gegner")
+    if str(mode or "").strip().lower() == "boss":
+        title = game_ui_texts.PREVIEW_TITLE_BOSS
+        desc = game_ui_texts.PREVIEW_DESCRIPTION_BOSS.format(name=name)
+    else:
+        title = game_ui_texts.PREVIEW_TITLE_LACKEY.format(index=index + 1, total=total)
+        desc = game_ui_texts.PREVIEW_DESCRIPTION_LACKEY.format(name=name)
+    embed = discord.Embed(title=title, description=desc, color=0xE74C3C)
+    hp = enemy.get("hp", "?")
+    rarity = str(enemy.get("seltenheit") or "").strip() or "—"
+    embed.add_field(name="Gegner", value=f"**{name}**\nHP: {hp}", inline=True)
+    embed.add_field(name=game_ui_texts.PREVIEW_FIELD_RARITY, value=rarity, inline=True)
+    if enemy.get("bild"):
+        embed.set_image(url=str(enemy["bild"]))
+    _add_attack_info_field(embed, enemy)
+    return embed
+
+
+async def _launch_mission_encounter_preview_or_wave(
+    interaction: discord.Interaction,
+    mission_state: dict[str, Any],
+    user_id: int,
+    mode: str,
+) -> None:
+    ms = _strip_mission_preview_keys(dict(mission_state))
+    slides = _mission_preview_slides(_dict_str_any(ms.get("mission_data")), mode)
+    if not slides:
+        await _start_mission_wave_in_thread(interaction, mission_state=ms)
+        return
+    ms["preview_index"] = 0
+    view = MissionEncounterPreviewView(user_id, ms, mode)
+    await _safe_send_channel(interaction, interaction.channel, embed=view.build_embed(), view=view)
+
+
+async def _continue_mission_after_pause_or_card_pick(
+    interaction: discord.Interaction,
+    mission_state: dict[str, Any],
+    user_id: int,
+) -> None:
+    ms = _strip_mission_preview_keys(dict(mission_state))
+    if _should_offer_boss_preview(ms):
+        await _launch_mission_encounter_preview_or_wave(interaction, ms, user_id, "boss")
+    else:
+        await _start_mission_wave_in_thread(interaction, mission_state=ms)
 
 
 def _is_operation_broken_timeline(mission_data: dict[str, Any]) -> bool:
@@ -2881,7 +3084,7 @@ class ZieheKarteView(RestrictedView):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Das ist nicht dein Button!", ephemeral=True)
             return
-        karte = random_gameplay_card(karten, alpha_enabled=ALPHA_PHASE_ENABLED)
+        karte = random_gameplay_card(karten, alpha_enabled=ALPHA_PHASE_ENABLED, context="draw_card")
         await add_karte(interaction.user.id, karte["name"])
         embed = discord.Embed(
             title=karte["name"],
@@ -4052,7 +4255,7 @@ class BattleView(DurableView):
                 return
             except Exception as e:
                 if getattr(e, "status", None) == 429:
-                    await asyncio.sleep(1.5 * (attempt + 1))
+                    await asyncio.sleep(_rate_limit_delay_from_error(e, attempt))
                     continue
                 logging.exception("Failed to edit battle log")
                 return
@@ -5928,7 +6131,7 @@ class BattleView(DurableView):
                 )
                 if any_override_effect is not None and actual_damage != before_any_override:
                     source = str(any_override_effect.get("source") or "Effekt")
-                    self._append_effect_event(bot_effect_events, f"{source}: Angriffsschaden {before_any_override} -> {actual_damage}.")
+                    self._append_effect_event(effect_events, f"{source}: Angriffsschaden {before_any_override} -> {actual_damage}.")
                 before_override = int(actual_damage)
                 actual_damage, override_effect = _consume_next_standard_damage_override(
                     self.active_effects,
@@ -5939,12 +6142,12 @@ class BattleView(DurableView):
                 )
                 if override_effect is not None and actual_damage != before_override:
                     source = str(override_effect.get("source") or "Effekt")
-                    self._append_effect_event(bot_effect_events, f"{source}: Standardangriff {before_override} -> {actual_damage} Schaden.")
+                    self._append_effect_event(effect_events, f"{source}: Standardangriff {before_override} -> {actual_damage} Schaden.")
                 before_capped = int(actual_damage)
                 actual_damage, capped_bonus, capped_effect = _consume_capped_damage_multiplier(self.active_effects, 0, actual_damage)
                 if capped_effect is not None and capped_bonus > 0:
                     source = str(capped_effect.get("source") or "Geheimakte")
-                    self._append_effect_event(bot_effect_events, f"{source}: Schaden {before_capped} -> {actual_damage} (+{capped_bonus}, max. +{_effect_amount_label(capped_effect.get('max_bonus', 0))}).")
+                    self._append_effect_event(effect_events, f"{source}: Schaden {before_capped} -> {actual_damage} (+{capped_bonus}, max. +{_effect_amount_label(capped_effect.get('max_bonus', 0))}).")
                 boost_text = _boosted_damage_effect_text(actual_damage, attack_multiplier, applied_flat_bonus_now)
                 if boost_text:
                     self._append_effect_event(effect_events, boost_text)
@@ -6032,7 +6235,7 @@ class BattleView(DurableView):
                 if hit_heal > 0:
                     healed_now = self.heal_player(0, hit_heal)
                     if healed_now > 0:
-                        self._append_effect_event(bot_effect_events, f"{str((heal_effect or {}).get('source') or 'Trefferheilung')}: Treffer heilt {healed_now} HP.")
+                        self._append_effect_event(effect_events, f"{str((heal_effect or {}).get('source') or 'Trefferheilung')}: Treffer heilt {healed_now} HP.")
             if not bot_hits_enemy or int(actual_damage or 0) <= 0:
                 is_critical = False
 
@@ -6090,7 +6293,7 @@ class BattleView(DurableView):
             eff_type = effect.get("type")
             if target != "self" and not bot_hits_enemy and eff_type not in {"stun"}:
                 continue
-            if _apply_word_runtime_effect(self, bot_effect_events, eff_type=str(eff_type), target_id=target_id, attack_name=attack_name):
+            if _apply_word_runtime_effect(self, effect_events, eff_type=str(eff_type), target_id=target_id, attack_name=attack_name):
                 continue
             if eff_type == "stealth":
                 self.grant_stealth(target_id)
@@ -7521,26 +7724,30 @@ async def _send_mission_feedback_prompt(
 
 def _mission_success_embed(reward_card: dict[str, Any], total_waves: int, *, is_new_card: bool) -> discord.Embed:
     reward_color = _card_rarity_color(cast(CardData, reward_card))
+    card_name = str(reward_card.get("name") or "?")
     if is_new_card:
         embed = discord.Embed(
-            title="🏆 Mission erfolgreich!",
-            description=f"Du hast alle {total_waves} Wellen überstanden und **{reward_card['name']}** erhalten!",
+            title=game_ui_texts.MISSION_SUCCESS_TITLE_NEW_CARD,
+            description=game_ui_texts.MISSION_SUCCESS_DESC_NEW_CARD.format(waves=total_waves, card=card_name),
             color=reward_color,
         )
         if reward_card.get("bild"):
             embed.set_image(url=str(reward_card["bild"]))
+        _add_attack_info_field(embed, reward_card)
         return embed
     embed = discord.Embed(
-        title="💎 Mission erfolgreich - Infinitydust!",
-        description=f"Du hast alle {total_waves} Wellen überstanden!",
+        title=game_ui_texts.MISSION_SUCCESS_TITLE_DUST,
+        description=game_ui_texts.MISSION_SUCCESS_DESC_DUST.format(waves=total_waves),
         color=reward_color,
     )
     embed.add_field(
-        name="Belohnung",
-        value=f"Du hattest **{reward_card['name']}** bereits - wurde zu **Infinitydust** umgewandelt!",
+        name=game_ui_texts.MISSION_SUCCESS_DUST_FIELD_NAME,
+        value=game_ui_texts.MISSION_SUCCESS_DUST_FIELD_VALUE.format(card=card_name),
         inline=False,
     )
-    embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+    if reward_card.get("bild"):
+        embed.set_image(url=str(reward_card["bild"]))
+    _add_attack_info_field(embed, reward_card)
     return embed
 
 
@@ -7604,7 +7811,10 @@ async def _start_mission_wave_in_thread(
         mission_state["mission_counted"] = True
         mission_data["mission_counted"] = True
     mission_enemy = _mission_encounter_for_wave(mission_data, wave_num)
-    bot_card = cast(CardData, mission_enemy or random_gameplay_card(karten, alpha_enabled=ALPHA_PHASE_ENABLED))
+    bot_card = cast(
+        CardData,
+        mission_enemy or random_gameplay_card(karten, alpha_enabled=ALPHA_PHASE_ENABLED, context="default"),
+    )
     mission_view = MissionBattleView(
         cast(CardData, player_card),
         bot_card,
@@ -9039,20 +9249,163 @@ class BuffTypeSelect(ui.Select):
             self.view.stop()
         await edit_interaction_message(interaction, embed=embed, view=None)
 
+class InviteConfirmationView(DurableView):
+    durable_view_kind = VIEW_KIND_INVITE_CONFIRM
+
+    def __init__(self, pending_id: int, *, need_admin_gate: bool):
+        super().__init__(timeout=None)
+        self.pending_id = int(pending_id)
+        self.need_admin_gate = bool(need_admin_gate)
+        inv_b = ui.Button(
+            label=game_ui_texts.INVITE_BTN_INVITER,
+            style=discord.ButtonStyle.success,
+            custom_id="invite_conf:inv",
+            row=0,
+        )
+        inv_b.callback = self._cb_inviter
+        self.add_item(inv_b)
+        invtee_b = ui.Button(
+            label=game_ui_texts.INVITE_BTN_INVITEE,
+            style=discord.ButtonStyle.success,
+            custom_id="invite_conf:invtee",
+            row=0,
+        )
+        invtee_b.callback = self._cb_invitee
+        self.add_item(invtee_b)
+        if self.need_admin_gate:
+            adm_b = ui.Button(
+                label=game_ui_texts.INVITE_BTN_ADMIN,
+                style=discord.ButtonStyle.primary,
+                custom_id="invite_conf:adm",
+                row=1,
+            )
+            adm_b.callback = self._cb_admin
+            self.add_item(adm_b)
+
+    def durable_payload(self) -> dict[str, Any]:
+        return {"pending_id": self.pending_id, "need_admin_gate": self.need_admin_gate}
+
+    def _status_embed(self, row: dict[str, Any]) -> discord.Embed:
+        inviter_id = int(row["inviter_id"])
+        invitee_id = int(row["invitee_id"])
+        need = bool(int(row["need_admin"] or 0))
+        inviter_u = bot.get_user(inviter_id)
+        invitee_u = bot.get_user(invitee_id)
+        im = inviter_u.mention if inviter_u else f"<@{inviter_id}>"
+        em = invitee_u.mention if invitee_u else f"<@{invitee_id}>"
+        admin_note = game_ui_texts.INVITE_ADMIN_NOTE if need else ""
+        desc = game_ui_texts.INVITE_CONFIRM_DESCRIPTION.format(
+            invitee=em,
+            inviter=im,
+            admin_note=admin_note,
+        )
+        lines: list[str] = []
+        if int(row["inviter_ok"] or 0):
+            lines.append("✅ " + game_ui_texts.INVITE_CONFIRM_ACK_INVITER)
+        if int(row["invitee_ok"] or 0):
+            lines.append("✅ " + game_ui_texts.INVITE_CONFIRM_ACK_INVITEE)
+        if need and int(row["admin_ok"] or 0):
+            lines.append("✅ " + game_ui_texts.INVITE_CONFIRM_ACK_ADMIN)
+        if lines:
+            desc += "\n\n" + "\n".join(lines)
+        embed = discord.Embed(title=game_ui_texts.INVITE_CONFIRM_TITLE, description=desc, color=0x9D4EDD)
+        embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+        return embed
+
+    async def _cb_inviter(self, interaction: discord.Interaction):
+        row = await load_invite_pending(self.pending_id)
+        if not row or str(row.get("status") or "") != "pending":
+            await interaction.response.send_message("❌ Diese Anfrage ist nicht mehr aktiv.", ephemeral=True)
+            return
+        if interaction.user.id != int(row["inviter_id"]):
+            await interaction.response.send_message("❌ Nur der ausgewählte Einlader kann hier klicken.", ephemeral=True)
+            return
+        await mark_invite_pending_flag(self.pending_id, inviter=True)
+        await interaction.response.defer()
+        await self._after_flag(interaction)
+
+    async def _cb_invitee(self, interaction: discord.Interaction):
+        row = await load_invite_pending(self.pending_id)
+        if not row or str(row.get("status") or "") != "pending":
+            await interaction.response.send_message("❌ Diese Anfrage ist nicht mehr aktiv.", ephemeral=True)
+            return
+        if interaction.user.id != int(row["invitee_id"]):
+            await interaction.response.send_message("❌ Nur der Eingeladene kann hier klicken.", ephemeral=True)
+            return
+        await mark_invite_pending_flag(self.pending_id, invitee=True)
+        await interaction.response.defer()
+        await self._after_flag(interaction)
+
+    async def _cb_admin(self, interaction: discord.Interaction):
+        row = await load_invite_pending(self.pending_id)
+        if not row or str(row.get("status") or "") != "pending":
+            await interaction.response.send_message("❌ Diese Anfrage ist nicht mehr aktiv.", ephemeral=True)
+            return
+        if not bool(int(row["need_admin"] or 0)):
+            await interaction.response.send_message("❌ Keine Admin-Freigabe nötig.", ephemeral=True)
+            return
+        if not await is_admin(interaction):
+            await interaction.response.send_message("❌ Nur ein Admin kann hier klicken.", ephemeral=True)
+            return
+        await mark_invite_pending_flag(self.pending_id, admin=True)
+        await interaction.response.defer()
+        await self._after_flag(interaction)
+
+    async def _after_flag(self, interaction: discord.Interaction):
+        result = await finalize_invite_pending_if_ready(self.pending_id, alpha_enabled=ALPHA_PHASE_ENABLED)
+        msg = interaction.message
+        if result:
+            await self.clear_durable_registration()
+            inv_id = int(result["inviter_id"])
+            exp_id = int(result["invitee_id"])
+            inv_u = bot.get_user(inv_id)
+            exp_u = bot.get_user(exp_id)
+            im = inv_u.mention if inv_u else f"<@{inv_id}>"
+            em = exp_u.mention if exp_u else f"<@{exp_id}>"
+            summary = result["reward_summary"]
+            if summary.get("kind") == "first":
+                extra = (
+                    f"\n\n🃏 {im} hat die Karte **{summary.get('card_name', '?')}** erhalten.\n"
+                    f"💎 {em} hat **5 Infinitydust** erhalten."
+                )
+            else:
+                extra = f"\n\n💎 {im} und {em} haben je **5 Infinitydust** erhalten."
+            done = discord.Embed(
+                title="🎉 Einladung abgeschlossen",
+                description=game_ui_texts.INVITE_SUCCESS.format(inviter=im, invitee=em) + extra,
+                color=0x00FF00,
+            )
+            self.stop()
+            try:
+                if msg is not None:
+                    await msg.edit(embed=done, view=None)
+            except Exception:
+                logging.exception("Failed to finalize invite message")
+            return
+        row = await load_invite_pending(self.pending_id)
+        if row and str(row.get("status") or "") == "pending":
+            try:
+                if msg is not None:
+                    await msg.edit(embed=self._status_embed(row), view=self)
+                    await _maybe_register_durable_message(msg, self)
+            except Exception:
+                logging.exception("Failed to refresh invite confirmation view")
+
+
 class InviteUserSelectView(RestrictedView):
-    def __init__(self, inviter_id, available_user_ids):
+    def __init__(self, invitee_id: int, available_user_ids: list[int]):
         super().__init__(timeout=60)
-        self.inviter_id = inviter_id
-        self.add_item(InviteUserSelect(inviter_id, available_user_ids))
+        self.invitee_id = invitee_id
+        self.add_item(InviteUserSelect(invitee_id, available_user_ids))
+
 
 class InviteUserSelect(ui.Select):
-    def __init__(self, inviter_id, available_user_ids):
-        self.inviter_id = inviter_id
-        
+    def __init__(self, invitee_id: int, available_user_ids: list[int]):
+        self.invitee_id = invitee_id
+
         options = []
-        for user_id in available_user_ids[:25]:  # Max 25 Optionen
+        for user_id in available_user_ids[:25]:
             try:
-                # Versuche User-Objekt zu bekommen (funktioniert nur wenn Bot den User sehen kann)
                 user = bot.get_user(user_id)
                 if user:
                     primary_name = safe_display_name(user, fallback=f"<@{user_id}>")
@@ -9060,102 +9413,92 @@ class InviteUserSelect(ui.Select):
                     display_name = f"{primary_name} ({username})"
                 else:
                     display_name = f"Unbekannt (<@{user_id}>)"
-                
-                options.append(SelectOption(
-                    label=display_name[:100],  # Discord Limit
-                    value=str(user_id),
-                    description="Beide erhalten 1x Infinitydust",
-                    emoji="🎁"
-                ))
-            except:
-                # Fallback für unbekannte User
-                options.append(SelectOption(
-                    label=f"Unbekannt (<@{user_id}>)"[:100],
-                    value=str(user_id),
-                    description="Beide erhalten 1x Infinitydust",
-                    emoji="🎁"
-                ))
-        
+
+                options.append(
+                    SelectOption(
+                        label=display_name[:100],
+                        value=str(user_id),
+                        description="Einladung bestätigen (öffentlich)",
+                        emoji="🎁",
+                    )
+                )
+            except Exception:
+                options.append(
+                    SelectOption(
+                        label=f"Unbekannt (<@{user_id}>)"[:100],
+                        value=str(user_id),
+                        description="Einladung bestätigen (öffentlich)",
+                        emoji="🎁",
+                    )
+                )
+
         if not options:
             options.append(SelectOption(label="Keine Spieler verfügbar", value="none"))
-        
-        super().__init__(placeholder="Wähle den Spieler der dich eingeladen hat! :)", options=options)
-    
+
+        super().__init__(placeholder="Wähle den Spieler, der dich eingeladen hat! :)", options=options)
+
     async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.invitee_id:
+            await interaction.response.send_message("❌ Nur du kannst deine Auswahl treffen.", ephemeral=True)
+            return
         if self.values[0] == "none":
             await interaction.response.send_message("❌ Keine Spieler verfügbar!", ephemeral=True)
             return
 
-        invited_user_id = int(self.values[0])
-        logging.info("[INVITED] selected_inviter_id=%s user=%s", invited_user_id, interaction.user.id)
+        inviter_id = int(self.values[0])
+        if inviter_id == self.invitee_id:
+            await interaction.response.send_message("❌ Du kannst dich nicht selbst auswählen.", ephemeral=True)
+            return
 
-        # Prüfe nochmal ob der Einlader den Command schon mal genutzt hat (nur für Nicht-Admins)
-        is_admin_user = await is_admin(interaction)
-        if not is_admin_user:
-            async with db_context() as db:
-                cursor = await db.execute(
-                    "SELECT used_invite FROM user_daily WHERE user_id = ?",
-                    (self.inviter_id,),
-                )
-                row = await cursor.fetchone()
-                logging.info("[INVITED] used_invite check inviter=%s row=%s", self.inviter_id, row)
-                if row and row[0] == 1:
-                    await interaction.response.send_message("❌ Du hast den `/eingeladen` Command bereits verwendet! Nur Admins können ihn mehrfach nutzen.", ephemeral=True)
-                    return
-                # Markiere als verwendet (nur für Nicht-Admins)
-                await db.execute(
-                    """
-                    INSERT OR REPLACE INTO user_daily (user_id, last_daily, used_invite)
-                    VALUES (
-                        ?,
-                        COALESCE((SELECT last_daily FROM user_daily WHERE user_id = ?), 0),
-                        1
-                    )
-                    """,
-                    (self.inviter_id, self.inviter_id),
-                )
-                await db.commit()
+        logging.info("[INVITED] inviter_id=%s invitee_id=%s", inviter_id, interaction.user.id)
 
-        # Gib beiden Usern 1x Infinitydust
-        await add_infinitydust(self.inviter_id, 1)
-        await add_infinitydust(invited_user_id, 1)
-        logging.info(
-            "[INVITED] awarded infinitydust inviter=%s invited=%s",
-            self.inviter_id,
-            invited_user_id,
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("❌ Das funktioniert nur auf einem Server.", ephemeral=True)
+            return
+
+        invitee_is_admin = await is_admin(interaction)
+        prior = await get_invite_completed_count(inviter_id)
+        need_admin_gate = prior >= 5
+
+        pending_id = await create_invite_pending(
+            guild_id=guild.id,
+            channel_id=interaction.channel.id,
+            inviter_id=inviter_id,
+            invitee_id=self.invitee_id,
+            invitee_is_admin=invitee_is_admin,
+            need_admin=need_admin_gate,
         )
 
-        # Hole User-Namen für die Nachricht
-        inviter = interaction.user
-        invited_user = None
-        try:
-            invited_user = bot.get_user(invited_user_id)
-            if invited_user is None:
-                invited_user = await interaction.client.fetch_user(invited_user_id)
-        except Exception:
-            invited_user = None
-        invited_mention = invited_user.mention if invited_user else f"<@{invited_user_id}>"
-
-        # Erfolgs-Nachricht (öffentlich für beide)
+        inviter_u = bot.get_user(inviter_id)
+        invitee_u = interaction.user
+        im = inviter_u.mention if inviter_u else f"<@{inviter_id}>"
+        em = invitee_u.mention
+        admin_note = game_ui_texts.INVITE_ADMIN_NOTE if need_admin_gate else ""
         embed = discord.Embed(
-            title="🎉 Einladung erfolgreich!",
-            description=(
-                f"**{inviter.mention}** wurde von **{invited_mention}** eingeladen!\n\n"
-                f"💎 **Beide haben 1x Infinitydust erhalten!**"
+            title=game_ui_texts.INVITE_CONFIRM_TITLE,
+            description=game_ui_texts.INVITE_CONFIRM_DESCRIPTION.format(
+                invitee=em,
+                inviter=im,
+                admin_note=admin_note,
             ),
-            color=0x00ff00,
+            color=0x9D4EDD,
         )
         embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
 
-        # Sende öffentlich in den Kanal
-        await _safe_send_channel(interaction, interaction.channel, embed=embed)
+        confirm_view = InviteConfirmationView(pending_id, need_admin_gate=need_admin_gate)
+        sent = await _safe_send_channel(interaction, interaction.channel, embed=embed, view=confirm_view)
+        if sent is not None:
+            await set_invite_pending_message_id(pending_id, sent.id)
 
-        # Bestätige dem Initiator
-        await interaction.response.edit_message(
-            content="✅ Einladung erfolgreich gesendet!",
-            embed=None,
-            view=None,
-        )
+        try:
+            await interaction.response.edit_message(
+                content="✅ Öffentliche Bestätigung wurde gepostet – bitte die Buttons dort nutzen.",
+                embed=None,
+                view=None,
+            )
+        except Exception:
+            logging.exception("Failed to edit invite select message")
 
 class DustAmountView(FuseFlowView):
     def __init__(self, requester_id: int, user_dust: int):
@@ -9831,15 +10174,17 @@ class MissionStartCardSelectView(DurableView):
                 await interaction.message.edit(view=None)
         except Exception:
             logging.exception("Failed to clear mission start card select view")
-        await _start_mission_wave_in_thread(
+        await _launch_mission_encounter_preview_or_wave(
             interaction,
-            mission_state={
+            {
                 "mission_data": _json_clone(self.mission_data),
                 "is_admin": self.is_admin,
                 "selected_card_name": selected_name,
                 "next_wave": 1,
                 "total_waves": int(self.mission_data.get("waves", 1) or 1),
             },
+            self.user_id,
+            "lackeys",
         )
         self.stop()
 
@@ -9853,11 +10198,14 @@ class MissionPauseView(DurableView):
         self.current_card_name = current_card_name
         self.mission_state = mission_state
         options = [
-            SelectOption(label=f"Beibehalten: {current_card_name}", value="keep"),
-            SelectOption(label="Neue Karte wählen", value="change"),
+            SelectOption(
+                label=game_ui_texts.MISSION_PAUSE_KEEP_LABEL.format(card_name=current_card_name)[:100],
+                value="keep",
+            ),
+            SelectOption(label=game_ui_texts.MISSION_PAUSE_CHANGE_LABEL, value="change"),
         ]
         self.select = ui.Select(
-            placeholder="Was möchtest du tun?",
+            placeholder=game_ui_texts.MISSION_PAUSE_PLACEHOLDER,
             min_values=1,
             max_values=1,
             options=options,
@@ -9891,7 +10239,7 @@ class MissionPauseView(DurableView):
             next_view = MissionNewCardSelectView(self.user_id, user_karten, mission_state=self.mission_state)
             await _safe_send_channel(interaction, interaction.channel, content="Wähle eine neue Karte:", view=next_view)
         else:
-            await _start_mission_wave_in_thread(interaction, mission_state=self.mission_state)
+            await _continue_mission_after_pause_or_card_pick(interaction, self.mission_state, self.user_id)
         self.stop()
 
 
@@ -9983,9 +10331,196 @@ class MissionNewCardSelectView(DurableView):
             logging.exception("Failed to clear mission new-card select view")
         next_state = dict(self.mission_state)
         next_state["selected_card_name"] = selected_name
-        await _start_mission_wave_in_thread(interaction, mission_state=next_state)
+        await _continue_mission_after_pause_or_card_pick(interaction, next_state, self.user_id)
         self.stop()
 
+
+class MissionEncounterPreviewView(DurableView):
+    durable_view_kind = VIEW_KIND_MISSION_ENCOUNTER_PREVIEW
+
+    def __init__(self, user_id: int, mission_state: dict[str, Any], mode: str):
+        super().__init__(timeout=None)
+        self.user_id = user_id
+        self.mode = str(mode or "lackeys").strip().lower()
+        if self.mode not in {"lackeys", "boss"}:
+            self.mode = "lackeys"
+        self.mission_state = mission_state
+        self._clamp_preview_index()
+        self._build_button_rows()
+
+    def _clamp_preview_index(self) -> None:
+        slides = self._slides()
+        if not slides:
+            self.mission_state["preview_index"] = 0
+            return
+        idx = int(self.mission_state.get("preview_index", 0) or 0)
+        self.mission_state["preview_index"] = max(0, min(idx, len(slides) - 1))
+
+    def _slides(self) -> list[dict[str, Any]]:
+        return _mission_preview_slides(_dict_str_any(self.mission_state.get("mission_data")), self.mode)
+
+    def build_embed(self) -> discord.Embed:
+        slides = self._slides()
+        idx = int(self.mission_state.get("preview_index", 0) or 0)
+        if not slides:
+            return discord.Embed(title="Vorschau", description="Keine Gegnerdaten.", color=0x95A5A6)
+        return _build_mission_enemy_preview_embed(slides[idx], mode=self.mode, index=idx, total=len(slides))
+
+    def durable_payload(self) -> dict[str, Any]:
+        return {
+            "user_id": self.user_id,
+            "mission_state": _json_clone(self.mission_state),
+            "mode": self.mode,
+        }
+
+    def _build_button_rows(self) -> None:
+        self.clear_items()
+        slides = self._slides()
+        n = len(slides)
+        idx = int(self.mission_state.get("preview_index", 0) or 0)
+        if self.mode == "boss":
+            self.add_item(self._btn_skip())
+            self.add_item(self._btn_start_boss())
+            return
+        if n == 0:
+            return
+        if n == 1:
+            self.add_item(self._btn_start_mission())
+            self.add_item(self._btn_hero())
+            self.add_item(self._btn_skip())
+            return
+        if idx < n - 1:
+            self.add_item(self._btn_next())
+            self.add_item(self._btn_skip())
+        else:
+            self.add_item(self._btn_start_mission())
+            self.add_item(self._btn_hero())
+            self.add_item(self._btn_skip())
+
+    def _btn_next(self) -> ui.Button:
+        b = ui.Button(
+            label=game_ui_texts.PREVIEW_BTN_NEXT,
+            style=discord.ButtonStyle.primary,
+            custom_id="mission_enc_prv:next",
+            row=0,
+        )
+        b.callback = self._cb_next
+        return b
+
+    def _btn_skip(self) -> ui.Button:
+        b = ui.Button(
+            label=game_ui_texts.PREVIEW_BTN_SKIP,
+            style=discord.ButtonStyle.secondary,
+            custom_id="mission_enc_prv:skip",
+            row=0,
+        )
+        b.callback = self._cb_skip
+        return b
+
+    def _btn_start_mission(self) -> ui.Button:
+        b = ui.Button(
+            label=game_ui_texts.PREVIEW_BTN_START_MISSION,
+            style=discord.ButtonStyle.success,
+            custom_id="mission_enc_prv:start_m",
+            row=1,
+        )
+        b.callback = self._cb_start
+        return b
+
+    def _btn_start_boss(self) -> ui.Button:
+        b = ui.Button(
+            label=game_ui_texts.PREVIEW_BTN_START_BOSS,
+            style=discord.ButtonStyle.success,
+            custom_id="mission_enc_prv:start_b",
+            row=1,
+        )
+        b.callback = self._cb_start
+        return b
+
+    def _btn_hero(self) -> ui.Button:
+        b = ui.Button(
+            label=game_ui_texts.PREVIEW_BTN_CHANGE_HERO,
+            style=discord.ButtonStyle.secondary,
+            custom_id="mission_enc_prv:hero",
+            row=1,
+        )
+        b.callback = self._cb_hero
+        return b
+
+    async def _touch_durable(self, interaction: discord.Interaction) -> None:
+        msg = interaction.message
+        if msg is not None and isinstance(getattr(msg, "guild", None), discord.Guild):
+            await _maybe_register_durable_message(msg, self)
+
+    async def _cb_next(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Nur der Mission-User kann das steuern!", ephemeral=True)
+            return
+        slides = self._slides()
+        idx = int(self.mission_state.get("preview_index", 0) or 0)
+        if idx < len(slides) - 1:
+            self.mission_state["preview_index"] = idx + 1
+        self._clamp_preview_index()
+        self._build_button_rows()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        await self._touch_durable(interaction)
+
+    async def _cb_skip(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Nur der Mission-User kann das steuern!", ephemeral=True)
+            return
+        await self._finalize_wave_start(interaction)
+
+    async def _cb_start(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Nur der Mission-User kann das steuern!", ephemeral=True)
+            return
+        await self._finalize_wave_start(interaction)
+
+    async def _cb_hero(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Nur der Mission-User kann das steuern!", ephemeral=True)
+            return
+        msg = interaction.message
+        await interaction.response.defer()
+        await self.clear_durable_registration()
+        try:
+            if msg is not None:
+                await msg.edit(view=None)
+        except Exception:
+            logging.exception("Failed to clear mission encounter preview (hero)")
+        ms = _strip_mission_preview_keys(self.mission_state)
+        md = _dict_str_any(ms.get("mission_data"))
+        user_karten = _sort_user_cards_like_karten(
+            _filter_owned_cards_for_current_mode(await get_user_karten(self.user_id))
+        )
+        select_view = MissionStartCardSelectView(
+            self.user_id,
+            md,
+            is_admin=bool(ms.get("is_admin", False)),
+            user_karten=[name for name, _amount in user_karten],
+        )
+        await _safe_send_channel(
+            interaction,
+            interaction.channel,
+            content=f"{interaction.user.mention}, wähle deine Karte für die Mission:",
+            embed=_build_mission_embed(md),
+            view=select_view,
+        )
+        self.stop()
+
+    async def _finalize_wave_start(self, interaction: discord.Interaction):
+        msg = interaction.message
+        await interaction.response.defer()
+        await self.clear_durable_registration()
+        try:
+            if msg is not None:
+                await msg.edit(view=None)
+        except Exception:
+            logging.exception("Failed to clear mission encounter preview")
+        ms = _strip_mission_preview_keys(self.mission_state)
+        await _start_mission_wave_in_thread(interaction, mission_state=ms)
+        self.stop()
 
 
 # View für Mission-Kämpfe (interaktiv)
@@ -10259,6 +10794,22 @@ class MissionBattleView(DurableView):
         _add_attack_info_field(embed, self.player_card)
         return embed
 
+    def create_bot_spotlight_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
+            description=game_ui_texts.BOT_SPOTLIGHT_DESCRIPTION.format(bot_name=self.bot_card["name"]),
+        )
+        player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
+        bot_label = f"🟦 Gegner{self._status_icons(0)}"
+        embed.add_field(name=player_label, value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
+        embed.add_field(name=bot_label, value=f"{self.bot_card['name']}\nHP: {self.bot_hp}", inline=True)
+        if self.bot_card.get("bild"):
+            embed.set_image(url=str(self.bot_card["bild"]))
+        if self.player_card.get("bild"):
+            embed.set_thumbnail(url=str(self.player_card["bild"]))
+        _add_attack_info_field(embed, self.bot_card)
+        return embed
+
     async def _log_mission_attack_event(
         self,
         *,
@@ -10399,7 +10950,7 @@ class MissionBattleView(DurableView):
                     value=f"+{int(self.mission_data.get('unit_reward_after_wave') or 0)} Unit",
                     inline=True,
                 )
-            interlude_embed.add_field(name="Heilung", value="Dein nächster Held startet mit vollen HP.", inline=True)
+            interlude_embed.add_field(name="Heilung", value=game_ui_texts.INTERLUDE_HEAL_FIELD, inline=True)
             pause_view = MissionPauseView(self.user_id, self.selected_card_name, mission_state=next_state)
             await _safe_send_channel(
                 interaction,
@@ -10454,23 +11005,29 @@ class MissionBattleView(DurableView):
     def _is_maestro_boss(self) -> bool:
         return _is_operation_broken_timeline(self.mission_data) and str(self.bot_card.get("mission_boss") or "") == "maestro"
 
+    def _sync_maestro_execute_for_current_hp(self, effect_events: list[str]) -> None:
+        if not self._is_maestro_boss() or self.player_hp <= 0 or self.bot_hp <= 0:
+            return
+        if self.player_hp >= 50 and self.maestro_execute_pending:
+            self.maestro_execute_pending = False
+            self.mission_data["maestro_execute_pending"] = False
+            self._append_effect_event(effect_events, game_ui_texts.MAESTRO_EXECUTE_CANCELLED)
+
     def _mark_maestro_execute_if_needed(self, effect_events: list[str]) -> None:
         if not self._is_maestro_boss() or self.player_hp <= 0 or self.bot_hp <= 0:
             return
         if self.player_hp < 50 and not self.maestro_execute_pending:
             self.maestro_execute_pending = True
             self.mission_data["maestro_execute_pending"] = True
-            self._append_effect_event(
-                effect_events,
-                "Gnadenschuss des Tyrannen vorbereitet: Spieler unter 50 HP, Maestro nutzt in seiner nächsten Runde 999 unblockbaren Schaden.",
-            )
+            self._append_effect_event(effect_events, game_ui_texts.MAESTRO_EXECUTE_MARKED)
 
     def _forced_maestro_execute_attack(self, effect_events: list[str]) -> dict[str, Any] | None:
+        self._sync_maestro_execute_for_current_hp(effect_events)
         if not self._is_maestro_boss() or not self.maestro_execute_pending or self.player_hp <= 0 or self.bot_hp <= 0:
             return None
         self.maestro_execute_pending = False
         self.mission_data["maestro_execute_pending"] = False
-        self._append_effect_event(effect_events, "Gnadenschuss des Tyrannen löst aus: 999 unblockbarer Schaden.")
+        self._append_effect_event(effect_events, game_ui_texts.MAESTRO_EXECUTE_FIRED)
         return {
             "name": "Gnadenschuss des Tyrannen",
             "damage": [999, 999],
@@ -10523,7 +11080,7 @@ class MissionBattleView(DurableView):
                 return
             except Exception as e:
                 if getattr(e, "status", None) == 429:
-                    await asyncio.sleep(1.5 * (attempt + 1))
+                    await asyncio.sleep(_rate_limit_delay_from_error(e, attempt))
                     continue
                 logging.exception("Failed to edit battle log")
                 return
@@ -11488,6 +12045,7 @@ class MissionBattleView(DurableView):
         self.player_hp = max(0, self.player_hp)
         self.bot_hp = max(0, self.bot_hp)
         self._mark_maestro_execute_if_needed(effect_events)
+        self._sync_maestro_execute_for_current_hp(effect_events)
 
         self.round_counter += 1
 
@@ -11829,17 +12387,16 @@ class MissionBattleView(DurableView):
             )
             return
         
-        # Bot-Zug nach kurzer Pause
+        # Bot-Zug: kurz große Gegnerkarte, dann Ablauf
         if message is not None:
             try:
                 await message.edit(
-                    embed=self.create_current_embed(
-                        description=f"🎯 Du hast **{attack_name}** verwendet! **{self.bot_card['name']}** ist an der Reihe...",
-                    ),
+                    embed=self.create_bot_spotlight_embed(),
                     view=None,
                 )
             except Exception:
                 logging.exception("Failed to update mission battle before bot turn")
+            await asyncio.sleep(random.uniform(2.0, 5.0))
 
         defender_id = self.user_id
         pre_burn_total_player, pre_bot_turn_events = _apply_dot_ticks_for_applier(
@@ -12239,7 +12796,8 @@ class MissionBattleView(DurableView):
             self.player_hp = max(0, self.player_hp)
             self.bot_hp = max(0, self.bot_hp)
             self._mark_maestro_execute_if_needed(bot_effect_events)
-            
+            self._sync_maestro_execute_for_current_hp(bot_effect_events)
+
             self.round_counter += 1
 
             if not is_bot_reload_action:
@@ -12699,6 +13257,14 @@ def _can_send_in_channel(channel: discord.abc.GuildChannel | discord.Thread, mem
         return perms.send_messages_in_threads
     return perms.send_messages
 
+
+def _rate_limit_delay_from_error(exc: Exception, attempt: int) -> float:
+    retry_after_raw = getattr(exc, "retry_after", None)
+    retry_after = _maybe_float(retry_after_raw)
+    if retry_after is not None and retry_after > 0:
+        return max(0.5, min(10.0, float(retry_after)))
+    return max(0.5, min(10.0, 1.2 * float(attempt + 1)))
+
 async def _send_channel_message(
     channel: object,
     *,
@@ -12715,19 +13281,24 @@ async def _send_channel_message(
     parent_id = getattr(channel, "parent_id", None)
     if not await is_channel_allowed_ids(guild_id, channel_id, parent_id):
         return None
-    try:
-        sent_message = await sendable_channel.send(content=content, embed=embed, view=view)
-        await _maybe_register_durable_message(sent_message, view)
-        return sent_message
-    except discord.NotFound:
-        logging.warning("Channel %s no longer exists for send", channel_id)
-        return None
-    except discord.Forbidden:
-        logging.warning("Missing send permissions in channel %s", channel_id)
-        return None
-    except discord.HTTPException:
-        logging.exception("Failed to send message to channel %s", channel_id)
-        return None
+    for attempt in range(3):
+        try:
+            sent_message = await sendable_channel.send(content=content, embed=embed, view=view)
+            await _maybe_register_durable_message(sent_message, view)
+            return sent_message
+        except discord.NotFound:
+            logging.warning("Channel %s no longer exists for send", channel_id)
+            return None
+        except discord.Forbidden:
+            logging.warning("Missing send permissions in channel %s", channel_id)
+            return None
+        except discord.HTTPException as exc:
+            if int(getattr(exc, "status", 0) or 0) == 429 and attempt < 2:
+                await asyncio.sleep(_rate_limit_delay_from_error(exc, attempt))
+                continue
+            logging.exception("Failed to send message to channel %s", channel_id)
+            return None
+    return None
 
 
 async def _safe_send_channel(
@@ -13071,6 +13642,21 @@ async def _restore_durable_view_instance(
             [tuple(item) for item in _list_any(payload.get("user_karten")) if isinstance(item, list) and len(item) == 2],
             mission_state=_dict_str_any(payload.get("mission_state")),
             selected_base_name=str(payload.get("selected_base_name") or ""),
+        )
+    if view_kind == VIEW_KIND_MISSION_ENCOUNTER_PREVIEW:
+        return MissionEncounterPreviewView(
+            int(payload.get("user_id", 0) or 0),
+            _dict_str_any(payload.get("mission_state")),
+            str(payload.get("mode") or "lackeys"),
+        )
+    if view_kind == VIEW_KIND_INVITE_CONFIRM:
+        pending_id = int(payload.get("pending_id", 0) or 0)
+        row = await load_invite_pending(pending_id)
+        if not row or str(row.get("status") or "") != "pending":
+            return None
+        return InviteConfirmationView(
+            pending_id,
+            need_admin_gate=bool(int(row.get("need_admin") or 0)),
         )
     if view_kind == VIEW_KIND_MISSION_BATTLE:
         return await _restore_mission_battle_view_from_session(int(payload.get("session_id", 0) or 0))

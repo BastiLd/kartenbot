@@ -81,6 +81,7 @@ def build_command_api(global_ns: dict[str, Any]) -> CommandApi:
         "_fight_challenge_prompt",
         "_maybe_delete_fight_thread",
         "_safe_send_channel",
+        "build_mission_from_operation",
         "build_operation_broken_timeline_mission",
         "claim_fight_request",
         "create_battle_embed",
@@ -88,6 +89,7 @@ def build_command_api(global_ns: dict[str, Any]) -> CommandApi:
         "create_fight_request",
         "create_mission_request",
         "get_mission_count",
+        "mission_operation_options",
         "update_fight_request_message",
         "update_mission_request_message",
         # admin_commands.py
