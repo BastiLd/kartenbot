@@ -125,6 +125,7 @@ from services.invite_store import (
     set_invite_pending_message_id,
     set_invite_max_member_age_days,
 )
+from items import get_item_by_id
 from services.request_store import (
     claim_fight_request,
     claim_mission_request,
@@ -2391,7 +2392,7 @@ def _build_fuse_card_select_embed(
         ),
         color=0x9D4EDD,
     )
-    embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+    _apply_item_media(embed, "infinitydust", thumbnail=True)
     return embed
 
 
@@ -2422,7 +2423,7 @@ def _build_fuse_buff_type_embed(
         ),
         inline=False,
     )
-    embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+    _apply_item_media(embed, "infinitydust", thumbnail=True)
     return embed
 
 
@@ -2771,6 +2772,7 @@ def _build_mission_embed(mission_data: dict) -> discord.Embed:
     embed.add_field(name="Wellen", value=f"{waves}", inline=True)
     if mission_data.get("unit_reward_after_wave"):
         embed.add_field(name="Units", value=f"+{int(mission_data.get('unit_reward_after_wave') or 0)} nach Welle 3", inline=True)
+        _apply_item_media(embed, "unit", image=True, thumbnail=False)
     if reward_card:
         embed.add_field(name="🎁 Belohnung", value=f"**{reward_card.get('name', '?')}**", inline=True)
         if reward_card.get("bild"):
@@ -2928,6 +2930,11 @@ def _build_mission_enemy_preview_embed(
     if enemy.get("bild"):
         embed.set_image(url=str(enemy["bild"]))
     _add_attack_info_field(embed, enemy)
+    if str(mode or "").strip().lower() == "boss":
+        boss_key = str(enemy.get("mission_boss") or "").strip().lower()
+        tactic_text = str(game_ui_texts.MISSION_BOSS_TACTICS.get(boss_key) or "").strip()
+        if tactic_text:
+            embed.add_field(name=game_ui_texts.PREVIEW_FIELD_TACTIC, value=tactic_text[:1024], inline=False)
     return embed
 
 
@@ -3116,7 +3123,7 @@ class MissionView(RestrictedView):
                 color=_card_rarity_color(karte),
             )
             embed.add_field(name="Umwandlung", value="Die Karte wurde zu **Infinitydust** umgewandelt!", inline=False)
-            embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+            _apply_item_media(embed, "infinitydust", image=True, thumbnail=True)
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # View für HP-Button (über der Karte)
@@ -7738,8 +7745,13 @@ def _mission_success_embed(reward_card: dict[str, Any], total_waves: int, *, is_
         value=game_ui_texts.MISSION_SUCCESS_DUST_FIELD_VALUE.format(card=card_name),
         inline=False,
     )
-    if reward_card.get("bild"):
+    dust_image_url, dust_thumbnail_url = _item_media_urls("infinitydust")
+    if dust_image_url:
+        embed.set_image(url=dust_image_url)
+    elif reward_card.get("bild"):
         embed.set_image(url=str(reward_card["bild"]))
+    if dust_thumbnail_url:
+        embed.set_thumbnail(url=dust_thumbnail_url)
     _add_attack_info_field(embed, reward_card)
     return embed
 
@@ -8458,6 +8470,21 @@ def _card_name_ansi_block(card_name: str, card: dict | None) -> str:
     if not color_code:
         return f"**{safe_name}**"
     return f"```ansi\n\u001b[1;{color_code}m{safe_name}\u001b[0m\n```"
+
+
+def _item_media_urls(item_id: str) -> tuple[str, str]:
+    item = get_item_by_id(item_id)
+    image_url = str((item or {}).get("bild") or "").strip()
+    thumbnail_url = str((item or {}).get("thumbnail") or "").strip()
+    return image_url, thumbnail_url
+
+
+def _apply_item_media(embed: discord.Embed, item_id: str, *, image: bool = False, thumbnail: bool = True) -> None:
+    image_url, thumbnail_url = _item_media_urls(item_id)
+    if image and image_url:
+        embed.set_image(url=image_url)
+    if thumbnail and thumbnail_url:
+        embed.set_thumbnail(url=thumbnail_url)
 
 async def is_give_op_authorized(interaction: discord.Interaction) -> bool:
     if await is_owner_or_dev(interaction):
@@ -9238,7 +9265,7 @@ class BuffTypeSelect(ui.Select):
             ),
             color=0x00FF00,
         )
-        embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+        _apply_item_media(embed, "infinitydust", thumbnail=True)
         if self.view is not None:
             self.view.stop()
         await edit_interaction_message(interaction, embed=embed, view=None)
@@ -9303,7 +9330,7 @@ class InviteConfirmationView(DurableView):
         if lines:
             desc += "\n\n" + "\n".join(lines)
         embed = discord.Embed(title=game_ui_texts.INVITE_CONFIRM_TITLE, description=desc, color=0x9D4EDD)
-        embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+        _apply_item_media(embed, "infinitydust", thumbnail=True)
         return embed
 
     async def _cb_inviter(self, interaction: discord.Interaction):
@@ -9568,7 +9595,7 @@ class InviteUserSelect(ui.Select):
             ),
             color=0x9D4EDD,
         )
-        embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+        _apply_item_media(embed, "infinitydust", thumbnail=True)
 
         confirm_view = InviteConfirmationView(pending_id, need_admin_gate=need_admin_gate)
         sent = await _safe_send_channel(interaction, interaction.channel, embed=embed, view=confirm_view)
@@ -9698,7 +9725,7 @@ class InviteUserSelect(ui.Select):
             ),
             color=0x9D4EDD,
         )
-        embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+        _apply_item_media(embed, "infinitydust", thumbnail=True)
 
         confirm_view = InviteConfirmationView(pending_id, need_admin_gate=need_admin_gate)
         sent = await _safe_send_channel(interaction, interaction.channel, embed=embed, view=confirm_view)
@@ -10853,6 +10880,7 @@ class MissionBattleView(DurableView):
         self._last_damage_roll_meta: dict | None = None
         self._optional_attack_confirmations: dict[int, dict[str, object]] = {}
         self.maestro_execute_pending = bool(self.mission_data.get("maestro_execute_pending", False))
+        self._last_player_damage_dealt = int(self.mission_data.get("last_player_damage_dealt", 0) or 0)
         self._mission_actor_turn = "player"
         
         # Setze Button-Labels (evtl. nach init_with_buffs erneut aufrufen)
@@ -10902,6 +10930,7 @@ class MissionBattleView(DurableView):
             "airborne_pending_landing": _json_clone(self.airborne_pending_landing),
             "last_special_attack": _json_clone(self.last_special_attack),
             "maestro_execute_pending": bool(self.maestro_execute_pending),
+            "last_player_damage_dealt": int(self._last_player_damage_dealt),
             "round_counter": self.round_counter,
             "battle_log_text": self.durable_log_text(),
         }
@@ -10953,6 +10982,7 @@ class MissionBattleView(DurableView):
         raw_last_special = _int_keyed_dict(payload.get("last_special_attack"))
         self.last_special_attack = {key: (value if isinstance(value, dict) else None) for key, value in raw_last_special.items()}
         self.maestro_execute_pending = bool(payload.get("maestro_execute_pending", self.maestro_execute_pending))
+        self._last_player_damage_dealt = int(payload.get("last_player_damage_dealt", 0) or 0)
         self.round_counter = int(payload.get("round_counter", 0) or 0)
         self._battle_log_text_cache = str(payload.get("battle_log_text") or "")
         self.attacks = list(self.player_card.get("attacks", self.attacks))
@@ -11205,6 +11235,7 @@ class MissionBattleView(DurableView):
                     value=f"+{int(self.mission_data.get('unit_reward_after_wave') or 0)} Unit",
                     inline=True,
                 )
+                _apply_item_media(interlude_embed, "unit", image=True, thumbnail=True)
             interlude_embed.add_field(name="Heilung", value=game_ui_texts.INTERLUDE_HEAL_FIELD, inline=True)
             pause_view = MissionPauseView(self.user_id, self.selected_card_name, mission_state=next_state)
             await _safe_send_channel(
@@ -12303,6 +12334,8 @@ class MissionBattleView(DurableView):
 
         self.player_hp = max(0, self.player_hp)
         self.bot_hp = max(0, self.bot_hp)
+        self._last_player_damage_dealt = int(actual_damage or 0)
+        self.mission_data["last_player_damage_dealt"] = int(self._last_player_damage_dealt)
         self._mark_maestro_execute_if_needed(effect_events)
         self._sync_maestro_execute_for_current_hp(effect_events)
 
@@ -13041,6 +13074,11 @@ class MissionBattleView(DurableView):
                 )
 
             heal_data = attack.get("heal")
+            if (
+                str(self.bot_card.get("name") or "").strip().lower() == "kingpin"
+                and str(bot_attack_name or "").strip() == "Bestechungs-Versuch"
+            ):
+                heal_data = [60, 60] if int(self._last_player_damage_dealt or 0) <= 0 else [35, 35]
             if heal_data is not None:
                 heal_chance = float(attack.get("heal_chance", 1.0) or 1.0)
                 if random.random() <= heal_chance:
@@ -14323,6 +14361,7 @@ async def _post_dust_result_message(
         description="\n".join(lines),
         color=0xD64B4B if remove else 0x2ECC71,
     )
+    _apply_item_media(embed, "infinitydust", thumbnail=True)
     embed.set_footer(text=f"Ausgeführt von {safe_display_name(interaction.user, fallback='Unbekannt')}")
     sent_message = await _send_channel_message(
         interaction.channel,
@@ -14812,7 +14851,7 @@ async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_na
     )
     if infinitydust > 0:
         embed.add_field(name="💎 Infinitydust", value=f"Anzahl: {infinitydust}x", inline=True)
-        embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+        _apply_item_media(embed, "infinitydust", thumbnail=True)
     for group in grouped_cards:
         base_name = str(group.get("base_name") or "")
         karte = await get_karte_by_name(base_name)
@@ -15173,7 +15212,13 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
             command_name="entwicklerpanel",
             payload={"action": "give", "requested_amount": int(amount), "applied_amount": int(amount), "mode": "single"},
         )
-        await _send_with_visibility(interaction, "give_dust", content=f"{user_name} erhält {amount}x Infinitydust.")
+        embed = discord.Embed(
+            title="Infinitydust vergeben",
+            description=f"{user_name} erhält **{amount}x Infinitydust**.",
+            color=0x2ECC71,
+        )
+        _apply_item_media(embed, "infinitydust", thumbnail=True)
+        await _send_with_visibility(interaction, "give_dust", embed=embed)
         return
     if action == "grant_card":
         user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Karte vergeben:")

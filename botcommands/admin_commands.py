@@ -316,7 +316,10 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
                 title="\U0001F48E Infinitydust verschenkt!",
                 description=f"{interaction.user.mention} hat **{amount}x Infinitydust** an {target_user.mention} gegeben!",
             )
-            embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+            dust_item = module.get_item_by_id("infinitydust")
+            dust_thumbnail_url = str((dust_item or {}).get("thumbnail") or "").strip()
+            if dust_thumbnail_url:
+                embed.set_thumbnail(url=dust_thumbnail_url)
             await module._send_with_visibility(interaction, visibility_key, embed=embed)
             return
 

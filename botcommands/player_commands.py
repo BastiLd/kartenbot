@@ -79,9 +79,13 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
             value="Die Karte wurde zu **Infinitydust** umgewandelt!",
             inline=False,
         )
-        embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
-        if image_url:
-            embed.set_image(url=image_url)
+        dust_item = module.get_item_by_id("infinitydust")
+        dust_image_url = str((dust_item or {}).get("bild") or "").strip()
+        dust_thumbnail_url = str((dust_item or {}).get("thumbnail") or "").strip()
+        if dust_thumbnail_url:
+            embed.set_thumbnail(url=dust_thumbnail_url)
+        if dust_image_url:
+            embed.set_image(url=dust_image_url)
         await module._send_with_visibility(interaction, visibility_key, embed=embed)
 
     @bot.tree.command(
@@ -168,7 +172,10 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
                 description=description,
                 color=0x9D4EDD,
             )
-            embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+            dust_item = module.get_item_by_id("infinitydust")
+            dust_thumbnail_url = str((dust_item or {}).get("thumbnail") or "").strip()
+            if dust_thumbnail_url:
+                embed.set_thumbnail(url=dust_thumbnail_url)
             await interaction.followup.send(embed=embed, view=view, ephemeral=ephemeral)
 
         except discord.NotFound:
@@ -216,7 +223,10 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
             ),
             color=0x9D4EDD,
         )
-        embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+        dust_item = module.get_item_by_id("infinitydust")
+        dust_thumbnail_url = str((dust_item or {}).get("thumbnail") or "").strip()
+        if dust_thumbnail_url:
+            embed.set_thumbnail(url=dust_thumbnail_url)
         await module._send_with_visibility(interaction, visibility_key, embed=embed, view=view)
 
     @bot.tree.command(name="sammlung", description="Zeige deine Karten-Sammlung")
@@ -243,7 +253,10 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
 
         if infinitydust > 0:
             embed.add_field(name="\U0001F48E Infinitydust", value=f"Anzahl: {infinitydust}x", inline=True)
-            embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+            dust_item = module.get_item_by_id("infinitydust")
+            dust_thumbnail_url = str((dust_item or {}).get("thumbnail") or "").strip()
+            if dust_thumbnail_url:
+                embed.set_thumbnail(url=dust_thumbnail_url)
 
         for group in grouped_cards[:10]:
             base_name = str(group.get("base_name") or "")

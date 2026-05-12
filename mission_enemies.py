@@ -483,7 +483,13 @@ OPERATION_GOLDENER_KAEFIG_ENCOUNTERS: list[dict[str, Any]] = [
                 "info": "22 Schaden und entfernt defensive Effekte.",
                 "effects": [{"type": "clear_negative_effects", "target": "self", "chance": 1.0}],
             },
-            {"name": "Bestechungs-Versuch", "damage": [0, 0], "cooldown_turns": 5, "heal": [35, 60], "info": "Heilt 35-60 HP."},
+            {
+                "name": "Bestechungs-Versuch",
+                "damage": [0, 0],
+                "cooldown_turns": 5,
+                "heal": [35, 60],
+                "info": "Heilt 60 HP, wenn der Spieler im Zug davor 0 Schaden gemacht hat. Sonst heilt der Angriff 35 HP.",
+            },
             {
                 "name": "Zermalmender Griff",
                 "damage": [40, 60],

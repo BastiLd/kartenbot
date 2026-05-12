@@ -79,7 +79,7 @@ items: list[dict[str, Any]] = [
             "emoji": "UNIT",
             "large_card": True,
             "show_description": True,
-            "show_image": False,
+            "show_image": True,
         },
         "effects": [
             {

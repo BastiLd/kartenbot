@@ -56,6 +56,7 @@ def build_command_api(global_ns: dict[str, Any]) -> CommandApi:
         "command_visibility_key_for_interaction",
         "db_context",
         "get_infinitydust",
+        "get_item_by_id",
         "get_invite_max_member_age_days",
         "get_karte_by_name",
         "get_latest_anfang_message",

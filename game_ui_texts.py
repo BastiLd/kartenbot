@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-# Zentrale UI-/Story-Texte (ohne attack["info"] und Kartenbeschreibungen in karten.py / mission_enemies.py).
+# ============================================================
+# ZENTRALE UI-/STORY-TEXTE
+# ============================================================
+# Nur sichtbare Texte fuer das Spiel-UI.
+# Platzhalter wie {waves}, {card}, {invitee} werden zur Laufzeit ersetzt.
+# Nicht hier:
+# - Kartenbeschreibungen -> karten.py
+# - Gegner/Attacken      -> mission_enemies.py
 
 OPERATION_BROKEN_TIMELINE_TITLE_ADMIN = "Operation Broken Timeline (Admin)"
 # {suffix} z. B. "1/2"
@@ -32,6 +39,7 @@ PREVIEW_TITLE_BOSS = "Boss-Vorschau"
 PREVIEW_DESCRIPTION_LACKEY = "So kämpft **{name}** in dieser Mission."
 PREVIEW_DESCRIPTION_BOSS = "Der finale Gegner: **{name}**."
 PREVIEW_FIELD_RARITY = "Seltenheit"
+PREVIEW_FIELD_TACTIC = "Taktik"
 PREVIEW_BTN_NEXT = "Weiter"
 PREVIEW_BTN_SKIP = "Überspringen"
 PREVIEW_BTN_START_MISSION = "Mission starten"
@@ -142,6 +150,32 @@ MISSION_OPERATION_TEXTS: dict[str, dict[str, str]] = {
             "Besiege ihre Wächter und durchbrich den Hexenkreis."
         ),
     },
+}
+
+# Boss-spezifische Taktiktexte fuer die Boss-Vorschau vor dem Kampf.
+MISSION_BOSS_TACTICS: dict[str, str] = {
+    "maestro": (
+        "Bleib beim Zugende bei mindestens 50 HP. "
+        "Wenn du darunter faellst, markiert Maestro seinen Gnadenschuss "
+        "und kann im naechsten Boss-Zug 999 unblockbaren Schaden ausloesen."
+    ),
+    "modok": (
+        "Plane Spezialangriffe sauber ein: M.O.D.O.K. kann sie mit System-Hack sperren "
+        "und mit Berechneter Heilung viel HP zurueckholen."
+    ),
+    "green_goblin": (
+        "Rechne mit Verfehlungen und Kontern durch Gas/Illusionseffekte. "
+        "Spiele wichtige Angriffe in sicheren Fenstern."
+    ),
+    "kingpin": (
+        "Konstant Schaden machen lohnt sich: Bei Bestechungs-Versuch heilt Kingpin "
+        "nur 35 HP, wenn du im Zug davor Schaden gemacht hast. "
+        "Ohne Schaden heilt er 60 HP."
+    ),
+    "agatha_harkness": (
+        "Achte auf Heal-Block und Ausweichfenster. "
+        "Wenn Agatha den Fluch oder die Illusion aktiv hat, nicht blind in wichtige Heals/Angriffe laufen."
+    ),
 }
 
 
