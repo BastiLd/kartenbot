@@ -10,7 +10,7 @@ OPERATION_BROKEN_TIMELINE_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Ödland-Plünderer",
         "beschreibung": "Schwächt und nervt Gegner auf dem Weg zur Festung.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/YPnvbdW.png",
         "seltenheit": "Mission",
         "hp": 40,
         "attacks": [
@@ -44,7 +44,7 @@ OPERATION_BROKEN_TIMELINE_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Gamma-Mutant",
         "beschreibung": "Ein radioaktiver Mutant mit stapelnder Kraft.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/sJKKeeG.png",
         "seltenheit": "Mission",
         "hp": 60,
         "passives": [{"type": "on_hit_recoil", "damage": 4, "source": "Radioaktive Aura"}],
@@ -70,7 +70,7 @@ OPERATION_BROKEN_TIMELINE_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Umprogrammierter Hulkbuster",
         "beschreibung": "Defensive Kampfmaschine vor Maestros Thronsaal.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/PvK2BHp.png",
         "seltenheit": "Mission",
         "hp": 110,
         "attacks": [
@@ -105,7 +105,7 @@ OPERATION_BROKEN_TIMELINE_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Maestro",
         "beschreibung": "Bruce Banner aus einer gebrochenen Zeitlinie: intelligent, grausam und brutal.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/FnpMS1O.png",
         "seltenheit": "Boss",
         "hp": 200,
         "mission_boss": "maestro",
@@ -141,7 +141,7 @@ OPERATION_TECHNISCHER_KOLLAPS_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "A.I.M.-Laborwache",
         "beschreibung": "Sichert den Eingang zum Rechenzentrum.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/05Hsl4i.png",
         "seltenheit": "Mission",
         "hp": 40,
         "attacks": [
@@ -172,7 +172,7 @@ OPERATION_TECHNISCHER_KOLLAPS_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "A.I.M.-Wissenschaftler",
         "beschreibung": "Analysiert und schwächt den Gegner.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/cq5dcDL.png",
         "seltenheit": "Mission",
         "hp": 60,
         "attacks": [
@@ -203,7 +203,7 @@ OPERATION_TECHNISCHER_KOLLAPS_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Schwerer Kampf-Mech",
         "beschreibung": "Letzte Verteidigung vor M.O.D.O.K.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/ASXNdbC.png",
         "seltenheit": "Mission",
         "hp": 120,
         "attacks": [
@@ -229,7 +229,7 @@ OPERATION_TECHNISCHER_KOLLAPS_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "M.O.D.O.K.",
         "beschreibung": "Meister der Berechnung und mentalen Kriegsführung.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/421cobH.png",
         "seltenheit": "Boss",
         "hp": 240,
         "mission_boss": "modok",
@@ -259,7 +259,7 @@ OPERATION_GRUENER_TERROR_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Oscorp-Sicherheitsdrohne",
         "beschreibung": "Automatisierte Vorhut am Oscorp-Komplex.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/r8lv2my.png",
         "seltenheit": "Mission",
         "hp": 40,
         "attacks": [
@@ -274,7 +274,7 @@ OPERATION_GRUENER_TERROR_ENCOUNTERS: list[dict[str, Any]] = [
             {
                 "name": "Ausweich-Manöver",
                 "damage": [0, 0],
-                "cooldown_turns": 4,
+                "cooldown_turns": 4;
                 "info": "Der nächste Angriff auf die Drohne verfehlt.",
                 "effects": [{"type": "evade", "target": "self", "uses": 1, "chance": 1.0}],
             },
@@ -290,7 +290,7 @@ OPERATION_GRUENER_TERROR_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Goblin-Scherge",
         "beschreibung": "Chaos-Kämpfer mit Bomben und Fallen.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/ihUFbjb.png",
         "seltenheit": "Mission",
         "hp": 60,
         "attacks": [
@@ -315,7 +315,7 @@ OPERATION_GRUENER_TERROR_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Prototyp-Kampfgleiter",
         "beschreibung": "Schwere Luftunterstützung für den Boss.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/ne9mFFp.png",
         "seltenheit": "Mission",
         "hp": 115,
         "attacks": [
@@ -340,7 +340,7 @@ OPERATION_GRUENER_TERROR_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Green Goblin",
         "beschreibung": "Unberechenbar, schnell und tödlich.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/MsKkOLU.png",
         "seltenheit": "Boss",
         "hp": 240,
         "mission_boss": "green_goblin",
@@ -376,7 +376,7 @@ OPERATION_GOLDENER_KAEFIG_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Fisk-Straßenschläger",
         "beschreibung": "Brutaler Vorposten von Fisk.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/3mfS7oT.png",
         "seltenheit": "Mission",
         "hp": 45,
         "attacks": [
@@ -407,7 +407,7 @@ OPERATION_GOLDENER_KAEFIG_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Korrupte SWAT-Einheit",
         "beschreibung": "Schwer bewaffnete Kontrolleinheit.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/dPz9Mvz.png",
         "seltenheit": "Mission",
         "hp": 65,
         "attacks": [
@@ -438,7 +438,7 @@ OPERATION_GOLDENER_KAEFIG_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Fisks Enforcer",
         "beschreibung": "Persönlicher Leibwächter mit hoher Ausdauer.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/s38CXtH.png",
         "seltenheit": "Mission",
         "hp": 115,
         "attacks": [
@@ -470,7 +470,7 @@ OPERATION_GOLDENER_KAEFIG_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Kingpin",
         "beschreibung": "Massiv, zäh und gnadenlos.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/vVZATee.png",
         "seltenheit": "Boss",
         "hp": 280,
         "mission_boss": "kingpin",
@@ -501,7 +501,7 @@ OPERATION_HEXENFEUER_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Verhexte Marionette",
         "beschreibung": "Unheimlicher Wächter des verzauberten Waldes.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/cebMvyC.png",
         "seltenheit": "Mission",
         "hp": 40,
         "attacks": [
@@ -526,7 +526,7 @@ OPERATION_HEXENFEUER_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Schatten-Dämon",
         "beschreibung": "Schnell, schwer greifbar und tödlich.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/8ZERg8r.png",
         "seltenheit": "Mission",
         "hp": 65,
         "attacks": [
@@ -551,7 +551,7 @@ OPERATION_HEXENFEUER_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Wächter des Dunkelbuchs",
         "beschreibung": "Runenmagier mit starkem Schutzschild.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/X7ltg61.png",
         "seltenheit": "Mission",
         "hp": 115,
         "attacks": [
@@ -582,7 +582,7 @@ OPERATION_HEXENFEUER_ENCOUNTERS: list[dict[str, Any]] = [
     {
         "name": "Agatha Harkness",
         "beschreibung": "Meisterin der dunklen Magie.",
-        "bild": DEADPOOL_IMAGE_URL,
+        "bild": "https://i.imgur.com/M2QBK4O.png",
         "seltenheit": "Boss",
         "hp": 245,
         "mission_boss": "agatha_harkness",

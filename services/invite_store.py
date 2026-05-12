@@ -8,6 +8,43 @@ from karten import karten
 from services.card_pool import random_gameplay_card
 from services.user_data import add_infinitydust, check_and_add_karte
 
+INVITE_MAX_MEMBER_AGE_DAYS_KEY = "invite.max_member_age_days"
+DEFAULT_INVITE_MAX_MEMBER_AGE_DAYS = 7
+
+
+def invite_pair_key(guild_id: int, user_a: int, user_b: int) -> str:
+    low, high = sorted((int(user_a), int(user_b)))
+    return f"{int(guild_id)}:{low}:{high}"
+
+
+async def get_invite_max_member_age_days() -> int:
+    async with db_context() as db:
+        cursor = await db.execute(
+            "SELECT value FROM bot_settings WHERE key = ?",
+            (INVITE_MAX_MEMBER_AGE_DAYS_KEY,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return DEFAULT_INVITE_MAX_MEMBER_AGE_DAYS
+        try:
+            return max(0, int(row[0]))
+        except (TypeError, ValueError):
+            return DEFAULT_INVITE_MAX_MEMBER_AGE_DAYS
+
+
+async def set_invite_max_member_age_days(days: int) -> int:
+    normalized = max(0, int(days))
+    async with db_context() as db:
+        await db.execute(
+            """
+            INSERT INTO bot_settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (INVITE_MAX_MEMBER_AGE_DAYS_KEY, str(normalized)),
+        )
+        await db.commit()
+    return normalized
+
 
 async def get_invite_completed_count(inviter_id: int) -> int:
     async with db_context() as db:
@@ -19,44 +56,110 @@ async def get_invite_completed_count(inviter_id: int) -> int:
         return int(row[0] or 0) if row else 0
 
 
+async def find_existing_invite_pair(guild_id: int, user_a: int, user_b: int) -> dict[str, Any] | None:
+    pair_key = invite_pair_key(guild_id, user_a, user_b)
+    async with db_context() as db:
+        cursor = await db.execute(
+            """
+            SELECT * FROM invite_pending
+            WHERE guild_id = ?
+            AND pair_key = ?
+            AND status IN ('pending', 'completed')
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (int(guild_id), pair_key),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
 async def create_invite_pending(
     *,
     guild_id: int,
     channel_id: int,
+    created_by_id: int,
+    mode: str,
     inviter_id: int,
     invitee_id: int,
     invitee_is_admin: bool,
     need_admin: bool,
-) -> int:
+) -> tuple[int, bool]:
     now = int(time.time())
+    pair_key = invite_pair_key(guild_id, inviter_id, invitee_id)
+    normalized_mode = str(mode or "").strip() or "unknown"
     async with db_context() as db:
+        cursor = await db.execute(
+            """
+            SELECT id FROM invite_pending
+            WHERE guild_id = ?
+            AND pair_key = ?
+            AND status IN ('pending', 'completed')
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (int(guild_id), pair_key),
+        )
+        row = await cursor.fetchone()
+        if row:
+            return int(row["id"]), False
+
         cursor = await db.execute(
             """
             INSERT INTO invite_pending (
                 guild_id, channel_id, message_id,
-                inviter_id, invitee_id, invitee_is_admin,
+                created_by_id, mode,
+                inviter_id, invitee_id, pair_key, invitee_is_admin,
                 need_admin, inviter_ok, invitee_ok, admin_ok,
                 created_at, status
-            ) VALUES (?, ?, NULL, ?, ?, ?, ?, 0, 0, 0, ?, 'pending')
+            ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, 'pending')
             """,
             (
                 int(guild_id),
                 int(channel_id),
+                int(created_by_id),
+                normalized_mode,
                 int(inviter_id),
                 int(invitee_id),
+                pair_key,
                 1 if invitee_is_admin else 0,
                 1 if need_admin else 0,
                 now,
             ),
         )
+        pending_id = int(cursor.lastrowid)
+        await db.execute(
+            """
+            INSERT INTO invite_history (
+                pending_id, guild_id, channel_id, message_id,
+                created_by_id, mode, inviter_id, invitee_id, pair_key,
+                created_at, status
+            ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'pending')
+            """,
+            (
+                pending_id,
+                int(guild_id),
+                int(channel_id),
+                int(created_by_id),
+                normalized_mode,
+                int(inviter_id),
+                int(invitee_id),
+                pair_key,
+                now,
+            ),
+        )
         await db.commit()
-        return int(cursor.lastrowid)
+        return pending_id, True
 
 
 async def set_invite_pending_message_id(pending_id: int, message_id: int) -> None:
     async with db_context() as db:
         await db.execute(
             "UPDATE invite_pending SET message_id = ? WHERE id = ? AND status = 'pending'",
+            (int(message_id), int(pending_id)),
+        )
+        await db.execute(
+            "UPDATE invite_history SET message_id = ? WHERE pending_id = ? AND status = 'pending'",
             (int(message_id), int(pending_id)),
         )
         await db.commit()
@@ -134,18 +237,28 @@ async def finalize_invite_pending_if_ready(pending_id: int, *, alpha_enabled: bo
         stat_row = await cursor.fetchone()
         prior = int(stat_row[0] or 0) if stat_row else 0
 
+        completed_at = int(time.time())
         u = await db.execute(
             """
-            UPDATE invite_pending SET status = 'completed'
+            UPDATE invite_pending SET status = 'completed', completed_at = ?
             WHERE id = ? AND status = 'pending'
             AND inviter_ok = 1 AND invitee_ok = 1
             AND (need_admin = 0 OR admin_ok = 1)
             """,
-            (int(pending_id),),
+            (completed_at, int(pending_id)),
         )
         if u.rowcount != 1:
             await db.rollback()
             return None
+
+        await db.execute(
+            """
+            UPDATE invite_history
+            SET status = 'completed', completed_at = ?
+            WHERE pending_id = ? AND status = 'pending'
+            """,
+            (completed_at, int(pending_id)),
+        )
 
         await db.execute(
             """

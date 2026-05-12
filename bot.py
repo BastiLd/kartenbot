@@ -13,7 +13,7 @@ from collections import deque
 from difflib import SequenceMatcher
 from io import BytesIO
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Awaitable, Callable, Iterable, Protocol, TypedDict, cast
 
@@ -116,11 +116,14 @@ from services.guild_settings import (
 )
 from services.invite_store import (
     create_invite_pending,
+    find_existing_invite_pair,
     finalize_invite_pending_if_ready,
     get_invite_completed_count,
+    get_invite_max_member_age_days,
     load_invite_pending,
     mark_invite_pending_flag,
     set_invite_pending_message_id,
+    set_invite_max_member_age_days,
 )
 from services.request_store import (
     claim_fight_request,

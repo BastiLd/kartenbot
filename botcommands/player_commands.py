@@ -86,9 +86,16 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
 
     @bot.tree.command(
         name="eingeladen",
-        description="Wer hat dich eingeladen? Best\u00e4tigung im Kanal \u2013 Regeln stehen im Embed.",
+        description="Einladung erfassen: als Einlader oder als Eingeladener.",
     )
-    async def eingeladen(interaction: discord.Interaction):
+    @app_commands.describe(modus="Welche Rolle hast du bei dieser Einladung?")
+    @app_commands.choices(
+        modus=[
+            app_commands.Choice(name="Ich bin Einlader", value="inviter"),
+            app_commands.Choice(name="Ich bin Eingeladener", value="invitee"),
+        ]
+    )
+    async def eingeladen(interaction: discord.Interaction, modus: str):
         try:
             logging.info(
                 "[INVITED] command invoked user=%s guild=%s channel=%s",
@@ -110,19 +117,6 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
             logging.info("[INVITED] is_admin_user=%s user=%s", is_admin_user, interaction.user.id)
 
             async with module.db_context() as db:
-                if not is_admin_user:
-                    cursor = await db.execute(
-                        "SELECT used_invite FROM user_daily WHERE user_id = ?",
-                        (user_id,),
-                    )
-                    row = await cursor.fetchone()
-                    if row and row[0] == 1:
-                        await interaction.followup.send(
-                            "\u274c Du hast den `/eingeladen`-Command bereits verwendet! Nur Admins k\u00f6nnen ihn mehrfach nutzen.",
-                            ephemeral=True,
-                        )
-                        return
-
                 cursor = await db.execute("SELECT DISTINCT user_id FROM user_karten")
                 user_rows = await cursor.fetchall()
 
@@ -136,6 +130,11 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
                 for row in user_rows + daily_rows + dust_rows:
                     all_user_ids.add(row[0])
 
+                if interaction.guild is not None:
+                    for member in interaction.guild.members:
+                        if not getattr(member, "bot", False):
+                            all_user_ids.add(member.id)
+
                 all_user_ids.discard(user_id)
                 logging.info("[INVITED] candidates_found=%s user=%s", len(all_user_ids), user_id)
 
@@ -146,30 +145,26 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
                     )
                     return
 
-            view = module.InviteUserSelectView(user_id, list(all_user_ids))
-            if is_admin_user:
-                description = (
-                    "W\u00e4hle aus, wer dich eingeladen hat.\n\n"
-                    "Es erscheint eine \u00f6ffentliche Nachricht: **Einlader**, **Eingeladener** "
-                    "und ggf. ein **Admin** m\u00fcssen best\u00e4tigen.\n\n"
-                    "Bei der **ersten** abgeschlossenen Einladung eines Einladers: "
-                    "Einlader erh\u00e4lt eine **Karte**, Eingeladener **5 Infinitydust**. "
-                    "Danach: **je 5 Infinitydust**.\n\n"
-                    "\U0001F5DD **Du bist Admin** \u2013 der `/eingeladen`-Limit f\u00fcr dich gilt nicht."
-                )
+            view = module.InviteUserSelectView(user_id, str(modus), list(all_user_ids))
+            age_limit_days = await module.get_invite_max_member_age_days()
+            if modus == "inviter":
+                title = "\U0001F381 Wen hast du eingeladen?"
+                role_text = "Du bist der **Einlader**. W\u00e4hle die Person, die du eingeladen hast."
             else:
-                description = (
-                    "W\u00e4hle aus, wer dich eingeladen hat.\n\n"
-                    "Es erscheint eine \u00f6ffentliche Nachricht: **Einlader** und **du** "
-                    "m\u00fcssen best\u00e4tigen (ab der 6. Einladung desselben Einladers zus\u00e4tzlich ein **Admin**).\n\n"
-                    "Bei der **ersten** abgeschlossenen Einladung dieses Einladers: "
-                    "Er erh\u00e4lt eine **Karte**, du **5 Infinitydust**. "
-                    "Danach: **je 5 Infinitydust**.\n\n"
-                    "\u26a0\ufe0f **Du kannst diesen Ablauf nur einmal abschlie\u00dfen** (au\u00dfer du bist Admin)."
-                )
+                title = "\U0001F381 Wer hat dich eingeladen?"
+                role_text = "Du bist der **Eingeladene**. W\u00e4hle die Person, die dich eingeladen hat."
+
+            description = (
+                f"{role_text}\n\n"
+                "Danach erscheint eine \u00f6ffentliche Best\u00e4tigung: **Einlader** und **Eingeladener** "
+                "m\u00fcssen beide zustimmen.\n\n"
+                f"Der Eingeladene darf h\u00f6chstens **{age_limit_days} Tage** auf dem Server sein.\n\n"
+                "Bei der **ersten** abgeschlossenen Einladung eines Einladers bekommt der Einlader eine **Karte** "
+                "und der Eingeladene **5 Infinitydust**. Danach bekommen beide **5 Infinitydust**."
+            )
 
             embed = discord.Embed(
-                title="\U0001F381 Wer hat dich eingeladen?",
+                title=title,
                 description=description,
                 color=0x9D4EDD,
             )

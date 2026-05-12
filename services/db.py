@@ -340,15 +340,38 @@ async def init_db():
             guild_id INTEGER NOT NULL,
             channel_id INTEGER NOT NULL,
             message_id INTEGER,
+            created_by_id INTEGER,
+            mode TEXT,
             inviter_id INTEGER NOT NULL,
             invitee_id INTEGER NOT NULL,
+            pair_key TEXT,
             invitee_is_admin INTEGER NOT NULL DEFAULT 0,
             need_admin INTEGER NOT NULL DEFAULT 0,
             inviter_ok INTEGER NOT NULL DEFAULT 0,
             invitee_ok INTEGER NOT NULL DEFAULT 0,
             admin_ok INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
+            completed_at INTEGER,
             status TEXT NOT NULL DEFAULT 'pending'
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS invite_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pending_id INTEGER,
+            guild_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            message_id INTEGER,
+            created_by_id INTEGER NOT NULL,
+            mode TEXT NOT NULL,
+            inviter_id INTEGER NOT NULL,
+            invitee_id INTEGER NOT NULL,
+            pair_key TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            completed_at INTEGER,
+            status TEXT NOT NULL
         )
         """
     )
@@ -396,6 +419,35 @@ async def init_db():
     await _ensure_column(db, "user_daily", "used_invite", "INTEGER DEFAULT 0")
     await _ensure_column(db, "guild_config", "maintenance_mode", "INTEGER DEFAULT 0")
     await _ensure_column(db, "guild_config", "public_channel_id", "INTEGER")
+    await _ensure_column(db, "invite_pending", "created_by_id", "INTEGER")
+    await _ensure_column(db, "invite_pending", "mode", "TEXT")
+    await _ensure_column(db, "invite_pending", "pair_key", "TEXT")
+    await _ensure_column(db, "invite_pending", "completed_at", "INTEGER")
+
+    await db.execute(
+        """
+        UPDATE invite_pending
+        SET pair_key =
+            CASE
+                WHEN inviter_id <= invitee_id THEN guild_id || ':' || inviter_id || ':' || invitee_id
+                ELSE guild_id || ':' || invitee_id || ':' || inviter_id
+            END
+        WHERE pair_key IS NULL OR pair_key = ''
+        """
+    )
+    await db.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_invite_pending_pair_final
+        ON invite_pending(pair_key)
+        WHERE status IN ('pending', 'completed') AND pair_key IS NOT NULL
+        """
+    )
+    await db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_invite_history_pair
+        ON invite_history(guild_id, pair_key, status)
+        """
+    )
 
     # Migrate legacy infinitydust column if present.
     if await _column_exists(db, "user_karten", "infinitydust"):
