@@ -9364,6 +9364,8 @@ class InviteConfirmationView(DurableView):
                 )
             else:
                 extra = f"\n\n💎 {im} und {em} haben je **5 Infinitydust** erhalten."
+            if summary.get("kind") == "first":
+                await _send_private_invite_card_reward(interaction, inv_id, str(summary.get("card_name") or ""))
             done = discord.Embed(
                 title="🎉 Einladung abgeschlossen",
                 description=game_ui_texts.INVITE_SUCCESS.format(inviter=im, invitee=em) + extra,
@@ -9386,16 +9388,104 @@ class InviteConfirmationView(DurableView):
                 logging.exception("Failed to refresh invite confirmation view")
 
 
+def _build_invite_reward_card_embed(card_name: str) -> discord.Embed:
+    card = _card_by_name_local(card_name) or {"name": card_name}
+    resolved_name = str(card.get("name") or card_name or "Unbekannte Karte")
+    embed = discord.Embed(
+        title=f"Einladungs-Belohnung: {resolved_name}",
+        description=str(card.get("beschreibung") or "Du hast diese Karte fuer deine erste bestaetigte Einladung erhalten."),
+        color=_card_rarity_color(card) or 0x00FF00,
+    )
+    rarity = str(card.get("seltenheit") or "").strip()
+    if rarity:
+        embed.add_field(name="Seltenheit", value=rarity, inline=True)
+    if card.get("hp") is not None:
+        embed.add_field(name="HP", value=str(card.get("hp")), inline=True)
+    attacks = card.get("attacks") if isinstance(card, dict) else None
+    if isinstance(attacks, list) and attacks:
+        lines: list[str] = []
+        for idx, attack in enumerate(attacks[:4], start=1):
+            if not isinstance(attack, dict):
+                continue
+            damage = attack.get("damage")
+            if isinstance(damage, list) and len(damage) >= 2:
+                damage_text = f"{damage[0]}-{damage[1]}"
+            elif damage is not None:
+                damage_text = str(damage)
+            else:
+                damage_text = "-"
+            info = str(attack.get("info") or "").strip()
+            suffix = f" - {info}" if info else ""
+            lines.append(f"{idx}. {attack.get('name', 'Attacke')} ({damage_text}){suffix}")
+        if lines:
+            embed.add_field(name="Attacken", value="\n".join(lines)[:1024], inline=False)
+    image_url = str(card.get("bild") or "").strip()
+    if image_url:
+        embed.set_image(url=image_url)
+    return embed
+
+
+async def _send_private_invite_card_reward(
+    interaction: discord.Interaction,
+    inviter_id: int,
+    card_name: str,
+) -> None:
+    embed = _build_invite_reward_card_embed(card_name)
+    if interaction.user.id == int(inviter_id):
+        try:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+        except Exception:
+            logging.exception("Failed to send invite reward as ephemeral followup")
+    try:
+        user = bot.get_user(int(inviter_id)) or await bot.fetch_user(int(inviter_id))
+        await user.send(embed=embed)
+    except Exception:
+        logging.exception("Failed to DM invite card reward")
+
+
+async def _fetch_guild_member(guild: discord.Guild, user_id: int) -> discord.Member | None:
+    member = guild.get_member(int(user_id))
+    if member is not None:
+        return member
+    try:
+        return await guild.fetch_member(int(user_id))
+    except Exception:
+        return None
+
+
+async def _invitee_age_error(guild: discord.Guild, invitee_id: int) -> str | None:
+    max_days = await get_invite_max_member_age_days()
+    member = await _fetch_guild_member(guild, invitee_id)
+    if member is None:
+        return "Der Eingeladene wurde auf diesem Server nicht gefunden."
+    joined_at = getattr(member, "joined_at", None)
+    if joined_at is None:
+        return "Das Beitrittsdatum des Eingeladenen konnte nicht geprueft werden."
+    if joined_at.tzinfo is None:
+        joined_at = joined_at.replace(tzinfo=timezone.utc)
+    age_seconds = datetime.now(timezone.utc).timestamp() - joined_at.timestamp()
+    if age_seconds > max_days * 86400:
+        age_days = int(age_seconds // 86400)
+        return (
+            f"Der Eingeladene ist schon {age_days} Tage auf dem Server. "
+            f"Erlaubt sind maximal {max_days} Tage."
+        )
+    return None
+
+
 class InviteUserSelectView(RestrictedView):
-    def __init__(self, invitee_id: int, available_user_ids: list[int]):
-        super().__init__(timeout=60)
-        self.invitee_id = invitee_id
-        self.add_item(InviteUserSelect(invitee_id, available_user_ids))
+    def __init__(self, requester_id: int, mode: str, available_user_ids: list[int]):
+        super().__init__(timeout=None)
+        self.requester_id = requester_id
+        self.mode = str(mode or "invitee")
+        self.add_item(InviteUserSelect(requester_id, self.mode, available_user_ids))
 
 
 class InviteUserSelect(ui.Select):
-    def __init__(self, invitee_id: int, available_user_ids: list[int]):
-        self.invitee_id = invitee_id
+    def __init__(self, requester_id: int, mode: str, available_user_ids: list[int]):
+        self.requester_id = requester_id
+        self.mode = str(mode or "invitee")
 
         options = []
         for user_id in available_user_ids[:25]:
@@ -9493,6 +9583,137 @@ class InviteUserSelect(ui.Select):
             )
         except Exception:
             logging.exception("Failed to edit invite select message")
+
+class InviteUserSelectView(RestrictedView):
+    def __init__(self, requester_id: int, mode: str, available_user_ids: list[int]):
+        super().__init__(timeout=None)
+        self.requester_id = int(requester_id)
+        self.mode = str(mode or "invitee")
+        self.add_item(InviteUserSelect(self.requester_id, self.mode, available_user_ids))
+
+
+class InviteUserSelect(ui.Select):
+    def __init__(self, requester_id: int, mode: str, available_user_ids: list[int]):
+        self.requester_id = int(requester_id)
+        self.mode = str(mode or "invitee")
+        options: list[SelectOption] = []
+        for user_id in available_user_ids[:25]:
+            user = bot.get_user(int(user_id))
+            if user:
+                primary_name = safe_display_name(user, fallback=f"<@{user_id}>")
+                username = escape_display_text(getattr(user, "name", ""), fallback=primary_name)
+                display_name = f"{primary_name} ({username})"
+            else:
+                display_name = f"Unbekannt (<@{user_id}>)"
+            options.append(
+                SelectOption(
+                    label=display_name[:100],
+                    value=str(user_id),
+                    description="Einladung bestaetigen",
+                    emoji="🎁",
+                )
+            )
+        if not options:
+            options.append(SelectOption(label="Keine Spieler verfuegbar", value="none"))
+        placeholder = "Waehle den Eingeladenen" if self.mode == "inviter" else "Waehle deinen Einlader"
+        super().__init__(placeholder=placeholder, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("âŒ Nur du kannst deine Auswahl treffen.", ephemeral=True)
+            return
+        if self.values[0] == "none":
+            await interaction.response.send_message("âŒ Keine Spieler verfuegbar!", ephemeral=True)
+            return
+
+        selected_user_id = int(self.values[0])
+        if selected_user_id == self.requester_id:
+            await interaction.response.send_message("âŒ Du kannst dich nicht selbst auswaehlen.", ephemeral=True)
+            return
+
+        if self.mode == "inviter":
+            inviter_id = self.requester_id
+            invitee_id = selected_user_id
+        else:
+            inviter_id = selected_user_id
+            invitee_id = self.requester_id
+
+        logging.info("[INVITED] mode=%s inviter_id=%s invitee_id=%s", self.mode, inviter_id, invitee_id)
+
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("âŒ Das funktioniert nur auf einem Server.", ephemeral=True)
+            return
+        if interaction.channel is None:
+            await interaction.response.send_message("âŒ Kanal nicht gefunden.", ephemeral=True)
+            return
+
+        age_error = await _invitee_age_error(guild, invitee_id)
+        if age_error:
+            await interaction.response.send_message(f"âŒ {age_error}", ephemeral=True)
+            return
+
+        existing = await find_existing_invite_pair(guild.id, inviter_id, invitee_id)
+        if existing:
+            status = str(existing.get("status") or "pending")
+            await interaction.response.send_message(
+                f"âŒ Fuer diese zwei Personen gibt es bereits eine Einladung mit Status **{status}**.",
+                ephemeral=True,
+            )
+            return
+
+        invitee_member = await _fetch_guild_member(guild, invitee_id)
+        invitee_is_admin = bool(invitee_member and any(role.permissions.administrator for role in invitee_member.roles))
+        prior = await get_invite_completed_count(inviter_id)
+        need_admin_gate = prior >= 5
+
+        pending_id, created = await create_invite_pending(
+            guild_id=guild.id,
+            channel_id=interaction.channel.id,
+            created_by_id=interaction.user.id,
+            mode=self.mode,
+            inviter_id=inviter_id,
+            invitee_id=invitee_id,
+            invitee_is_admin=invitee_is_admin,
+            need_admin=need_admin_gate,
+        )
+        if not created:
+            await interaction.response.send_message(
+                "âŒ Fuer diese zwei Personen gibt es bereits eine offene oder abgeschlossene Einladung.",
+                ephemeral=True,
+            )
+            return
+
+        inviter_u = bot.get_user(inviter_id)
+        invitee_u = bot.get_user(invitee_id)
+        im = inviter_u.mention if inviter_u else f"<@{inviter_id}>"
+        em = invitee_u.mention if invitee_u else f"<@{invitee_id}>"
+        admin_note = game_ui_texts.INVITE_ADMIN_NOTE if need_admin_gate else ""
+        embed = discord.Embed(
+            title=game_ui_texts.INVITE_CONFIRM_TITLE,
+            description=game_ui_texts.INVITE_CONFIRM_DESCRIPTION.format(
+                invitee=em,
+                inviter=im,
+                admin_note=admin_note,
+            ),
+            color=0x9D4EDD,
+        )
+        embed.set_thumbnail(url="https://i.imgur.com/L9v5mNI.png")
+
+        confirm_view = InviteConfirmationView(pending_id, need_admin_gate=need_admin_gate)
+        sent = await _safe_send_channel(interaction, interaction.channel, embed=embed, view=confirm_view)
+        if sent is not None:
+            await set_invite_pending_message_id(pending_id, sent.id)
+
+        try:
+            await interaction.response.edit_message(
+                content="âœ… Oeffentliche Bestaetigung wurde gepostet. Bitte die Buttons dort nutzen.",
+                embed=None,
+                view=None,
+            )
+        except Exception:
+            logging.exception("Failed to edit invite select message")
+
 
 class DustAmountView(FuseFlowView):
     def __init__(self, requester_id: int, user_dust: int):

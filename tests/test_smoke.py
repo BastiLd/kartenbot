@@ -4,11 +4,16 @@ import time
 import unittest
 
 import bot
+import items
 from botcore.alpha_smoke import EXPECTED_ALPHA_COMMANDS, run_alpha_smoke_checks
 from botcore.bootstrap import BOT_START_TIME, build_bot_intents
 from db import close_db, init_db
 from services.battle import calculate_damage
 from services.guild_settings import get_message_visibility, set_message_visibility
+from services.invite_store import (
+    create_invite_pending,
+    find_existing_invite_pair,
+)
 from services.user_data import add_infinitydust, delete_user_data, get_infinitydust
 
 
@@ -92,6 +97,52 @@ class SmokeTests(unittest.TestCase):
             "public",
         )
         asyncio.run(close_db())
+
+    def test_invite_store_deduplicates_pairs_and_saves_limit(self) -> None:
+        asyncio.run(init_db())
+        guild_id = time.time_ns()
+        try:
+            first_id, first_created = asyncio.run(
+                create_invite_pending(
+                    guild_id=guild_id,
+                    channel_id=1,
+                    created_by_id=10,
+                    mode="inviter",
+                    inviter_id=10,
+                    invitee_id=20,
+                    invitee_is_admin=False,
+                    need_admin=False,
+                )
+            )
+            second_id, second_created = asyncio.run(
+                create_invite_pending(
+                    guild_id=guild_id,
+                    channel_id=1,
+                    created_by_id=20,
+                    mode="invitee",
+                    inviter_id=10,
+                    invitee_id=20,
+                    invitee_is_admin=False,
+                    need_admin=False,
+                )
+            )
+            self.assertTrue(first_created)
+            self.assertFalse(second_created)
+            self.assertEqual(first_id, second_id)
+            existing = asyncio.run(find_existing_invite_pair(guild_id, 20, 10))
+            self.assertIsNotNone(existing)
+            self.assertEqual(existing["inviter_id"], 10)
+            self.assertEqual(existing["invitee_id"], 20)
+        finally:
+            asyncio.run(close_db())
+
+    def test_items_catalog_contains_staubs_and_units(self) -> None:
+        dust = items.get_item_by_id("staub")
+        unit = items.get_item_by_id("unit")
+        self.assertIsNotNone(dust)
+        self.assertIsNotNone(unit)
+        self.assertEqual(dust["storage"]["table"], "user_infinitydust")
+        self.assertEqual(unit["storage"]["table"], "user_units")
 
 
 if __name__ == "__main__":

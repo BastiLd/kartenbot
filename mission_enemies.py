@@ -274,7 +274,7 @@ OPERATION_GRUENER_TERROR_ENCOUNTERS: list[dict[str, Any]] = [
             {
                 "name": "Ausweich-Manöver",
                 "damage": [0, 0],
-                "cooldown_turns": 4;
+                "cooldown_turns": 4,
                 "info": "Der nächste Angriff auf die Drohne verfehlt.",
                 "effects": [{"type": "evade", "target": "self", "uses": 1, "chance": 1.0}],
             },
@@ -472,7 +472,7 @@ OPERATION_GOLDENER_KAEFIG_ENCOUNTERS: list[dict[str, Any]] = [
         "beschreibung": "Massiv, zäh und gnadenlos.",
         "bild": "https://i.imgur.com/vVZATee.png",
         "seltenheit": "Boss",
-        "hp": 280,
+        "hp": 250,
         "mission_boss": "kingpin",
         "attacks": [
             {"name": "Stockhieb", "damage": [24, 24], "is_standard_attack": True, "info": "Standardangriff."},

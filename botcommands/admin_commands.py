@@ -386,6 +386,23 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
         await interaction.response.defer(ephemeral=True)
         await module.run_dust_command_flow(interaction, mode=modus, remove=True)
 
+    @bot.tree.command(name="invite-limit", description="Nur f\u00fcr Admins: Invite-Altersgrenze in Tagen setzen")
+    @app_commands.describe(tage="Maximales Server-Alter des Eingeladenen in Tagen")
+    async def invite_limit(interaction: discord.Interaction, tage: int):
+        if not await module.is_channel_allowed(interaction):
+            return
+        if not await module.is_admin(interaction):
+            await interaction.response.send_message("\u274c Du hast keine Berechtigung.", ephemeral=True)
+            return
+        if tage < 0:
+            await interaction.response.send_message("\u274c Tage muss 0 oder gr\u00f6\u00dfer sein.", ephemeral=True)
+            return
+        saved_days = await module.set_invite_max_member_age_days(tage)
+        await interaction.response.send_message(
+            f"\u2705 Invite-Altersgrenze auf **{saved_days} Tage** gesetzt.",
+            ephemeral=True,
+        )
+
     @bot.tree.command(name="op-verwaltung", description="Nur f\u00fcr Admins!!!")
     @app_commands.guild_only()
     async def give_op(interaction: discord.Interaction):
@@ -636,6 +653,7 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
         "give": give,
         "dust": dust,
         "loedust": loedust,
+        "invite_limit": invite_limit,
         "give_op": give_op,
         "panel": panel,
         "BALANCE_GROUP": balance_group,
