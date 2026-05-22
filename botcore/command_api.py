@@ -62,6 +62,7 @@ def build_command_api(global_ns: dict[str, Any]) -> CommandApi:
         "get_latest_anfang_message",
         "get_message_visibility",
         "get_user_karten",
+        "is_beta_enabled",
         "is_admin",
         "is_channel_allowed",
         "karten",
@@ -71,6 +72,7 @@ def build_command_api(global_ns: dict[str, Any]) -> CommandApi:
         "time",
         # gameplay_commands.py
         "BattleView",
+        "BETA_STORY_DISABLED_TEXT",
         "CardSelectView",
         "ChallengeResponseView",
         "MissionAcceptView",

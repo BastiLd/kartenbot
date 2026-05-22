@@ -107,6 +107,9 @@ def register_gameplay_commands(bot, api: GameplayFacade) -> dict[str, object]:
     async def story(interaction: discord.Interaction):
         if not await api.is_channel_allowed(interaction):
             return
+        if await api.is_beta_enabled(interaction.guild_id):
+            await api._send_ephemeral(interaction, content=api.BETA_STORY_DISABLED_TEXT)
+            return
         visibility_key = api.command_visibility_key_for_interaction(interaction)
         visibility = (
             await api.get_message_visibility(interaction.guild_id, visibility_key)

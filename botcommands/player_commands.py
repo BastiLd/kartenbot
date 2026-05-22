@@ -292,8 +292,9 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
         if not await module.is_channel_allowed(interaction):
             return
 
-        text = module.build_anfang_intro_text()
-        view = module.AnfangView()
+        beta_enabled = await module.is_beta_enabled(interaction.guild_id)
+        text = module.build_anfang_intro_text(beta_enabled=beta_enabled)
+        view = module.AnfangView(beta_enabled=beta_enabled)
         if interaction.guild is None:
             await interaction.response.send_message(content=text, view=view)
             return

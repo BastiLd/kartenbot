@@ -3594,6 +3594,12 @@ class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/mission", text)
         self.assertIn("/geschichte", text)
 
+    def test_intro_text_hides_story_when_beta_enabled(self) -> None:
+        text = bot_module.build_anfang_intro_text(beta_enabled=True)
+        self.assertIn("/mission", text)
+        self.assertNotIn("/geschichte", text)
+        self.assertNotIn("Story-Modus", text)
+
     async def test_anfang_view_keeps_mission_and_story_buttons_in_alpha(self) -> None:
         with patch.object(bot_module, "ALPHA_PHASE_ENABLED", True):
             view = bot_module.AnfangView()
@@ -3607,6 +3613,41 @@ class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):
         custom_ids = {getattr(child, "custom_id", None) for child in view.children}
         self.assertIn("anfang:mission", custom_ids)
         self.assertIn("anfang:story", custom_ids)
+
+    async def test_anfang_view_uses_red_mission_and_story_buttons_when_beta_disabled(self) -> None:
+        view = bot_module.AnfangView(beta_enabled=False)
+        by_id = {getattr(child, "custom_id", None): child for child in view.children}
+        self.assertEqual(by_id["anfang:mission"].style, bot_module.discord.ButtonStyle.danger)
+        self.assertEqual(by_id["anfang:story"].style, bot_module.discord.ButtonStyle.danger)
+
+    async def test_anfang_view_hides_story_button_when_beta_enabled(self) -> None:
+        view = bot_module.AnfangView(beta_enabled=True)
+        custom_ids = {getattr(child, "custom_id", None) for child in view.children}
+        self.assertIn("anfang:mission", custom_ids)
+        self.assertNotIn("anfang:story", custom_ids)
+
+    async def test_mission_preview_shows_only_next_wave_enemy(self) -> None:
+        mission = {
+            "waves": 3,
+            "encounters": [
+                {"name": "Enemy One", "hp": 100, "seltenheit": "Mission", "attacks": []},
+                {"name": "Enemy Two", "hp": 110, "seltenheit": "Mission", "attacks": []},
+                {"name": "Enemy Three", "hp": 120, "seltenheit": "Mission", "attacks": []},
+            ],
+        }
+        view = bot_module.MissionEncounterPreviewView(
+            1,
+            {"mission_data": mission, "next_wave": 2, "total_waves": 3},
+            "lackeys",
+        )
+        embed = view.build_embed()
+        self.assertIn("(2/3)", embed.title or "")
+        field_values = "\n".join(str(field.value) for field in embed.fields)
+        self.assertIn("Enemy Two", field_values)
+        self.assertNotIn("Enemy One", field_values)
+        custom_ids = {getattr(child, "custom_id", None) for child in view.children}
+        self.assertIn("mission_enc_prv:start_m", custom_ids)
+        self.assertNotIn("mission_enc_prv:next", custom_ids)
 
     def test_alpha_hides_set_mission_from_dev_and_visibility_lists(self) -> None:
         has_dev_action = ("Set mission reset", "set_mission") in bot_module.DEV_ACTION_OPTIONS

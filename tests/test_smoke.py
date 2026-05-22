@@ -2,6 +2,8 @@ import asyncio
 import random
 import time
 import unittest
+from contextlib import asynccontextmanager
+from unittest.mock import patch
 
 import bot
 import items
@@ -9,8 +11,10 @@ from botcore.alpha_smoke import EXPECTED_ALPHA_COMMANDS, run_alpha_smoke_checks
 from botcore.bootstrap import BOT_START_TIME, build_bot_intents
 from db import close_db, init_db
 from services.battle import calculate_damage
-from services.guild_settings import get_message_visibility, set_message_visibility
+from services import guild_settings as guild_settings_module
+from services.guild_settings import get_message_visibility, is_beta_enabled, set_beta_enabled, set_message_visibility
 from services.invite_store import (
+    configured_first_invite_reward_card,
     create_invite_pending,
     find_existing_invite_pair,
 )
@@ -97,6 +101,50 @@ class SmokeTests(unittest.TestCase):
             "public",
         )
         asyncio.run(close_db())
+
+    def test_beta_setting_roundtrip(self) -> None:
+        class _Cursor:
+            def __init__(self, row):
+                self.row = row
+
+            async def fetchone(self):
+                return self.row
+
+        class _Db:
+            def __init__(self):
+                self.beta_enabled = 0
+
+            async def execute(self, query, params=()):
+                if "SELECT beta_enabled" in query:
+                    return _Cursor((self.beta_enabled,))
+                if "INSERT INTO guild_config" in query:
+                    self.beta_enabled = int(params[1])
+                    return _Cursor(None)
+                return _Cursor(None)
+
+            async def commit(self):
+                return None
+
+        async def _run() -> None:
+            fake_db = _Db()
+
+            @asynccontextmanager
+            async def fake_db_context():
+                yield fake_db
+
+            with patch.object(guild_settings_module, "db_context", fake_db_context):
+                self.assertFalse(await is_beta_enabled(123))
+                await set_beta_enabled(123, True)
+                self.assertTrue(await is_beta_enabled(123))
+                await set_beta_enabled(123, False)
+                self.assertFalse(await is_beta_enabled(123))
+
+        asyncio.run(_run())
+
+    def test_invite_reward_uses_configured_fixed_variant(self) -> None:
+        card = configured_first_invite_reward_card()
+        self.assertEqual(card.get("variant_id"), "Standard_Iron-Man")
+        self.assertEqual(card.get("name"), "Standard_Iron-Man")
 
     def test_invite_store_deduplicates_pairs_and_saves_limit(self) -> None:
         asyncio.run(init_db())

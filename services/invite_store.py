@@ -4,8 +4,9 @@ import time
 from typing import Any
 
 from db import db_context
+from invite_reward_config import INVITE_FIRST_REWARD_CARD_VARIANT, INVITE_FIRST_REWARD_FALLBACK_VARIANT
 from karten import karten
-from services.card_pool import random_gameplay_card
+from services.card_variants import build_runtime_card
 from services.user_data import add_infinitydust, check_and_add_karte
 
 INVITE_MAX_MEMBER_AGE_DAYS_KEY = "invite.max_member_age_days"
@@ -15,6 +16,17 @@ DEFAULT_INVITE_MAX_MEMBER_AGE_DAYS = 7
 def invite_pair_key(guild_id: int, user_a: int, user_b: int) -> str:
     low, high = sorted((int(user_a), int(user_b)))
     return f"{int(guild_id)}:{low}:{high}"
+
+
+def configured_first_invite_reward_card() -> dict[str, Any]:
+    for candidate in (INVITE_FIRST_REWARD_CARD_VARIANT, INVITE_FIRST_REWARD_FALLBACK_VARIANT):
+        card = build_runtime_card(candidate, cards=karten)
+        if card is not None:
+            return card
+    raise ValueError(
+        "No valid invite reward card configured. "
+        "Check INVITE_FIRST_REWARD_CARD_VARIANT in invite_reward_config.py."
+    )
 
 
 async def get_invite_max_member_age_days() -> int:
@@ -213,6 +225,7 @@ async def mark_invite_pending_flag(
 
 
 async def finalize_invite_pending_if_ready(pending_id: int, *, alpha_enabled: bool) -> dict[str, Any] | None:
+    _ = alpha_enabled
     async with db_context() as db:
         cursor = await db.execute(
             "SELECT * FROM invite_pending WHERE id = ? AND status = 'pending'",
@@ -284,7 +297,7 @@ async def finalize_invite_pending_if_ready(pending_id: int, *, alpha_enabled: bo
         await db.commit()
 
     if prior == 0:
-        card = random_gameplay_card(karten, alpha_enabled=alpha_enabled, context="invite_reward")
+        card = configured_first_invite_reward_card()
         await check_and_add_karte(inviter_id, card)
         await add_infinitydust(invitee_id, 5)
         reward_summary: dict[str, Any] = {"kind": "first", "card_name": str(card.get("name") or "")}

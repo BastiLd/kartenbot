@@ -107,9 +107,11 @@ from services.guild_settings import (
     get_message_visibility as resolve_message_visibility,
     get_visibility_map as load_visibility_map,
     get_visibility_override as load_visibility_override,
+    is_beta_enabled,
     is_maintenance_enabled,
     remove_give_op_role,
     remove_give_op_user,
+    set_beta_enabled,
     set_latest_anfang_message as store_latest_anfang_message,
     set_maintenance_mode,
     set_message_visibility,
@@ -1505,6 +1507,7 @@ def _env_flag_enabled(name: str, *, default: bool = False) -> bool:
 ALPHA_PHASE_ENABLED = False
 ALPHA_HIDDEN_SLASH_COMMANDS = ("mission", "geschichte")
 ALPHA_FEATURE_DISABLED_TEXT = "🧪 Alpha-Phase: Mission und Story sind aktuell deaktiviert."
+BETA_STORY_DISABLED_TEXT = "🧪 Beta ist aktiv: Story ist aktuell deaktiviert."
 
 
 class KatabumpCommandTree(app_commands.CommandTree):
@@ -1787,7 +1790,7 @@ async def run_one_time_migrations() -> None:
         )
 
 
-def build_anfang_intro_text() -> str:
+def build_anfang_intro_text(*, beta_enabled: bool = False) -> str:
     text = (
         "# **Rekrut.**\n\n"
         "Hör gut zu. Ich bin Nick Fury, und wenn du Teil von etwas Größerem sein willst, bist du hier richtig. Willkommen auf dem Helicarrier. Wir haben alle Hände voll zu tun, und ich hoffe, du bist bereit, dir die Hände schmutzig zu machen.\n\n"
@@ -1796,8 +1799,11 @@ def build_anfang_intro_text() -> str:
     )
     text += (
         "Wenn du bereit für den echten Einsatz bist, stehen dir jeden Tag zwei Missionen zur Verfügung. Schließe sie ab und ich garantiere dir, du bekommst jeweils eine Karte als Belohnung `[/mission im Chat schreiben]`.\n\n"
-        "Für die Verrückten da draußen, die meinen, sie wären unschlagbar: Es gibt den Story-Modus. Du hast drei Leben, um die gesamte Geschichte zu überleben. Schaffst du das, wartet eine mysteriöse Belohnung auf dich `[/geschichte im Chat schreiben]`.\n\n"
     )
+    if not beta_enabled:
+        text += (
+            "Für die Verrückten da draußen, die meinen, sie wären unschlagbar: Es gibt den Story-Modus. Du hast drei Leben, um die gesamte Geschichte zu überleben. Schaffst du das, wartet eine mysteriöse Belohnung auf dich `[/geschichte im Chat schreiben]`.\n\n"
+        )
     text += (
         "Wurdest du von jemandem eingeladen? Dann bestätige das mit `[/eingeladen im Chat schreiben]`, "
         "damit Belohnungen korrekt verteilt werden.\n\n"
@@ -2884,13 +2890,18 @@ def _mission_encounter_for_wave(mission_data: dict[str, Any], wave_num: int) -> 
     return None
 
 
-def _mission_preview_slides(mission_data: dict[str, Any], mode: str) -> list[dict[str, Any]]:
+def _mission_preview_slides(mission_data: dict[str, Any], mode: str, *, wave_num: int | None = None) -> list[dict[str, Any]]:
     enc = _mission_encounters(mission_data)
     if not enc:
         return []
+    if wave_num is not None:
+        idx = int(wave_num or 1) - 1
+        if 0 <= idx < len(enc):
+            return [cast(dict[str, Any], _json_clone(enc[idx]))]
+        return []
     if str(mode or "").strip().lower() == "boss":
         return [cast(dict[str, Any], _json_clone(enc[-1]))]
-    return [cast(dict[str, Any], _json_clone(e)) for e in enc[:3]]
+    return [cast(dict[str, Any], _json_clone(enc[0]))]
 
 
 def _strip_mission_preview_keys(mission_state: dict[str, Any]) -> dict[str, Any]:
@@ -2906,6 +2917,12 @@ def _should_offer_boss_preview(mission_state: dict[str, Any]) -> bool:
         return False
     md = _dict_str_any(mission_state.get("mission_data"))
     return bool(_mission_encounters(md))
+
+
+def _preview_mode_for_next_wave(mission_state: dict[str, Any]) -> str:
+    nw = int(mission_state.get("next_wave", 1) or 1)
+    tw = int(mission_state.get("total_waves", 1) or 1)
+    return "boss" if nw >= tw else "lackeys"
 
 
 def _build_mission_enemy_preview_embed(
@@ -2945,7 +2962,11 @@ async def _launch_mission_encounter_preview_or_wave(
     mode: str,
 ) -> None:
     ms = _strip_mission_preview_keys(dict(mission_state))
-    slides = _mission_preview_slides(_dict_str_any(ms.get("mission_data")), mode)
+    slides = _mission_preview_slides(
+        _dict_str_any(ms.get("mission_data")),
+        mode,
+        wave_num=int(ms.get("next_wave", 1) or 1),
+    )
     if not slides:
         await _start_mission_wave_in_thread(interaction, mission_state=ms)
         return
@@ -2960,10 +2981,7 @@ async def _continue_mission_after_pause_or_card_pick(
     user_id: int,
 ) -> None:
     ms = _strip_mission_preview_keys(dict(mission_state))
-    if _should_offer_boss_preview(ms):
-        await _launch_mission_encounter_preview_or_wave(interaction, ms, user_id, "boss")
-    else:
-        await _start_mission_wave_in_thread(interaction, mission_state=ms)
+    await _launch_mission_encounter_preview_or_wave(interaction, ms, user_id, _preview_mode_for_next_wave(ms))
 
 
 def _is_operation_broken_timeline(mission_data: dict[str, Any]) -> bool:
@@ -9750,8 +9768,13 @@ class DustAmountView(FuseFlowView):
 
 # Slash-Command: Anfang (Hauptmenü)
 class AnfangView(RestrictedView):
-    def __init__(self):
+    def __init__(self, *, beta_enabled: bool = False):
         super().__init__(timeout=None)
+        self.beta_enabled = bool(beta_enabled)
+        if self.beta_enabled:
+            for child in list(self.children):
+                if getattr(child, "custom_id", None) == "anfang:story":
+                    self.remove_item(child)
 
     @ui.button(label="tägliche Karte", style=discord.ButtonStyle.success, row=0, custom_id="anfang:daily")
     async def btn_daily(self, interaction: discord.Interaction, button: ui.Button):
@@ -9768,13 +9791,16 @@ class AnfangView(RestrictedView):
         # Leitet zum Fight-Flow weiter
         await _invoke_command_callback(fight, interaction)
 
-    @ui.button(label="Mission", style=discord.ButtonStyle.secondary, row=0, custom_id="anfang:mission")
+    @ui.button(label="Mission", style=discord.ButtonStyle.danger, row=0, custom_id="anfang:mission")
     async def btn_mission(self, interaction: discord.Interaction, button: ui.Button):
         # Leitet zum Missions-Flow weiter
         await _invoke_command_callback(mission, interaction)
 
-    @ui.button(label="Story", style=discord.ButtonStyle.secondary, row=0, custom_id="anfang:story")
+    @ui.button(label="Story", style=discord.ButtonStyle.danger, row=0, custom_id="anfang:story")
     async def btn_story(self, interaction: discord.Interaction, button: ui.Button):
+        if await is_beta_enabled(interaction.guild_id):
+            await _send_ephemeral(interaction, content=BETA_STORY_DISABLED_TEXT)
+            return
         # Leitet zum Story-Flow weiter
         await _invoke_command_callback(story, interaction)
 
@@ -9811,8 +9837,9 @@ class IntroEphemeralPromptView(DurableView):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Das ist nicht für dich gedacht.", ephemeral=True)
             return
-        view = AnfangView()
-        text = build_anfang_intro_text()
+        beta_enabled = await is_beta_enabled(interaction.guild_id)
+        view = AnfangView(beta_enabled=beta_enabled)
+        text = build_anfang_intro_text(beta_enabled=beta_enabled)
         await interaction.response.send_message(content=text, view=view, ephemeral=True)
 
 
@@ -10454,17 +10481,18 @@ class MissionStartCardSelectView(DurableView):
                 await interaction.message.edit(view=None)
         except Exception:
             logging.exception("Failed to clear mission start card select view")
+        initial_state = {
+            "mission_data": _json_clone(self.mission_data),
+            "is_admin": self.is_admin,
+            "selected_card_name": selected_name,
+            "next_wave": 1,
+            "total_waves": int(self.mission_data.get("waves", 1) or 1),
+        }
         await _launch_mission_encounter_preview_or_wave(
             interaction,
-            {
-                "mission_data": _json_clone(self.mission_data),
-                "is_admin": self.is_admin,
-                "selected_card_name": selected_name,
-                "next_wave": 1,
-                "total_waves": int(self.mission_data.get("waves", 1) or 1),
-            },
+            initial_state,
             self.user_id,
-            "lackeys",
+            _preview_mode_for_next_wave(initial_state),
         )
         self.stop()
 
@@ -10637,14 +10665,25 @@ class MissionEncounterPreviewView(DurableView):
         self.mission_state["preview_index"] = max(0, min(idx, len(slides) - 1))
 
     def _slides(self) -> list[dict[str, Any]]:
-        return _mission_preview_slides(_dict_str_any(self.mission_state.get("mission_data")), self.mode)
+        return _mission_preview_slides(
+            _dict_str_any(self.mission_state.get("mission_data")),
+            self.mode,
+            wave_num=int(self.mission_state.get("next_wave", 1) or 1),
+        )
 
     def build_embed(self) -> discord.Embed:
         slides = self._slides()
         idx = int(self.mission_state.get("preview_index", 0) or 0)
         if not slides:
             return discord.Embed(title="Vorschau", description="Keine Gegnerdaten.", color=0x95A5A6)
-        return _build_mission_enemy_preview_embed(slides[idx], mode=self.mode, index=idx, total=len(slides))
+        wave_num = int(self.mission_state.get("next_wave", 1) or 1)
+        total_waves = int(self.mission_state.get("total_waves", len(slides)) or len(slides))
+        return _build_mission_enemy_preview_embed(
+            slides[idx],
+            mode=self.mode,
+            index=max(0, wave_num - 1),
+            total=max(1, total_waves),
+        )
 
     def durable_payload(self) -> dict[str, Any]:
         return {
@@ -11245,7 +11284,12 @@ class MissionBattleView(DurableView):
                 view=pause_view,
             )
             return
-        await _start_mission_wave_in_thread(interaction, mission_state=next_state)
+        await _launch_mission_encounter_preview_or_wave(
+            interaction,
+            next_state,
+            self.user_id,
+            "boss" if next_is_boss_wave else "lackeys",
+        )
 
     @property
     def player_hp(self) -> int:
@@ -14119,6 +14163,7 @@ PANEL_STATIC_VISIBILITY_ITEMS: list[tuple[str, str, str]] = [
     ("vault_look", "Vault Look", "Vault-Ansicht"),
     ("bot_status", "Bot-Status", "Status-Menü"),
     ("test_report", "Command-Report", "Slash-Command Bericht"),
+    ("feature_flags", "Feature Flags", "Beta/Alpha-Schalter"),
 ]
 if ALPHA_PHASE_ENABLED:
     PANEL_STATIC_VISIBILITY_ITEMS = [item for item in PANEL_STATIC_VISIBILITY_ITEMS if item[0] != "set_mission"]
@@ -14960,6 +15005,8 @@ async def send_balance_stats(interaction: discord.Interaction, visibility_key: s
         await _send_ephemeral(interaction, embed=embed)
 
 DEV_ACTION_OPTIONS: list[tuple[str, str]] = [
+    ("Beta ON", "beta_on"),
+    ("Beta OFF", "beta_off"),
     ("Maintenance ON", "maintenance_on"),
     ("Maintenance OFF", "maintenance_off"),
     ("Delete user data", "delete_user"),
@@ -15150,6 +15197,30 @@ async def show_visibility_settings(interaction: discord.Interaction, requester_i
     view = VisibilitySelectPagerView(requester_id, visibility_map, page=page)
     await _edit_panel_message(interaction, embed=embed, view=view)
 
+async def refresh_latest_anfang_message_for_guild(interaction: discord.Interaction) -> bool:
+    if interaction.guild is None or interaction.guild_id is None:
+        return False
+    existing = await get_latest_anfang_message(interaction.guild_id)
+    if not existing:
+        return False
+    channel_id, message_id = existing
+    try:
+        channel = interaction.guild.get_channel(channel_id) or await interaction.guild.fetch_channel(channel_id)
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            return False
+        message = await channel.fetch_message(message_id)
+        beta_enabled = await is_beta_enabled(interaction.guild_id)
+        await message.edit(
+            content=build_anfang_intro_text(beta_enabled=beta_enabled),
+            view=AnfangView(beta_enabled=beta_enabled),
+        )
+        await set_latest_anfang_message(interaction.guild_id, channel_id, message_id, interaction.user.id)
+        return True
+    except Exception:
+        logging.exception("Failed to refresh latest /anfang message after feature flag change")
+        return False
+
+
 async def handle_dev_action(interaction: discord.Interaction, requester_id: int, action: str):
     if interaction.user.id != requester_id:
         await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
@@ -15157,6 +15228,22 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
     if not await require_owner_or_dev(interaction):
         return
     if not await is_channel_allowed(interaction):
+        return
+
+    if action in {"beta_on", "beta_off"}:
+        if interaction.guild is None:
+            await _send_with_visibility(interaction, "feature_flags", content=SERVER_ONLY)
+            return
+        enabled = action == "beta_on"
+        await set_beta_enabled(interaction.guild.id, enabled)
+        refreshed = await refresh_latest_anfang_message_for_guild(interaction)
+        state = "aktiviert" if enabled else "deaktiviert"
+        refresh_text = "Letzte /anfang-Nachricht wurde aktualisiert." if refreshed else "Keine gespeicherte /anfang-Nachricht aktualisiert."
+        await _send_with_visibility(
+            interaction,
+            "feature_flags",
+            content=f"✅ Beta wurde **{state}**. {refresh_text}",
+        )
         return
 
     if action == "maintenance_on":
