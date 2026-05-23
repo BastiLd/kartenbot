@@ -11556,13 +11556,28 @@ class MissionBattleView(DurableView):
         self.player_max_hp = self.player_hp
         self.update_attack_buttons_mission()
 
+    def _mission_boss_key(self) -> str:
+        return str(self.bot_card.get("mission_boss") or "").strip().lower()
+
     def _is_maestro_boss(self) -> bool:
-        return _is_operation_broken_timeline(self.mission_data) and str(self.bot_card.get("mission_boss") or "") == "maestro"
+        return _is_operation_broken_timeline(self.mission_data) and self._mission_boss_key() == "maestro"
+
+    def _is_modok_boss(self) -> bool:
+        return self._mission_boss_key() == "modok"
+
+    def _is_green_goblin_boss(self) -> bool:
+        return self._mission_boss_key() == "green_goblin"
+
+    def _is_kingpin_boss(self) -> bool:
+        return self._mission_boss_key() == "kingpin"
+
+    def _is_agatha_boss(self) -> bool:
+        return self._mission_boss_key() == "agatha_harkness"
 
     def _sync_maestro_execute_for_current_hp(self, effect_events: list[str]) -> None:
         if not self._is_maestro_boss() or self.player_hp <= 0 or self.bot_hp <= 0:
             return
-        if self.player_hp >= 50 and self.maestro_execute_pending:
+        if self.player_hp >= 35 and self.maestro_execute_pending:
             self.maestro_execute_pending = False
             self.mission_data["maestro_execute_pending"] = False
             self._append_effect_event(effect_events, game_ui_texts.MAESTRO_EXECUTE_CANCELLED)
@@ -11570,7 +11585,7 @@ class MissionBattleView(DurableView):
     def _mark_maestro_execute_if_needed(self, effect_events: list[str]) -> None:
         if not self._is_maestro_boss() or self.player_hp <= 0 or self.bot_hp <= 0:
             return
-        if self.player_hp < 50 and not self.maestro_execute_pending:
+        if self.player_hp < 35 and not self.maestro_execute_pending:
             self.maestro_execute_pending = True
             self.mission_data["maestro_execute_pending"] = True
             self._append_effect_event(effect_events, game_ui_texts.MAESTRO_EXECUTE_MARKED)
@@ -11588,8 +11603,123 @@ class MissionBattleView(DurableView):
             "ignore_defense": True,
             "ignore_shield": True,
             "unblockable": True,
-            "info": "Automatische Spezial-Aktion, wenn der Spieler unter 50 HP gefallen ist.",
+            "info": "Automatische Spezial-Aktion, wenn der Spieler unter 35 HP gefallen ist.",
         }
+
+    def _attack_cooldown_turns(self, attack: dict[str, Any]) -> int:
+        try:
+            return max(0, int(attack.get("cooldown_turns", 0) or 0))
+        except Exception:
+            return 0
+
+    def _player_action_pattern_type(
+        self,
+        attack: dict[str, Any],
+        *,
+        attack_index: int,
+        is_reload_action: bool,
+        is_forced_landing: bool,
+    ) -> str | None:
+        if is_reload_action or is_forced_landing:
+            return None
+        if _is_standard_attack(self.attacks, attack_index):
+            return "standard"
+        if self._attack_cooldown_turns(attack) > 0:
+            return "special"
+        return None
+
+    def _apply_agatha_action_pattern(self, effect_events: list[str], action_type: str | None) -> None:
+        if not self._is_agatha_boss() or not action_type or self.player_hp <= 0 or self.bot_hp <= 0:
+            return
+        previous_type = str(self.mission_data.get("agatha_last_player_action_type") or "")
+        if previous_type == action_type == "special":
+            self._apply_non_heal_damage_with_event(
+                effect_events,
+                self.user_id,
+                25,
+                source="Magisches Feedback",
+                self_damage=True,
+            )
+            self._append_effect_event(effect_events, game_ui_texts.AGATHA_SPECIAL_FEEDBACK)
+        elif previous_type == action_type == "standard":
+            healed = self.heal_player(0, 25)
+            if healed > 0:
+                self._append_effect_event(effect_events, game_ui_texts.AGATHA_STANDARD_HEAL.format(amount=healed))
+        self.mission_data["agatha_last_player_action_type"] = action_type
+
+    def _apply_modok_neural_feedback(self, effect_events: list[str], attack: dict[str, Any], *, is_reload_action: bool) -> None:
+        if not self._is_modok_boss() or is_reload_action or self.player_hp <= 0 or self.bot_hp <= 0:
+            return
+        if self._attack_cooldown_turns(attack) < 5:
+            return
+        self._apply_non_heal_damage_with_event(
+            effect_events,
+            self.user_id,
+            15,
+            source="Neuronales Feedback",
+            self_damage=True,
+        )
+        self._append_effect_event(effect_events, game_ui_texts.MODOK_NEURAL_FEEDBACK)
+
+    def _prepare_kingpin_information_for_player_action(self, effect_events: list[str], *, is_reload_action: bool) -> None:
+        if not self._is_kingpin_boss() or is_reload_action or self.player_hp <= 0 or self.bot_hp <= 0:
+            return
+        turn_count = int(self.mission_data.get("kingpin_player_turn_count", 0) or 0) + 1
+        self.mission_data["kingpin_player_turn_count"] = turn_count
+        if turn_count % 4 == 0 and not bool(self.mission_data.get("kingpin_information_pending", False)):
+            self.mission_data["kingpin_information_pending"] = True
+            self._append_effect_event(effect_events, game_ui_texts.KINGPIN_INFORMATION_READY)
+
+    def _consume_kingpin_information(self, effect_events: list[str], damage: int) -> int:
+        if not self._is_kingpin_boss() or not bool(self.mission_data.get("kingpin_information_pending", False)):
+            return max(0, int(damage or 0))
+        self.mission_data["kingpin_information_pending"] = False
+        prevented_damage = max(0, int(damage or 0))
+        healed = self.heal_player(0, prevented_damage) if prevented_damage > 0 else 0
+        self._append_effect_event(
+            effect_events,
+            game_ui_texts.KINGPIN_INFORMATION_CONSUMED.format(damage=prevented_damage, healed=healed),
+        )
+        return 0
+
+    def _prepare_green_goblin_bomb_for_player_action(self, effect_events: list[str], *, is_reload_action: bool) -> None:
+        if not self._is_green_goblin_boss() or is_reload_action or self.player_hp <= 0 or self.bot_hp <= 0:
+            return
+        turn_count = int(self.mission_data.get("green_goblin_player_turn_count", 0) or 0) + 1
+        self.mission_data["green_goblin_player_turn_count"] = turn_count
+        active_bomb = self.mission_data.get("green_goblin_mega_bomb")
+        if turn_count % 3 == 0 and not isinstance(active_bomb, dict):
+            self.mission_data["green_goblin_mega_bomb"] = {"turns_left": 2, "damage_done": 0}
+            self._append_effect_event(effect_events, game_ui_texts.GREEN_GOBLIN_BOMB_ARMED)
+
+    def _resolve_green_goblin_bomb_after_player_attack(self, effect_events: list[str], *, damage_dealt: int) -> None:
+        if not self._is_green_goblin_boss() or self.player_hp <= 0 or self.bot_hp <= 0:
+            return
+        active_bomb = self.mission_data.get("green_goblin_mega_bomb")
+        if not isinstance(active_bomb, dict):
+            return
+        progress = max(0, int(active_bomb.get("damage_done", 0) or 0)) + max(0, int(damage_dealt or 0))
+        turns_left = max(0, int(active_bomb.get("turns_left", 0) or 0)) - 1
+        if progress >= 30:
+            self.mission_data.pop("green_goblin_mega_bomb", None)
+            self._append_effect_event(effect_events, game_ui_texts.GREEN_GOBLIN_BOMB_DEFUSED.format(progress=progress))
+            return
+        if turns_left <= 0:
+            self.mission_data.pop("green_goblin_mega_bomb", None)
+            self._apply_non_heal_damage_with_event(
+                effect_events,
+                self.user_id,
+                50,
+                source="Mega-Kürbisbombe",
+                self_damage=False,
+            )
+            self._append_effect_event(effect_events, game_ui_texts.GREEN_GOBLIN_BOMB_EXPLODED)
+            return
+        self.mission_data["green_goblin_mega_bomb"] = {"turns_left": turns_left, "damage_done": progress}
+        self._append_effect_event(
+            effect_events,
+            game_ui_texts.GREEN_GOBLIN_BOMB_PROGRESS.format(progress=progress, turns=turns_left),
+        )
 
     def _apply_on_hit_passives(self, effect_events: list[str], *, damage_dealt: int) -> None:
         if damage_dealt <= 0:
@@ -12275,6 +12405,15 @@ class MissionBattleView(DurableView):
             is_reload_action=is_reload_action,
             is_forced_landing=is_forced_landing,
         )
+        player_pattern_type = self._player_action_pattern_type(
+            attack,
+            attack_index=attack_index,
+            is_reload_action=is_reload_action,
+            is_forced_landing=is_forced_landing,
+        )
+        if not is_forced_landing:
+            self._prepare_kingpin_information_for_player_action(effect_events, is_reload_action=is_reload_action)
+            self._prepare_green_goblin_bomb_for_player_action(effect_events, is_reload_action=is_reload_action)
         player_miss_reason: str | None = None
         dmg_buff = 0
         damage_max_bonus = self.damage_bonuses.get(attack_index + 1, 0)
@@ -12545,6 +12684,7 @@ class MissionBattleView(DurableView):
                     is_critical = False
                 else:
                     actual_damage = max(0, int(final_damage))
+                    actual_damage = self._consume_kingpin_information(effect_events, actual_damage)
                     if actual_damage > 0:
                         self._apply_non_heal_damage(0, actual_damage)
                     else:
@@ -12602,6 +12742,11 @@ class MissionBattleView(DurableView):
 
         self.player_hp = max(0, self.player_hp)
         self.bot_hp = max(0, self.bot_hp)
+        if bool(self.mission_data.get("kingpin_information_pending", False)):
+            actual_damage = self._consume_kingpin_information(effect_events, int(actual_damage or 0))
+        self._apply_agatha_action_pattern(effect_events, player_pattern_type)
+        self._apply_modok_neural_feedback(effect_events, attack, is_reload_action=is_reload_action)
+        self._resolve_green_goblin_bomb_after_player_attack(effect_events, damage_dealt=int(actual_damage or 0))
         self._last_player_damage_dealt = int(actual_damage or 0)
         self.mission_data["last_player_damage_dealt"] = int(self._last_player_damage_dealt)
         self._mark_maestro_execute_if_needed(effect_events)

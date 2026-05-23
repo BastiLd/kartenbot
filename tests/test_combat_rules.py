@@ -3445,7 +3445,7 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         }
         maestro = copy.deepcopy(mission["encounters"][3])
         view = MissionBattleView(player_card, maestro, 1, 4, 4, mission_data=mission)
-        view.player_hp = 49
+        view.player_hp = 34
         events: list[str] = []
         view._mark_maestro_execute_if_needed(events)
         self.assertTrue(view.maestro_execute_pending)
@@ -3455,7 +3455,7 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(bool(forced["unblockable"]))
         self.assertFalse(view.maestro_execute_pending)
 
-    async def test_maestro_execute_cancelled_when_healed_above_50_before_bot_turn(self) -> None:
+    async def test_maestro_execute_cancelled_when_healed_above_35_before_bot_turn(self) -> None:
         mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)
         player_card = {
             "name": "PlayerCard",
@@ -3465,16 +3465,102 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         }
         maestro = copy.deepcopy(mission["encounters"][3])
         view = MissionBattleView(player_card, maestro, 1, 4, 4, mission_data=mission)
-        view.player_hp = 49
+        view.player_hp = 34
         events: list[str] = []
         view._mark_maestro_execute_if_needed(events)
         self.assertTrue(view.maestro_execute_pending)
-        view.player_hp = 55
+        view.player_hp = 35
         sync_events: list[str] = []
         view._sync_maestro_execute_for_current_hp(sync_events)
         self.assertFalse(view.maestro_execute_pending)
         forced = view._forced_maestro_execute_attack(events)
         self.assertIsNone(forced)
+
+    async def test_modok_neural_feedback_punishes_cooldown_five_player_ability(self) -> None:
+        mission = bot_module.build_mission_from_operation("operation_technischer_kollaps", mission_number=1, is_admin=False)
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [
+                {"name": "Hit", "damage": [10, 10], "is_standard_attack": True, "info": "test"},
+                {"name": "Big", "damage": [20, 20], "cooldown_turns": 5, "info": "test"},
+            ],
+        }
+        modok = copy.deepcopy(mission["encounters"][3])
+        view = MissionBattleView(player_card, modok, 1, 4, 4, mission_data=mission)
+        events: list[str] = []
+        view._apply_modok_neural_feedback(events, player_card["attacks"][1], is_reload_action=False)
+        self.assertEqual(view.player_hp, 85)
+        self.assertTrue(any("Neuronales Feedback" in event for event in events))
+
+    async def test_agatha_requires_alternating_standard_and_special_actions(self) -> None:
+        mission = bot_module.build_mission_from_operation("operation_hexenfeuer", mission_number=1, is_admin=False)
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [
+                {"name": "Hit", "damage": [10, 10], "is_standard_attack": True, "info": "test"},
+                {"name": "Spell", "damage": [20, 20], "cooldown_turns": 4, "info": "test"},
+            ],
+        }
+        agatha = copy.deepcopy(mission["encounters"][3])
+        view = MissionBattleView(player_card, agatha, 1, 4, 4, mission_data=mission)
+        view.bot_hp = 200
+        events: list[str] = []
+        view._apply_agatha_action_pattern(events, "standard")
+        view._apply_agatha_action_pattern(events, "standard")
+        self.assertEqual(view.bot_hp, 225)
+        view._apply_agatha_action_pattern(events, "special")
+        view._apply_agatha_action_pattern(events, "special")
+        self.assertEqual(view.player_hp, 75)
+
+    async def test_kingpin_buys_information_every_fourth_player_action(self) -> None:
+        mission = bot_module.build_mission_from_operation("operation_goldener_kaefig", mission_number=1, is_admin=False)
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "is_standard_attack": True, "info": "test"}],
+        }
+        kingpin = copy.deepcopy(mission["encounters"][3])
+        view = MissionBattleView(player_card, kingpin, 1, 4, 4, mission_data=mission)
+        view.bot_hp = 100
+        events: list[str] = []
+        for _ in range(4):
+            view._prepare_kingpin_information_for_player_action(events, is_reload_action=False)
+        self.assertTrue(view.mission_data["kingpin_information_pending"])
+        damage_after_tactic = view._consume_kingpin_information(events, 42)
+        self.assertEqual(damage_after_tactic, 0)
+        self.assertEqual(view.bot_hp, 142)
+
+    async def test_green_goblin_mega_bomb_explodes_or_defuses_after_two_player_rounds(self) -> None:
+        mission = bot_module.build_mission_from_operation("operation_gruener_terror", mission_number=1, is_admin=False)
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "is_standard_attack": True, "info": "test"}],
+        }
+        goblin = copy.deepcopy(mission["encounters"][3])
+        view = MissionBattleView(player_card, goblin, 1, 4, 4, mission_data=mission)
+        events: list[str] = []
+        for _ in range(3):
+            view._prepare_green_goblin_bomb_for_player_action(events, is_reload_action=False)
+        self.assertIsInstance(view.mission_data.get("green_goblin_mega_bomb"), dict)
+        view._resolve_green_goblin_bomb_after_player_attack(events, damage_dealt=10)
+        self.assertEqual(view.player_hp, 100)
+        view._resolve_green_goblin_bomb_after_player_attack(events, damage_dealt=19)
+        self.assertEqual(view.player_hp, 50)
+
+        view = MissionBattleView(player_card, copy.deepcopy(goblin), 1, 4, 4, mission_data=copy.deepcopy(mission))
+        events = []
+        for _ in range(3):
+            view._prepare_green_goblin_bomb_for_player_action(events, is_reload_action=False)
+        view._resolve_green_goblin_bomb_after_player_attack(events, damage_dealt=30)
+        self.assertNotIn("green_goblin_mega_bomb", view.mission_data)
+        self.assertEqual(view.player_hp, 100)
 
     async def test_maestro_artifact_damage_bonus_only_matches_configured_attack(self) -> None:
         mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)

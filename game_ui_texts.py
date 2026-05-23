@@ -57,10 +57,19 @@ ENEMY_TURN_DESCRIPTION = "🎯 **{enemy_name}** ist am Zug. Unten siehst du sein
 
 # Maestro Kampflog (nicht die Karten-Fähigkeitstexte)
 MAESTRO_EXECUTE_MARKED = (
-    "Gnadenschuss des Tyrannen vorbereitet: Spieler unter 50 HP, Maestro nutzt in seiner nächsten Runde 999 unblockbaren Schaden."
+    "Gnadenschuss des Tyrannen vorbereitet: Spieler unter 35 HP, Maestro nutzt in seiner nächsten Runde 999 unblockbaren Schaden."
 )
 MAESTRO_EXECUTE_FIRED = "Gnadenschuss des Tyrannen löst aus: 999 unblockbarer Schaden."
-MAESTRO_EXECUTE_CANCELLED = "Maestro bricht den Gnadenschuss ab: Du hast wieder mindestens 50 HP."
+MAESTRO_EXECUTE_CANCELLED = "Maestro bricht den Gnadenschuss ab: Du hast wieder mindestens 35 HP."
+MODOK_NEURAL_FEEDBACK = "Neuronales Feedback: Fähigkeit mit Cooldown 5+ verursacht 15 Schaden am Spieler."
+AGATHA_SPECIAL_FEEDBACK = "Magisches Feedback: Zwei Spezialfähigkeiten in Folge verursachen 25 Schaden am Spieler."
+AGATHA_STANDARD_HEAL = "Agathas Regelkreis: Zwei Standardangriffe in Folge heilen Agatha um {amount} HP."
+KINGPIN_INFORMATION_READY = "Gekaufte Informationen aktiv: Kingpins nächste Reaktion kehrt deinen Angriff um."
+KINGPIN_INFORMATION_CONSUMED = "Gekaufte Informationen: {damage} Schaden werden verhindert und Kingpin heilt um {healed} HP."
+GREEN_GOBLIN_BOMB_ARMED = "Mega-Kürbisbombe geworfen: Verursache innerhalb von 2 Runden mindestens 30 Schaden."
+GREEN_GOBLIN_BOMB_PROGRESS = "Mega-Kürbisbombe tickt: {progress}/30 Schaden, {turns} Runde(n) übrig."
+GREEN_GOBLIN_BOMB_DEFUSED = "Mega-Kürbisbombe entschärft: {progress}/30 Schaden erreicht."
+GREEN_GOBLIN_BOMB_EXPLODED = "Mega-Kürbisbombe explodiert: 50 Schaden."
 
 # Missions-Erfolg
 MISSION_SUCCESS_TITLE_NEW_CARD = "🏆 Mission erfolgreich!"
@@ -197,26 +206,25 @@ MISSION_OPERATION_TEXTS: dict[str, dict[str, str]] = {
 # Boss-spezifische Taktiktexte für die Boss-Vorschau vor dem Kampf.
 MISSION_BOSS_TACTICS: dict[str, str] = {
     "maestro": (
-        "Bleib beim Zugende bei mindestens 50 HP. "
+        "Bleib beim Zugende bei mindestens 35 HP. "
         "Wenn du darunter faellst, markiert Maestro seinen Gnadenschuss "
         "und kann im naechsten Boss-Zug 999 unblockbaren Schaden ausloesen."
     ),
     "modok": (
-        "Plane Spezialangriffe sauber ein: M.O.D.O.K. kann sie mit System-Hack sperren "
-        "und mit Berechneter Heilung viel HP zurückholen."
+        "Jede Spieler-Faehigkeit mit Cooldown 5 oder hoeher verursacht sofort "
+        "15 neuronalen Feedback-Schaden am Spieler."
     ),
     "green_goblin": (
-        "Rechne mit Verfehlungen und Kontern durch Gas/Illusionseffekte. "
-        "Spiele wichtige Angriffe in sicheren Fenstern."
+        "Alle 3 Runden wirft Green Goblin eine Mega-Kuerbisbombe. "
+        "Fuege ihm in den naechsten 2 Runden insgesamt 30 Schaden zu, sonst explodiert sie fuer 50 Schaden."
     ),
     "kingpin": (
-        "Konstant Schaden machen lohnt sich: Bei Bestechungs-Versuch heilt Kingpin "
-        "nur 35 HP, wenn du im Zug davor Schaden gemacht hast. "
-        "Ohne Schaden heilt er 60 HP."
+        "Alle 4 Runden aktiviert Kingpin Gekaufte Informationen. "
+        "Dein naechster Angriff verursacht 0 Schaden und heilt Kingpin um genau den verhinderten Schadenswert."
     ),
     "agatha_harkness": (
-        "Achte auf Heal-Block und Ausweichfenster. "
-        "Wenn Agatha den Fluch oder die Illusion aktiv hat, nicht blind in wichtige Heals/Angriffe laufen."
+        "Wechsle zwingend zwischen Standardangriff und Spezialfaehigkeit. "
+        "Zwei Spezialfaehigkeiten in Folge verursachen 25 Schaden; zwei Standardangriffe heilen Agatha um 25 HP."
     ),
 }
 

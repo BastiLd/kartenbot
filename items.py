@@ -94,8 +94,8 @@ items: list[dict[str, Any]] = [
                 #   "restart_boss"    = Bosskampf startet neu, Spieler volle HP, Lakaien müssen nicht erneut gekämpft werden.
                 "kind": "boss_revive",
                 "target": "mission_boss",
-                "cost": 2,
-                "mode": "revive_continue",
+                "cost": 3,
+                "mode": "restart_boss",
             }
         ],
         "variants": [
