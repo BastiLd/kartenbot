@@ -3796,6 +3796,7 @@ class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Enemy One", field_values)
         custom_ids = {getattr(child, "custom_id", None) for child in view.children}
         self.assertIn("mission_enc_prv:start_m", custom_ids)
+        self.assertNotIn("mission_enc_prv:skip", custom_ids)
         self.assertNotIn("mission_enc_prv:next", custom_ids)
         self.assertNotIn("mission_enc_prv:hero", custom_ids)
 
@@ -3827,6 +3828,9 @@ class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):
         first_ids = {getattr(child, "custom_id", None) for child in first_view.children}
         mid_ids = {getattr(child, "custom_id", None) for child in mid_view.children}
         boss_ids = {getattr(child, "custom_id", None) for child in boss_view.children}
+        self.assertNotIn("mission_enc_prv:skip", first_ids)
+        self.assertNotIn("mission_enc_prv:skip", mid_ids)
+        self.assertNotIn("mission_enc_prv:skip", boss_ids)
         self.assertIn("mission_enc_prv:hero", first_ids)
         self.assertNotIn("mission_enc_prv:hero", mid_ids)
         self.assertIn("mission_enc_prv:hero", boss_ids)

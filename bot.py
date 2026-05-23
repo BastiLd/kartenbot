@@ -2289,9 +2289,9 @@ def _attack_effect_icons(attack: dict) -> list[str]:
         elif eff_type == "airborne_two_phase":
             if "✈️" not in effect_icons:
                 effect_icons.append("✈️")
-        elif eff_type in {"damage_boost", "damage_multiplier"}:
-            if "?" not in effect_icons:
-                effect_icons.append("?")
+        elif eff_type in {"damage_boost", "damage_multiplier", "permanent_damage_boost"}:
+            if "⬆️" not in effect_icons:
+                effect_icons.append("⬆️")
         elif eff_type in {"force_max", "mix_heal_or_max", "guaranteed_hit"}:
             if "🎯" not in effect_icons:
                 effect_icons.append("🎯")
@@ -10866,7 +10866,6 @@ class MissionEncounterPreviewView(DurableView):
         n = len(slides)
         idx = int(self.mission_state.get("preview_index", 0) or 0)
         if self.mode == "boss":
-            self.add_item(self._btn_skip())
             self.add_item(self._btn_start_boss())
             self.add_item(self._btn_hero())
             return
@@ -10876,16 +10875,13 @@ class MissionEncounterPreviewView(DurableView):
             self.add_item(self._btn_start_mission())
             if self._allows_card_change():
                 self.add_item(self._btn_hero())
-            self.add_item(self._btn_skip())
             return
         if idx < n - 1:
             self.add_item(self._btn_next())
-            self.add_item(self._btn_skip())
         else:
             self.add_item(self._btn_start_mission())
             if self._allows_card_change():
                 self.add_item(self._btn_hero())
-            self.add_item(self._btn_skip())
 
     def _allows_card_change(self) -> bool:
         return self.mode == "boss" or int(self.mission_state.get("next_wave", 1) or 1) <= 1
@@ -10898,16 +10894,6 @@ class MissionEncounterPreviewView(DurableView):
             row=0,
         )
         b.callback = self._cb_next
-        return b
-
-    def _btn_skip(self) -> ui.Button:
-        b = ui.Button(
-            label=game_ui_texts.PREVIEW_BTN_SKIP,
-            style=discord.ButtonStyle.secondary,
-            custom_id="mission_enc_prv:skip",
-            row=0,
-        )
-        b.callback = self._cb_skip
         return b
 
     def _btn_start_mission(self) -> ui.Button:
@@ -10957,12 +10943,6 @@ class MissionEncounterPreviewView(DurableView):
         self._build_button_rows()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
         await self._touch_durable(interaction)
-
-    async def _cb_skip(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Nur der Mission-User kann das steuern!", ephemeral=True)
-            return
-        await self._finalize_wave_start(interaction)
 
     async def _cb_start(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:

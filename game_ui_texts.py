@@ -42,7 +42,6 @@ PREVIEW_DESCRIPTION_BOSS = "Der finale Gegner: **{name}**."
 PREVIEW_FIELD_RARITY = "Seltenheit"
 PREVIEW_FIELD_TACTIC = "Taktik"
 PREVIEW_BTN_NEXT = "Weiter"
-PREVIEW_BTN_SKIP = "Überspringen"
 PREVIEW_BTN_START_MISSION = "Mission starten"
 PREVIEW_BTN_START_BOSS = "Boss-Kampf starten"
 PREVIEW_BTN_CHANGE_HERO = "Held wechseln"
@@ -64,8 +63,8 @@ MAESTRO_EXECUTE_CANCELLED = "Maestro bricht den Gnadenschuss ab: Du hast wieder 
 MODOK_NEURAL_FEEDBACK = "Neuronales Feedback: Fähigkeit mit Cooldown 5+ verursacht 15 Schaden am Spieler."
 AGATHA_SPECIAL_FEEDBACK = "Magisches Feedback: Zwei Spezialfähigkeiten in Folge verursachen 25 Schaden am Spieler."
 AGATHA_STANDARD_HEAL = "Agathas Regelkreis: Zwei Standardangriffe in Folge heilen Agatha um {amount} HP."
-KINGPIN_INFORMATION_READY = "Gekaufte Informationen aktiv: Kingpins nächste Reaktion kehrt deinen Angriff um."
-KINGPIN_INFORMATION_CONSUMED = "Gekaufte Informationen: {damage} Schaden werden verhindert und Kingpin heilt um {healed} HP."
+KINGPIN_INFORMATION_READY = "Gekaufte Informationen aktiv: Dieser Angriff verursacht 0 Schaden und heilt Kingpin um den verhinderten Schaden."
+KINGPIN_INFORMATION_CONSUMED = "Gekaufte Informationen: {damage} Schaden verhindert. Kingpin heilt sich um bis zu {damage} HP (tatsächlich +{healed} HP)."
 GREEN_GOBLIN_BOMB_ARMED = "Mega-Kürbisbombe geworfen: Verursache innerhalb von 2 Runden mindestens 30 Schaden."
 GREEN_GOBLIN_BOMB_PROGRESS = "Mega-Kürbisbombe tickt: {progress}/30 Schaden, {turns} Runde(n) übrig."
 GREEN_GOBLIN_BOMB_DEFUSED = "Mega-Kürbisbombe entschärft: {progress}/30 Schaden erreicht."
@@ -206,25 +205,33 @@ MISSION_OPERATION_TEXTS: dict[str, dict[str, str]] = {
 # Boss-spezifische Taktiktexte für die Boss-Vorschau vor dem Kampf.
 MISSION_BOSS_TACTICS: dict[str, str] = {
     "maestro": (
-        "Bleib beim Zugende bei mindestens 35 HP. "
-        "Wenn du darunter faellst, markiert Maestro seinen Gnadenschuss "
-        "und kann im naechsten Boss-Zug 999 unblockbaren Schaden ausloesen."
+        "Maestro: Spezial-Taktik: Sobald die HP des Spielers unter 35 HP fallen, "
+        "nutzt Maestro in seiner nächsten Runde automatisch eine Spezial-Aktion, "
+        "die 999 Schaden verursacht."
     ),
     "modok": (
-        "Jede Spieler-Faehigkeit mit Cooldown 5 oder hoeher verursacht sofort "
-        "15 neuronalen Feedback-Schaden am Spieler."
+        "M.O.D.O.K.: Wenn der Spieler eine Fähigkeit einsetzt, die eine Abklingzeit "
+        "von 5 oder höher hat, erleidet der Spieler durch ein neuronales Feedback "
+        "sofort 15 Schaden."
     ),
     "green_goblin": (
-        "Alle 3 Runden wirft Green Goblin eine Mega-Kuerbisbombe. "
-        "Fuege ihm in den naechsten 2 Runden insgesamt 30 Schaden zu, sonst explodiert sie fuer 50 Schaden."
+        "Green Goblin: Alle 3 Runden wirft der Goblin eine \"Mega-Kürbisbombe\". "
+        "Diese explodiert nach genau 2 Runden und verursacht 50 Schaden. "
+        "Der Spieler kann die Bombe entschärfen, indem er dem Goblin in der Zeit, "
+        "in der die Bombe tickt, insgesamt mindestens 30 Schaden zufügt."
     ),
     "kingpin": (
-        "Alle 4 Runden aktiviert Kingpin Gekaufte Informationen. "
-        "Dein naechster Angriff verursacht 0 Schaden und heilt Kingpin um genau den verhinderten Schadenswert."
+        "Kingpin: Alle 4 Runden aktiviert Kingpin den Effekt „Gekaufte Informationen“. "
+        "Der nächste Angriff des Spielers (egal wie stark) verursacht 0 Schaden an Kingpin "
+        "und heilt Kingpin stattdessen um genau diesen Schadenswert."
     ),
     "agatha_harkness": (
-        "Wechsle zwingend zwischen Standardangriff und Spezialfaehigkeit. "
-        "Zwei Spezialfaehigkeiten in Folge verursachen 25 Schaden; zwei Standardangriffe heilen Agatha um 25 HP."
+        "Agatha: Agatha bestraft Spieler, die zweimal hintereinander denselben Aktionstyp wählen. "
+        "Sie möchte, dass der Kampf nach ihren Regeln abläuft.\n"
+        "•    Die Taktik: Wenn der Spieler zwei Runden hintereinander eine Spezialfähigkeit (CD > 0) nutzt, "
+        "erleidet er sofort 25 Schaden durch magisches Feedback.\n"
+        "•    Die Taktik: Wenn der Spieler zwei Runden hintereinander nur seinen Standard-Angriff nutzt, "
+        "heilt sich Agatha sofort um 25 HP."
     ),
 }
 
