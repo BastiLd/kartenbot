@@ -1508,8 +1508,9 @@ def _env_flag_enabled(name: str, *, default: bool = False) -> bool:
 
 ALPHA_PHASE_ENABLED = False
 ALPHA_HIDDEN_SLASH_COMMANDS = ("mission", "geschichte")
-ALPHA_FEATURE_DISABLED_TEXT = "🧪 Alpha-Phase: Mission und Story sind aktuell deaktiviert."
+ALPHA_FEATURE_DISABLED_TEXT = "🧪 Alpha ist aktiv: Mission, Story und Einladungen sind aktuell deaktiviert."
 BETA_STORY_DISABLED_TEXT = "🧪 Beta ist aktiv: Story ist aktuell deaktiviert."
+BETA_INVITE_DISABLED_TEXT = "🧪 Beta ist aktiv: Einladungen sind aktuell deaktiviert."
 
 
 class KatabumpCommandTree(app_commands.CommandTree):

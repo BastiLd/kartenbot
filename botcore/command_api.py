@@ -74,6 +74,7 @@ def build_command_api(global_ns: dict[str, Any]) -> CommandApi:
         # gameplay_commands.py
         "BattleView",
         "BETA_STORY_DISABLED_TEXT",
+        "BETA_INVITE_DISABLED_TEXT",
         "CardSelectView",
         "ChallengeResponseView",
         "MissionAcceptView",

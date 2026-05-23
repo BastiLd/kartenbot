@@ -108,6 +108,12 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
                 interaction.guild_id,
                 interaction.channel_id,
             )
+            if await module.is_alpha_enabled(interaction.guild_id):
+                await module._send_ephemeral(interaction, content=module.ALPHA_FEATURE_DISABLED_TEXT)
+                return
+            if await module.is_beta_enabled(interaction.guild_id):
+                await module._send_ephemeral(interaction, content=module.BETA_INVITE_DISABLED_TEXT)
+                return
             visibility_key = module.command_visibility_key_for_interaction(interaction)
             visibility = (
                 await module.get_message_visibility(interaction.guild_id, visibility_key)
