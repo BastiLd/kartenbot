@@ -2769,11 +2769,11 @@ def _build_mission_embed(mission_data: dict) -> discord.Embed:
     embed.add_field(name="Wellen", value=f"{waves}", inline=True)
     if mission_data.get("unit_reward_after_wave"):
         embed.add_field(name="Units", value=f"+{int(mission_data.get('unit_reward_after_wave') or 0)} nach Welle 3", inline=True)
-        _apply_item_media(embed, "unit", image=True, thumbnail=False)
+        _apply_item_media(embed, "unit", image=False, thumbnail=True)
     if reward_card:
         embed.add_field(name="🎁 Belohnung", value=f"**{reward_card.get('name', '?')}**", inline=True)
         if reward_card.get("bild"):
-            embed.set_thumbnail(url=reward_card["bild"])
+            embed.set_image(url=reward_card["bild"])
     return embed
 
 
