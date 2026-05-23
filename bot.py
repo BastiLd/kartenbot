@@ -9883,6 +9883,85 @@ class MaintenanceConfirmView(RestrictedView):
             return
         await interaction.response.edit_message(content=game_ui_texts.MAINTENANCE_CANCELLED, view=None, embed=None)
 
+class AlphaConfirmView(RestrictedView):
+    def __init__(self, requester_id: int, *, enable: bool):
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        self.enable = bool(enable)
+
+    @ui.button(label=game_ui_texts.MAINTENANCE_CONFIRM_BTN_YES, style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        if interaction.guild is None:
+            await _send_with_visibility(interaction, "feature_flags", content=SERVER_ONLY)
+            return
+        await set_alpha_enabled(interaction.guild.id, self.enable)
+        refreshed = await refresh_latest_anfang_message_for_guild(interaction)
+        event_name = "admin_alpha_on" if self.enable else "admin_alpha_off"
+        await _log_event_safe(
+            event_name,
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+            thread_id=_thread_id_for_channel(interaction.channel),
+            actor_user_id=interaction.user.id,
+            command_name="entwicklerpanel",
+        )
+        refresh_text = "Letzte /anfang-Nachricht wurde aktualisiert." if refreshed else "Keine gespeicherte /anfang-Nachricht aktualisiert."
+        await interaction.response.edit_message(
+            content=(game_ui_texts.ALPHA_ENABLED if self.enable else game_ui_texts.ALPHA_DISABLED) + f" {refresh_text}",
+            view=None,
+            embed=None,
+        )
+
+    @ui.button(label=game_ui_texts.MAINTENANCE_CONFIRM_BTN_NO, style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        await interaction.response.edit_message(content=game_ui_texts.ALPHA_CANCELLED, view=None, embed=None)
+
+
+class BetaConfirmView(RestrictedView):
+    def __init__(self, requester_id: int, *, enable: bool):
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        self.enable = bool(enable)
+
+    @ui.button(label=game_ui_texts.MAINTENANCE_CONFIRM_BTN_YES, style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        if interaction.guild is None:
+            await _send_with_visibility(interaction, "feature_flags", content=SERVER_ONLY)
+            return
+        await set_beta_enabled(interaction.guild.id, self.enable)
+        refreshed = await refresh_latest_anfang_message_for_guild(interaction)
+        event_name = "admin_beta_on" if self.enable else "admin_beta_off"
+        await _log_event_safe(
+            event_name,
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+            thread_id=_thread_id_for_channel(interaction.channel),
+            actor_user_id=interaction.user.id,
+            command_name="entwicklerpanel",
+        )
+        refresh_text = "Letzte /anfang-Nachricht wurde aktualisiert." if refreshed else "Keine gespeicherte /anfang-Nachricht aktualisiert."
+        await interaction.response.edit_message(
+            content=(game_ui_texts.BETA_ENABLED if self.enable else game_ui_texts.BETA_DISABLED) + f" {refresh_text}",
+            view=None,
+            embed=None,
+        )
+
+    @ui.button(label=game_ui_texts.MAINTENANCE_CONFIRM_BTN_NO, style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        await interaction.response.edit_message(content=game_ui_texts.BETA_CANCELLED, view=None, embed=None)
+
 class UserSelectView(RestrictedView):
     def __init__(self, user_id, guild):
         super().__init__(timeout=60)
@@ -15239,17 +15318,19 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
         is_alpha_action = action.startswith("alpha_")
         enabled = action.endswith("_on")
         if is_alpha_action:
-            await set_alpha_enabled(interaction.guild.id, enabled)
+            view = AlphaConfirmView(interaction.user.id, enable=enabled)
+            title = game_ui_texts.ALPHA_CONFIRM_ON_TITLE if enabled else game_ui_texts.ALPHA_CONFIRM_OFF_TITLE
+            text = game_ui_texts.ALPHA_CONFIRM_ON_TEXT if enabled else game_ui_texts.ALPHA_CONFIRM_OFF_TEXT
         else:
-            await set_beta_enabled(interaction.guild.id, enabled)
-        refreshed = await refresh_latest_anfang_message_for_guild(interaction)
-        state = "aktiviert" if enabled else "deaktiviert"
-        flag_name = "Alpha" if is_alpha_action else "Beta"
-        refresh_text = "Letzte /anfang-Nachricht wurde aktualisiert." if refreshed else "Keine gespeicherte /anfang-Nachricht aktualisiert."
+            view = BetaConfirmView(interaction.user.id, enable=enabled)
+            title = game_ui_texts.BETA_CONFIRM_ON_TITLE if enabled else game_ui_texts.BETA_CONFIRM_OFF_TITLE
+            text = game_ui_texts.BETA_CONFIRM_ON_TEXT if enabled else game_ui_texts.BETA_CONFIRM_OFF_TEXT
+
         await _send_with_visibility(
             interaction,
             "feature_flags",
-            content=f"{flag_name} wurde **{state}**. {refresh_text}",
+            content=f"**{title}**\n\n{text}",
+            view=view,
         )
         return
 

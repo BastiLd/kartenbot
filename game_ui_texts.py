@@ -110,6 +110,36 @@ MAINTENANCE_ENABLED = "Wartungsmodus aktiviert."
 MAINTENANCE_DISABLED = "Wartungsmodus deaktiviert."
 MAINTENANCE_CANCELLED = "Änderung am Wartungsmodus abgebrochen."
 
+# Dev-Tools: Alpha-Modus
+ALPHA_CONFIRM_ON_TITLE = "Alpha-Modus einschalten?"
+ALPHA_CONFIRM_OFF_TITLE = "Alpha-Modus ausschalten?"
+ALPHA_CONFIRM_ON_TEXT = (
+    "Wenn der Alpha-Modus **AN** ist, werden Alpha-Features für diesen Server aktiviert.\n\n"
+    "Willst du das wirklich einschalten?"
+)
+ALPHA_CONFIRM_OFF_TEXT = (
+    "Wenn der Alpha-Modus **AUS** ist, werden Alpha-Features für diesen Server deaktiviert.\n\n"
+    "Willst du das wirklich ausschalten?"
+)
+ALPHA_ENABLED = "Alpha-Modus aktiviert."
+ALPHA_DISABLED = "Alpha-Modus deaktiviert."
+ALPHA_CANCELLED = "Änderung am Alpha-Modus abgebrochen."
+
+# Dev-Tools: Beta-Modus
+BETA_CONFIRM_ON_TITLE = "Beta-Modus einschalten?"
+BETA_CONFIRM_OFF_TITLE = "Beta-Modus ausschalten?"
+BETA_CONFIRM_ON_TEXT = (
+    "Wenn der Beta-Modus **AN** ist, werden Beta-Features für diesen Server aktiviert.\n\n"
+    "Willst du das wirklich einschalten?"
+)
+BETA_CONFIRM_OFF_TEXT = (
+    "Wenn der Beta-Modus **AUS** ist, werden Beta-Features für diesen Server deaktiviert.\n\n"
+    "Willst du das wirklich ausschalten?"
+)
+BETA_ENABLED = "Beta-Modus aktiviert."
+BETA_DISABLED = "Beta-Modus deaktiviert."
+BETA_CANCELLED = "Änderung am Beta-Modus abgebrochen." 
+
 # Missionen: zentrale Operationstexte
 # Neue Operationen müssen nur hier ergänzt werden.
 MISSION_OPERATION_TEXTS: dict[str, dict[str, str]] = {
