@@ -179,6 +179,7 @@ from services.user_data import (
     remove_karte_amount,
     set_team,
     spend_infinitydust,
+    spend_units,
 )
 import secrets
 
@@ -7849,6 +7850,12 @@ async def _start_mission_wave_in_thread(
         if carry_max_hp is not None and carry_max_hp > 0:
             mission_view.player_max_hp = max(mission_view.player_max_hp, carry_max_hp)
         mission_view.player_hp = min(mission_view.player_max_hp, max(1, int(carry_hp)))
+    carry_bot_hp = _maybe_int(mission_state.get("bot_hp"))
+    carry_bot_max_hp = _maybe_int(mission_state.get("bot_max_hp"))
+    if carry_bot_max_hp is not None and carry_bot_max_hp > 0:
+        mission_view.bot_max_hp = max(mission_view.bot_max_hp, carry_bot_max_hp)
+    if carry_bot_hp is not None:
+        mission_view.bot_hp = min(mission_view.bot_max_hp, max(1, int(carry_bot_hp)))
     is_boss_wave = bool(wave_num >= total_waves)
     if should_carry_cooldowns("mission") and should_carry_mission_cooldowns(is_boss_wave=is_boss_wave):
         carried_cooldowns = _cooldowns_from_attack_names(
@@ -8495,6 +8502,21 @@ def _apply_item_media(embed: discord.Embed, item_id: str, *, image: bool = False
         embed.set_image(url=image_url)
     if thumbnail and thumbnail_url:
         embed.set_thumbnail(url=thumbnail_url)
+
+
+def _unit_boss_revive_config() -> tuple[int, str]:
+    unit_item = get_item_by_id("unit") or {}
+    for effect in unit_item.get("effects", []):
+        if not isinstance(effect, dict):
+            continue
+        if str(effect.get("kind") or "").strip().lower() != "boss_revive":
+            continue
+        cost = max(0, int(effect.get("cost", 2) or 2))
+        mode = str(effect.get("mode") or "revive_continue").strip().lower()
+        if mode not in {"revive_continue", "restart_boss"}:
+            mode = "revive_continue"
+        return cost, mode
+    return 2, "revive_continue"
 
 async def is_give_op_authorized(interaction: discord.Interaction) -> bool:
     if await is_owner_or_dev(interaction):
@@ -10733,6 +10755,62 @@ class MissionNewCardSelectView(DurableView):
         self.stop()
 
 
+class MissionBossReviveView(RestrictedView):
+    def __init__(self, user_id: int, mission_state: dict[str, Any], *, cost: int, mode: str):
+        super().__init__(timeout=300)
+        self.user_id = int(user_id)
+        self.mission_state = _json_clone(mission_state)
+        self.cost = max(0, int(cost))
+        self.mode = str(mode or "revive_continue").strip().lower()
+        if self.mode not in {"revive_continue", "restart_boss"}:
+            self.mode = "revive_continue"
+
+        label = f"Für {self.cost} Unit wiederbeleben"
+        self.revive_button = ui.Button(label=label[:80], style=discord.ButtonStyle.success)
+        self.revive_button.callback = self.revive
+        self.add_item(self.revive_button)
+
+        self.cancel_button = ui.Button(label="Mission beenden", style=discord.ButtonStyle.danger)
+        self.cancel_button.callback = self.cancel
+        self.add_item(self.cancel_button)
+
+    async def revive(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Nur der Mission-User kann das nutzen!", ephemeral=True)
+            return
+        if not await spend_units(self.user_id, self.cost):
+            await interaction.response.send_message(f"❌ Du brauchst **{self.cost} Unit** für die Wiederbelebung.", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        try:
+            if interaction.message is not None:
+                await interaction.message.edit(view=None)
+        except Exception:
+            logging.exception("Failed to clear mission boss revive view")
+
+        await _safe_send_channel(
+            interaction,
+            interaction.channel,
+            content=f"✅ {self.cost} Unit ausgegeben. Bosskampf wird fortgesetzt.",
+        )
+        await _start_mission_wave_in_thread(interaction, mission_state=_dict_str_any(self.mission_state))
+        self.stop()
+
+    async def cancel(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Nur der Mission-User kann das nutzen!", ephemeral=True)
+            return
+        await interaction.response.edit_message(content="Mission beendet.", embed=None, view=None)
+        await _send_mission_feedback_prompt(
+            interaction.channel,
+            interaction.guild,
+            allowed_user_id=self.user_id,
+            battle_log_text="",
+        )
+        self.stop()
+
+
 class MissionEncounterPreviewView(DurableView):
     durable_view_kind = VIEW_KIND_MISSION_ENCOUNTER_PREVIEW
 
@@ -11298,9 +11376,47 @@ class MissionBattleView(DurableView):
                 await message.edit(embed=summary_embed, view=None)
             except Exception:
                 logging.exception("Failed to update mission battle message at wave completion")
-        status = "completed" if won else ("cancelled" if cancel_actor is not None else "failed")
-        await self.persist_session(interaction.channel, status=status)
         if not won:
+            is_boss_wave = bool(self.wave_num >= self.total_waves)
+            if cancel_actor is None and is_boss_wave:
+                cost, revive_mode = _unit_boss_revive_config()
+                revive_state: dict[str, Any] = {
+                    "mission_data": _json_clone(self.mission_data),
+                    "is_admin": self.is_admin,
+                    "selected_card_name": self.selected_card_name,
+                    "next_wave": self.wave_num,
+                    "total_waves": self.total_waves,
+                    "mission_counted": bool(self.mission_data.get("mission_counted")),
+                    "unit_awarded": bool(self.mission_data.get("unit_awarded")),
+                    "full_heal": True,
+                }
+                if revive_mode == "revive_continue":
+                    revive_state["bot_hp"] = max(1, int(self.bot_hp))
+                    revive_state["bot_max_hp"] = int(self.bot_max_hp)
+                mode_text = (
+                    "Du wirst mit vollen HP wiederbelebt. Der Boss behält seine aktuellen HP."
+                    if revive_mode == "revive_continue"
+                    else "Der Bosskampf startet neu. Die Lakaien musst du nicht erneut kämpfen."
+                )
+                embed = discord.Embed(
+                    title="Bosskampf verloren",
+                    description=(
+                        f"Du kannst dich für **{cost} Unit** wiederbeleben.\n\n"
+                        f"{mode_text}"
+                    ),
+                    color=0xE67E22,
+                )
+                _apply_item_media(embed, "unit", thumbnail=True)
+                await _safe_send_channel(
+                    interaction,
+                    interaction.channel,
+                    embed=embed,
+                    view=MissionBossReviveView(self.user_id, revive_state, cost=cost, mode=revive_mode),
+                )
+                return
+
+            status = "cancelled" if cancel_actor is not None else "failed"
+            await self.persist_session(interaction.channel, status=status)
             if cancel_actor is not None:
                 await _safe_send_channel(
                     interaction,
@@ -11317,6 +11433,8 @@ class MissionBattleView(DurableView):
                 battle_log_text=self.durable_log_text(),
             )
             return
+
+        await self.persist_session(interaction.channel, status="completed")
 
         next_wave = self.wave_num + 1
         if next_wave > self.total_waves:

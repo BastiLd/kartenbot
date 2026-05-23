@@ -3595,6 +3595,58 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(pause_view.mission_state["full_heal"])
         self.assertTrue(pause_view.mission_state["unit_awarded"])
 
+    async def test_lost_boss_offers_unit_revive_and_keeps_boss_hp_for_continue_mode(self) -> None:
+        mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)
+        player_card = {
+            "name": "PlayerCard",
+            "hp": 100,
+            "bild": "https://example.com/player.png",
+            "attacks": [{"name": "Hit", "damage": [10, 10], "info": "test"}],
+        }
+        boss_card = copy.deepcopy(mission["encounters"][3])
+        view = MissionBattleView(player_card, boss_card, 1, 4, 4, mission_data=mission, selected_card_name="PlayerCard")
+        view.bot_hp = 42
+        interaction = _DummyInteraction(1, _DummyMessage())
+        send_mock = AsyncMock(return_value=None)
+        with patch.object(bot_module, "_safe_send_channel", new=send_mock), patch.object(
+            bot_module,
+            "_unit_boss_revive_config",
+            return_value=(2, "revive_continue"),
+        ), patch.object(bot_module, "_send_mission_feedback_prompt", new=AsyncMock()) as feedback_mock:
+            await view._complete_wave(interaction, None, won=False)
+
+        feedback_mock.assert_not_awaited()
+        revive_view = send_mock.await_args.kwargs["view"]
+        self.assertIsInstance(revive_view, bot_module.MissionBossReviveView)
+        self.assertEqual(revive_view.cost, 2)
+        self.assertEqual(revive_view.mission_state["next_wave"], 4)
+        self.assertEqual(revive_view.mission_state["bot_hp"], 42)
+        self.assertTrue(revive_view.mission_state["full_heal"])
+
+    async def test_boss_revive_button_spends_units_and_restarts_boss_without_lackeys(self) -> None:
+        mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)
+        state = {
+            "mission_data": mission,
+            "selected_card_name": "PlayerCard",
+            "next_wave": 4,
+            "total_waves": 4,
+            "full_heal": True,
+        }
+        revive_view = bot_module.MissionBossReviveView(1, state, cost=2, mode="restart_boss")
+        interaction = _DummyInteraction(1, _DummyMessage())
+        with patch.object(bot_module, "spend_units", new=AsyncMock(return_value=True)) as spend_mock, patch.object(
+            bot_module,
+            "_start_mission_wave_in_thread",
+            new=AsyncMock(return_value=None),
+        ) as start_mock, patch.object(bot_module, "_safe_send_channel", new=AsyncMock(return_value=None)):
+            await revive_view.revive(interaction)
+
+        spend_mock.assert_awaited_once_with(1, 2)
+        start_state = start_mock.await_args.kwargs["mission_state"]
+        self.assertEqual(start_state["next_wave"], 4)
+        self.assertTrue(start_state["full_heal"])
+        self.assertNotIn("bot_hp", start_state)
+
 
 class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):
     def test_alpha_intro_text_hides_mission_and_story(self) -> None:

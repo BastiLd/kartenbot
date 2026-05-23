@@ -85,6 +85,17 @@ items: list[dict[str, Any]] = [
             {
                 "kind": "mission_currency",
                 "target": "mission",
+            },
+            {
+                # Boss-Wiederbelebung:
+                # cost: Anzahl Units, die beim Wiederbeleben im Bosskampf abgezogen werden.
+                # mode:
+                #   "revive_continue" = Spieler wird mit vollen HP wiederbelebt, Boss behält seine aktuellen HP.
+                #   "restart_boss"    = Bosskampf startet neu, Spieler volle HP, Lakaien müssen nicht erneut gekämpft werden.
+                "kind": "boss_revive",
+                "target": "mission_boss",
+                "cost": 2,
+                "mode": "revive_continue",
             }
         ],
         "variants": [

@@ -56,6 +56,21 @@ async def get_units(user_id: int) -> int:
         return int(row[0] or 0) if row else 0
 
 
+async def spend_units(user_id: int, amount: int) -> bool:
+    if amount <= 0:
+        return True
+    async with db_context() as db:
+        cursor = await db.execute("SELECT amount FROM user_units WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        current_units = int(row[0] or 0) if row else 0
+        if current_units < int(amount):
+            return False
+
+        await db.execute("UPDATE user_units SET amount = ? WHERE user_id = ?", (current_units - int(amount), user_id))
+        await db.commit()
+        return True
+
+
 async def spend_infinitydust(user_id, amount):
     async with db_context() as db:
         cursor = await db.execute("SELECT amount FROM user_infinitydust WHERE user_id = ?", (user_id,))
