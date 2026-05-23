@@ -34,9 +34,10 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
             await db.commit()
 
         user_id = interaction.user.id
+        alpha_enabled = await module.is_alpha_enabled(interaction.guild_id)
         karte = module.random_gameplay_card(
             module.karten,
-            alpha_enabled=module.ALPHA_PHASE_ENABLED,
+            alpha_enabled=alpha_enabled,
             context="daily",
         )
 
@@ -292,9 +293,10 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
         if not await module.is_channel_allowed(interaction):
             return
 
+        alpha_enabled = await module.is_alpha_enabled(interaction.guild_id)
         beta_enabled = await module.is_beta_enabled(interaction.guild_id)
-        text = module.build_anfang_intro_text(beta_enabled=beta_enabled)
-        view = module.AnfangView(beta_enabled=beta_enabled)
+        text = module.build_anfang_intro_text(alpha_enabled=alpha_enabled, beta_enabled=beta_enabled)
+        view = module.AnfangView(alpha_enabled=alpha_enabled, beta_enabled=beta_enabled)
         if interaction.guild is None:
             await interaction.response.send_message(content=text, view=view)
             return

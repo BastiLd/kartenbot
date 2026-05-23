@@ -107,10 +107,12 @@ from services.guild_settings import (
     get_message_visibility as resolve_message_visibility,
     get_visibility_map as load_visibility_map,
     get_visibility_override as load_visibility_override,
+    is_alpha_enabled,
     is_beta_enabled,
     is_maintenance_enabled,
     remove_give_op_role,
     remove_give_op_user,
+    set_alpha_enabled,
     set_beta_enabled,
     set_latest_anfang_message as store_latest_anfang_message,
     set_maintenance_mode,
@@ -1595,18 +1597,7 @@ def prune_admin_slash_commands() -> None:
 
 
 def prune_alpha_slash_commands() -> list[str]:
-    if not ALPHA_PHASE_ENABLED:
-        return []
-    removed = []
-    for name in ALPHA_HIDDEN_SLASH_COMMANDS:
-        cmd = bot.tree.remove_command(name)
-        if cmd is not None:
-            removed.append(name)
-    logging.info(
-        "Alpha phase active, hidden slash commands: %s",
-        ", ".join(removed) if removed else "none (already removed)",
-    )
-    return removed
+    return []
 
 
 # Rollen-IDs für Admin/Owner (vom Nutzer bestätigt)
@@ -1790,17 +1781,18 @@ async def run_one_time_migrations() -> None:
         )
 
 
-def build_anfang_intro_text(*, beta_enabled: bool = False) -> str:
+def build_anfang_intro_text(*, alpha_enabled: bool = False, beta_enabled: bool = False) -> str:
     text = (
         "# **Rekrut.**\n\n"
         "Hör gut zu. Ich bin Nick Fury, und wenn du Teil von etwas Größerem sein willst, bist du hier richtig. Willkommen auf dem Helicarrier. Wir haben alle Hände voll zu tun, und ich hoffe, du bist bereit, dir die Hände schmutzig zu machen.\n\n"
         "Du willst wissen, wie du an die guten Sachen kommst? Täglich hast du die Chance, eine zufällige Karte aus dem Pool zu ziehen `[/täglich im Chat schreiben]`. Und wenn du eine doppelte Karte ziehst, verschwindet sie nicht einfach. Sie wird zu Staub umgewandelt. Sammle genug davon, um deine Karten zu verbessern und sie so noch mächtiger zu machen `[/verbessern im Chat schreiben]`.\n\n"
         "Du bist neu hier und brauchst Training? Auf dem Helicarrier kannst du dich mit anderen anlegen und üben, bis deine Strategien sitzen `[/kampf im Chat schreiben]`.\n\n"
     )
-    text += (
-        "Wenn du bereit für den echten Einsatz bist, stehen dir jeden Tag zwei Missionen zur Verfügung. Schließe sie ab und ich garantiere dir, du bekommst jeweils eine Karte als Belohnung `[/mission im Chat schreiben]`.\n\n"
-    )
-    if not beta_enabled:
+    if not alpha_enabled:
+        text += (
+            "Wenn du bereit für den echten Einsatz bist, stehen dir jeden Tag zwei Missionen zur Verfügung. Schließe sie ab und ich garantiere dir, du bekommst jeweils eine Karte als Belohnung `[/mission im Chat schreiben]`.\n\n"
+        )
+    if not alpha_enabled and not beta_enabled:
         text += (
             "Für die Verrückten da draußen, die meinen, sie wären unschlagbar: Es gibt den Story-Modus. Du hast drei Leben, um die gesamte Geschichte zu überleben. Schaffst du das, wartet eine mysteriöse Belohnung auf dich `[/geschichte im Chat schreiben]`.\n\n"
         )
@@ -2579,7 +2571,6 @@ async def on_ready():
             "user": str(bot.user or ""),
         },
     )
-    prune_alpha_slash_commands()
     try:
         synced = await bot.tree.sync()
         logging.info("Slash-Commands synchronisiert: %s", len(synced))
@@ -9768,10 +9759,15 @@ class DustAmountView(FuseFlowView):
 
 # Slash-Command: Anfang (Hauptmenü)
 class AnfangView(RestrictedView):
-    def __init__(self, *, beta_enabled: bool = False):
+    def __init__(self, *, alpha_enabled: bool = False, beta_enabled: bool = False):
         super().__init__(timeout=None)
+        self.alpha_enabled = bool(alpha_enabled)
         self.beta_enabled = bool(beta_enabled)
-        if self.beta_enabled:
+        if self.alpha_enabled:
+            for child in list(self.children):
+                if getattr(child, "custom_id", None) in {"anfang:mission", "anfang:story"}:
+                    self.remove_item(child)
+        elif self.beta_enabled:
             for child in list(self.children):
                 if getattr(child, "custom_id", None) == "anfang:story":
                     self.remove_item(child)
@@ -9793,11 +9789,17 @@ class AnfangView(RestrictedView):
 
     @ui.button(label="Mission", style=discord.ButtonStyle.danger, row=0, custom_id="anfang:mission")
     async def btn_mission(self, interaction: discord.Interaction, button: ui.Button):
+        if await is_alpha_enabled(interaction.guild_id):
+            await _send_alpha_feature_blocked(interaction)
+            return
         # Leitet zum Missions-Flow weiter
         await _invoke_command_callback(mission, interaction)
 
     @ui.button(label="Story", style=discord.ButtonStyle.danger, row=0, custom_id="anfang:story")
     async def btn_story(self, interaction: discord.Interaction, button: ui.Button):
+        if await is_alpha_enabled(interaction.guild_id):
+            await _send_alpha_feature_blocked(interaction)
+            return
         if await is_beta_enabled(interaction.guild_id):
             await _send_ephemeral(interaction, content=BETA_STORY_DISABLED_TEXT)
             return
@@ -9837,9 +9839,10 @@ class IntroEphemeralPromptView(DurableView):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Das ist nicht für dich gedacht.", ephemeral=True)
             return
+        alpha_enabled = await is_alpha_enabled(interaction.guild_id)
         beta_enabled = await is_beta_enabled(interaction.guild_id)
-        view = AnfangView(beta_enabled=beta_enabled)
-        text = build_anfang_intro_text(beta_enabled=beta_enabled)
+        view = AnfangView(alpha_enabled=alpha_enabled, beta_enabled=beta_enabled)
+        text = build_anfang_intro_text(alpha_enabled=alpha_enabled, beta_enabled=beta_enabled)
         await interaction.response.send_message(content=text, view=view, ephemeral=True)
 
 
@@ -14165,8 +14168,6 @@ PANEL_STATIC_VISIBILITY_ITEMS: list[tuple[str, str, str]] = [
     ("test_report", "Command-Report", "Slash-Command Bericht"),
     ("feature_flags", "Feature Flags", "Beta/Alpha-Schalter"),
 ]
-if ALPHA_PHASE_ENABLED:
-    PANEL_STATIC_VISIBILITY_ITEMS = [item for item in PANEL_STATIC_VISIBILITY_ITEMS if item[0] != "set_mission"]
 
 def _visibility_label(value: str) -> str:
     return "öffentlich" if value == VISIBILITY_PUBLIC else "nur sichtbar"
@@ -14781,7 +14782,7 @@ async def send_debug_user(interaction: discord.Interaction, user_id: int, user_n
     embed.add_field(name="Infinitydust", value=str(infinitydust), inline=True)
     embed.add_field(name="Buffs", value=str(buffs), inline=True)
     embed.add_field(name="Daily", value=str(last_daily), inline=True)
-    if not ALPHA_PHASE_ENABLED:
+    if not await is_alpha_enabled(interaction.guild_id):
         embed.add_field(name="Mission Count", value=str(mission_count), inline=True)
         embed.add_field(name="Mission Reset", value=str(last_mission_reset), inline=True)
     await _send_with_visibility(interaction, visibility_key, embed=embed)
@@ -15005,6 +15006,8 @@ async def send_balance_stats(interaction: discord.Interaction, visibility_key: s
         await _send_ephemeral(interaction, embed=embed)
 
 DEV_ACTION_OPTIONS: list[tuple[str, str]] = [
+    ("Alpha ON", "alpha_on"),
+    ("Alpha OFF", "alpha_off"),
     ("Beta ON", "beta_on"),
     ("Beta OFF", "beta_off"),
     ("Maintenance ON", "maintenance_on"),
@@ -15031,8 +15034,6 @@ DEV_ACTION_OPTIONS: list[tuple[str, str]] = [
     ("Command-Report", "test_report"),
     ("Nachrichten-Sichtbarkeit", "visibility_settings"),
 ]
-if ALPHA_PHASE_ENABLED:
-    DEV_ACTION_OPTIONS = [item for item in DEV_ACTION_OPTIONS if item[1] != "set_mission"]
 
 class DevActionSelect(ui.Select):
     def __init__(
@@ -15209,10 +15210,11 @@ async def refresh_latest_anfang_message_for_guild(interaction: discord.Interacti
         if not isinstance(channel, (discord.TextChannel, discord.Thread)):
             return False
         message = await channel.fetch_message(message_id)
+        alpha_enabled = await is_alpha_enabled(interaction.guild_id)
         beta_enabled = await is_beta_enabled(interaction.guild_id)
         await message.edit(
-            content=build_anfang_intro_text(beta_enabled=beta_enabled),
-            view=AnfangView(beta_enabled=beta_enabled),
+            content=build_anfang_intro_text(alpha_enabled=alpha_enabled, beta_enabled=beta_enabled),
+            view=AnfangView(alpha_enabled=alpha_enabled, beta_enabled=beta_enabled),
         )
         await set_latest_anfang_message(interaction.guild_id, channel_id, message_id, interaction.user.id)
         return True
@@ -15230,19 +15232,24 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
     if not await is_channel_allowed(interaction):
         return
 
-    if action in {"beta_on", "beta_off"}:
+    if action in {"alpha_on", "alpha_off", "beta_on", "beta_off"}:
         if interaction.guild is None:
             await _send_with_visibility(interaction, "feature_flags", content=SERVER_ONLY)
             return
-        enabled = action == "beta_on"
-        await set_beta_enabled(interaction.guild.id, enabled)
+        is_alpha_action = action.startswith("alpha_")
+        enabled = action.endswith("_on")
+        if is_alpha_action:
+            await set_alpha_enabled(interaction.guild.id, enabled)
+        else:
+            await set_beta_enabled(interaction.guild.id, enabled)
         refreshed = await refresh_latest_anfang_message_for_guild(interaction)
         state = "aktiviert" if enabled else "deaktiviert"
+        flag_name = "Alpha" if is_alpha_action else "Beta"
         refresh_text = "Letzte /anfang-Nachricht wurde aktualisiert." if refreshed else "Keine gespeicherte /anfang-Nachricht aktualisiert."
         await _send_with_visibility(
             interaction,
             "feature_flags",
-            content=f"✅ Beta wurde **{state}**. {refresh_text}",
+            content=f"{flag_name} wurde **{state}**. {refresh_text}",
         )
         return
 
@@ -15372,6 +15379,9 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
         await _send_with_visibility(interaction, "set_daily", content=f"Daily für {user_name} zurückgesetzt.")
         return
     if action == "set_mission":
+        if await is_alpha_enabled(interaction.guild_id):
+            await _send_with_visibility(interaction, "set_mission", content=ALPHA_FEATURE_DISABLED_TEXT)
+            return
         user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Mission-Reset:")
         if not user_id:
             return
@@ -15402,7 +15412,6 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
         await send_debug_user(interaction, user_id, user_name, visibility_key="debug_user")
         return
     if action == "debug_sync":
-        prune_alpha_slash_commands()
         synced = await bot.tree.sync()
         logging.info("Debug sync by %s; synced=%s", interaction.user.id, len(synced))
         await _send_with_visibility(interaction, "debug_sync", content=f"Sync abgeschlossen: {len(synced)} Commands.")

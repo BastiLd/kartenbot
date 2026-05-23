@@ -3582,15 +3582,13 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):
-    def test_alpha_intro_text_keeps_full_text(self) -> None:
-        with patch.object(bot_module, "ALPHA_PHASE_ENABLED", True):
-            text = bot_module.build_anfang_intro_text()
-        self.assertIn("/mission", text)
-        self.assertIn("/geschichte", text)
+    def test_alpha_intro_text_hides_mission_and_story(self) -> None:
+        text = bot_module.build_anfang_intro_text(alpha_enabled=True)
+        self.assertNotIn("/mission", text)
+        self.assertNotIn("/geschichte", text)
 
     def test_intro_text_keeps_mission_and_story_when_alpha_disabled(self) -> None:
-        with patch.object(bot_module, "ALPHA_PHASE_ENABLED", False):
-            text = bot_module.build_anfang_intro_text()
+        text = bot_module.build_anfang_intro_text(alpha_enabled=False)
         self.assertIn("/mission", text)
         self.assertIn("/geschichte", text)
 
@@ -3600,16 +3598,14 @@ class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("/geschichte", text)
         self.assertNotIn("Story-Modus", text)
 
-    async def test_anfang_view_keeps_mission_and_story_buttons_in_alpha(self) -> None:
-        with patch.object(bot_module, "ALPHA_PHASE_ENABLED", True):
-            view = bot_module.AnfangView()
+    async def test_anfang_view_hides_mission_and_story_buttons_in_alpha(self) -> None:
+        view = bot_module.AnfangView(alpha_enabled=True)
         custom_ids = {getattr(child, "custom_id", None) for child in view.children}
-        self.assertIn("anfang:mission", custom_ids)
-        self.assertIn("anfang:story", custom_ids)
+        self.assertNotIn("anfang:mission", custom_ids)
+        self.assertNotIn("anfang:story", custom_ids)
 
     async def test_anfang_view_keeps_mission_and_story_buttons_when_alpha_disabled(self) -> None:
-        with patch.object(bot_module, "ALPHA_PHASE_ENABLED", False):
-            view = bot_module.AnfangView()
+        view = bot_module.AnfangView(alpha_enabled=False)
         custom_ids = {getattr(child, "custom_id", None) for child in view.children}
         self.assertIn("anfang:mission", custom_ids)
         self.assertIn("anfang:story", custom_ids)
@@ -3649,15 +3645,13 @@ class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("mission_enc_prv:start_m", custom_ids)
         self.assertNotIn("mission_enc_prv:next", custom_ids)
 
-    def test_alpha_hides_set_mission_from_dev_and_visibility_lists(self) -> None:
+    def test_alpha_switches_are_in_dev_action_list(self) -> None:
+        self.assertIn(("Alpha ON", "alpha_on"), bot_module.DEV_ACTION_OPTIONS)
+        self.assertIn(("Alpha OFF", "alpha_off"), bot_module.DEV_ACTION_OPTIONS)
         has_dev_action = ("Set mission reset", "set_mission") in bot_module.DEV_ACTION_OPTIONS
         has_visibility_item = any(key == "set_mission" for key, _label, _desc in bot_module.PANEL_STATIC_VISIBILITY_ITEMS)
-        if bot_module.ALPHA_PHASE_ENABLED:
-            self.assertFalse(has_dev_action)
-            self.assertFalse(has_visibility_item)
-        else:
-            self.assertTrue(has_dev_action)
-            self.assertTrue(has_visibility_item)
+        self.assertTrue(has_dev_action)
+        self.assertTrue(has_visibility_item)
 
     async def test_resend_pending_requests_keeps_missions_active_even_when_alpha_flag_is_true(self) -> None:
         with (

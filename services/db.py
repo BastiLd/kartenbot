@@ -136,7 +136,8 @@ async def init_db():
             mission_channel_id INTEGER,
             ignored_channels TEXT,
             maintenance_mode INTEGER DEFAULT 0,
-            beta_enabled INTEGER DEFAULT 0
+            beta_enabled INTEGER DEFAULT 0,
+            alpha_enabled INTEGER DEFAULT 0
         )
         """
     )
@@ -420,6 +421,7 @@ async def init_db():
     await _ensure_column(db, "user_daily", "used_invite", "INTEGER DEFAULT 0")
     await _ensure_column(db, "guild_config", "maintenance_mode", "INTEGER DEFAULT 0")
     await _ensure_column(db, "guild_config", "beta_enabled", "INTEGER DEFAULT 0")
+    await _ensure_column(db, "guild_config", "alpha_enabled", "INTEGER DEFAULT 0")
     await _ensure_column(db, "guild_config", "public_channel_id", "INTEGER")
     await _ensure_column(db, "invite_pending", "created_by_id", "INTEGER")
     await _ensure_column(db, "invite_pending", "mode", "TEXT")

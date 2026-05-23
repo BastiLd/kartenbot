@@ -12,7 +12,14 @@ from botcore.bootstrap import BOT_START_TIME, build_bot_intents
 from db import close_db, init_db
 from services.battle import calculate_damage
 from services import guild_settings as guild_settings_module
-from services.guild_settings import get_message_visibility, is_beta_enabled, set_beta_enabled, set_message_visibility
+from services.guild_settings import (
+    get_message_visibility,
+    is_alpha_enabled,
+    is_beta_enabled,
+    set_alpha_enabled,
+    set_beta_enabled,
+    set_message_visibility,
+)
 from services.invite_store import (
     configured_first_invite_reward_card,
     create_invite_pending,
@@ -102,7 +109,7 @@ class SmokeTests(unittest.TestCase):
         )
         asyncio.run(close_db())
 
-    def test_beta_setting_roundtrip(self) -> None:
+    def test_feature_flag_setting_roundtrip(self) -> None:
         class _Cursor:
             def __init__(self, row):
                 self.row = row
@@ -112,12 +119,18 @@ class SmokeTests(unittest.TestCase):
 
         class _Db:
             def __init__(self):
+                self.alpha_enabled = 0
                 self.beta_enabled = 0
 
             async def execute(self, query, params=()):
+                if "SELECT alpha_enabled" in query:
+                    return _Cursor((self.alpha_enabled,))
                 if "SELECT beta_enabled" in query:
                     return _Cursor((self.beta_enabled,))
-                if "INSERT INTO guild_config" in query:
+                if "alpha_enabled" in query and "INSERT INTO guild_config" in query:
+                    self.alpha_enabled = int(params[1])
+                    return _Cursor(None)
+                if "beta_enabled" in query and "INSERT INTO guild_config" in query:
                     self.beta_enabled = int(params[1])
                     return _Cursor(None)
                 return _Cursor(None)
@@ -133,6 +146,11 @@ class SmokeTests(unittest.TestCase):
                 yield fake_db
 
             with patch.object(guild_settings_module, "db_context", fake_db_context):
+                self.assertFalse(await is_alpha_enabled(123))
+                await set_alpha_enabled(123, True)
+                self.assertTrue(await is_alpha_enabled(123))
+                await set_alpha_enabled(123, False)
+                self.assertFalse(await is_alpha_enabled(123))
                 self.assertFalse(await is_beta_enabled(123))
                 await set_beta_enabled(123, True)
                 self.assertTrue(await is_beta_enabled(123))

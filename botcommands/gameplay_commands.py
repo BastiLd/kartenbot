@@ -38,6 +38,9 @@ def register_gameplay_commands(bot, api: GameplayFacade) -> dict[str, object]:
     async def mission(interaction: discord.Interaction):
         if not await api.is_channel_allowed(interaction):
             return
+        if await api.is_alpha_enabled(interaction.guild_id):
+            await api._send_ephemeral(interaction, content=api.ALPHA_FEATURE_DISABLED_TEXT)
+            return
         await interaction.response.defer(ephemeral=True)
         is_admin_user = await api.is_admin(interaction)
 
@@ -106,6 +109,9 @@ def register_gameplay_commands(bot, api: GameplayFacade) -> dict[str, object]:
     @bot.tree.command(name="geschichte", description="Starte eine interaktive Story")
     async def story(interaction: discord.Interaction):
         if not await api.is_channel_allowed(interaction):
+            return
+        if await api.is_alpha_enabled(interaction.guild_id):
+            await api._send_ephemeral(interaction, content=api.ALPHA_FEATURE_DISABLED_TEXT)
             return
         if await api.is_beta_enabled(interaction.guild_id):
             await api._send_ephemeral(interaction, content=api.BETA_STORY_DISABLED_TEXT)
@@ -195,7 +201,8 @@ def register_gameplay_commands(bot, api: GameplayFacade) -> dict[str, object]:
             if fight_thread is None:
                 return
             target_channel = fight_thread
-            bot_card = api.random_gameplay_card(api.karten, alpha_enabled=api.ALPHA_PHASE_ENABLED)
+            alpha_enabled = await api.is_alpha_enabled(interaction.guild_id)
+            bot_card = api.random_gameplay_card(api.karten, alpha_enabled=alpha_enabled)
             battle_view = api.BattleView(
                 selected_cards[0],
                 bot_card,

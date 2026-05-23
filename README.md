@@ -5,7 +5,7 @@ Ein lokaler Discord-Bot fuer Sammelkartenkaempfe, Sammlung, Rewards und Admin-To
 ## Aktueller Stand
 
 - Sammlung, Daily, Vault, Kaempfe und Admin-Panel sind aktiv.
-- Mission und Story sind aktuell standardmaessig hinter der Alpha-Phase verborgen.
+- Alpha und Beta koennen pro Server im Entwicklerpanel ein- und ausgeschaltet werden.
 - Karten, Kampfregeln und Persistenz sind inzwischen modular aufgeteilt und testbar gemacht.
 
 ## Kernfunktionen
@@ -45,12 +45,23 @@ Alternativ liest der Bot das Token auch aus `bot_token.txt` oder `token.txt`, fa
 
 - `BOT_TOKEN`
 - `KARTENBOT_DB_PATH`
-- `ALPHA_PHASE`
 - `BUG_REPORT_TALLY_URL`
 
-Hinweis zu `ALPHA_PHASE`:
-- Standard ist `true`.
-- Bei `ALPHA_PHASE=0` oder `ALPHA_PHASE=false` werden die ausgeblendeten Alpha-Features wieder aktiviert.
+Nicht in GitHub hochladen:
+- `.env`
+- `bot_token.txt` oder `token.txt`
+- `kartenbot.db`
+- `bot.log`
+- lokale Archive wie `.git.zip` oder andere `*.zip`
+
+Die `.env` muss nach einem frischen Clone manuell erstellt werden. Mindestens erforderlich:
+
+```env
+BOT_TOKEN=dein_discord_bot_token
+KARTENBOT_DB_PATH=kartenbot.db
+```
+
+Alpha und Beta werden nicht mehr ueber `.env` gesetzt, sondern pro Server im Entwicklerpanel ein- und ausgeschaltet. Neue Server starten mit Alpha aus.
 
 ## Wichtige Befehle
 

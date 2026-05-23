@@ -117,6 +117,45 @@ async def set_beta_enabled(guild_id: int | None, enabled: bool) -> None:
         await db.commit()
 
 
+async def is_alpha_enabled(guild_id: int | None) -> bool:
+    if not guild_id:
+        return False
+    async with db_context() as db:
+        try:
+            cursor = await db.execute("SELECT alpha_enabled FROM guild_config WHERE guild_id = ?", (int(guild_id),))
+            row = await cursor.fetchone()
+        except Exception as exc:
+            if "no such column" in str(exc) and "alpha_enabled" in str(exc):
+                await db.execute("ALTER TABLE guild_config ADD COLUMN alpha_enabled INTEGER DEFAULT 0")
+                await db.commit()
+                return False
+            raise
+    return bool(row[0]) if row and row[0] else False
+
+
+async def set_alpha_enabled(guild_id: int | None, enabled: bool) -> None:
+    if not guild_id:
+        return
+    async with db_context() as db:
+        try:
+            await db.execute(
+                "INSERT INTO guild_config (guild_id, alpha_enabled) VALUES (?, ?) "
+                "ON CONFLICT(guild_id) DO UPDATE SET alpha_enabled = excluded.alpha_enabled",
+                (int(guild_id), 1 if enabled else 0),
+            )
+        except Exception as exc:
+            if "no such column" in str(exc) and "alpha_enabled" in str(exc):
+                await db.execute("ALTER TABLE guild_config ADD COLUMN alpha_enabled INTEGER DEFAULT 0")
+                await db.execute(
+                    "INSERT INTO guild_config (guild_id, alpha_enabled) VALUES (?, ?) "
+                    "ON CONFLICT(guild_id) DO UPDATE SET alpha_enabled = excluded.alpha_enabled",
+                    (int(guild_id), 1 if enabled else 0),
+                )
+            else:
+                raise
+        await db.commit()
+
+
 async def _ensure_visibility_table(db) -> None:
     await db.execute(
         """
