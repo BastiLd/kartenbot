@@ -166,7 +166,7 @@ def _validate_number(
         issues.append(f"{path}: {label} ist kleiner als {minimum}")
         return False
     if maximum is not None and numeric > maximum:
-        issues.append(f"{path}: {label} ist groesser als {maximum}")
+        issues.append(f"{path}: {label} ist größer als {maximum}")
         return False
     return True
 
@@ -431,7 +431,7 @@ def _validate_attack(attack, path: str, issues: list[str], seen_attack_names: di
                     per_hit_damage = multi_hit.get("per_hit_damage")
                     if isinstance(per_hit_damage, list) and len(per_hit_damage) == 2:
                         if int(guaranteed_min_per_hit) > int(per_hit_damage[1]):
-                            issues.append(f"{path}: multi_hit.guaranteed_min_per_hit ist groesser als per_hit_damage max")
+                            issues.append(f"{path}: multi_hit.guaranteed_min_per_hit ist größer als per_hit_damage max")
 
     effects = attack.get("effects")
     if effects is not None:

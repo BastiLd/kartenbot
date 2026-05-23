@@ -5,7 +5,8 @@ import discord
 
 async def send_interaction_response(interaction: discord.Interaction, **kwargs):
     try:
-        if interaction.response.is_done():
+        is_done = getattr(interaction.response, "is_done", None)
+        if callable(is_done) and is_done():
             return await interaction.followup.send(**kwargs)
         return await interaction.response.send_message(**kwargs)
     except discord.InteractionResponded:
@@ -19,17 +20,21 @@ async def send_interaction_response(interaction: discord.Interaction, **kwargs):
 
 
 async def defer_interaction(interaction: discord.Interaction, *, ephemeral: bool | None = None) -> bool:
-    if interaction.response.is_done():
+    is_done = getattr(interaction.response, "is_done", None)
+    if callable(is_done) and is_done():
         return True
+    defer = getattr(interaction.response, "defer", None)
+    if not callable(defer):
+        return False
     try:
         if ephemeral is None:
-            await interaction.response.defer()
+            await defer()
         else:
-            await interaction.response.defer(ephemeral=ephemeral)
+            await defer(ephemeral=ephemeral)
         return True
     except TypeError:
         try:
-            await interaction.response.defer()
+            await defer()
             return True
         except discord.InteractionResponded:
             return True

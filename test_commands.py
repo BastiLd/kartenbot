@@ -8,7 +8,7 @@ async def main() -> None:
     bot = create_bot()
     try:
         commands = bot.tree.get_commands()
-        print(f"Verfuegbare Commands: {len(commands)}")
+        print(f"Verfügbare Commands: {len(commands)}")
         for cmd in commands:
             print(f"- /{cmd.name}: {getattr(cmd, 'description', '')}")
     finally:

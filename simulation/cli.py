@@ -7,7 +7,7 @@ from simulation.config import DEFAULT_AVERAGE_MISTAKE_RATE, DEFAULT_MATRIX_OUTPU
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Headless 1v1-Simulation fuer den Kartenbot")
+    parser = argparse.ArgumentParser(description="Headless 1v1-Simulation für den Kartenbot")
     parser.add_argument("--mode", default="all", choices=["original", "light", "max", "all"])
     parser.add_argument("--playstyle", default="optimal", choices=["optimal", "average", "both"])
     parser.add_argument("--fights-per-matchup", type=int, default=200)

@@ -1,20 +1,20 @@
 # Deutscher Discord Sammelkarten-Bot
 
-Ein lokaler Discord-Bot fuer Sammelkartenkaempfe, Sammlung, Rewards und Admin-Tools. Der Bot nutzt Slash-Commands, Discord-Views und eine SQLite-Datenbank.
+Ein lokaler Discord-Bot für Sammelkartenkämpfe, Sammlung, Rewards und Admin-Tools. Der Bot nutzt Slash-Commands, Discord-Views und eine SQLite-Datenbank.
 
 ## Aktueller Stand
 
-- Sammlung, Daily, Vault, Kaempfe und Admin-Panel sind aktiv.
-- Alpha und Beta koennen pro Server im Entwicklerpanel ein- und ausgeschaltet werden.
+- Sammlung, Daily, Vault, Kämpfe und Admin-Panel sind aktiv.
+- Alpha und Beta können pro Server im Entwicklerpanel ein- und ausgeschaltet werden.
 - Karten, Kampfregeln und Persistenz sind inzwischen modular aufgeteilt und testbar gemacht.
 
 ## Kernfunktionen
 
 - Karten sammeln und verwalten
 - Daily-Reward und weitere Reward-Pfade
-- 1v1-Kaempfe mit Effekten, Cooldowns und Statusregeln
-- Admin-Panel fuer Wartung, Sync, Sichtbarkeit und Debugging
-- SQLite-Persistenz fuer Sammlung, Teams, Rewards und Anfragen
+- 1v1-Kämpfe mit Effekten, Cooldowns und Statusregeln
+- Admin-Panel für Wartung, Sync, Sichtbarkeit und Debugging
+- SQLite-Persistenz für Sammlung, Teams, Rewards und Anfragen
 - Kartenvalidierung und Tests direkt im Repo
 
 ## Voraussetzungen
@@ -26,7 +26,7 @@ Ein lokaler Discord-Bot fuer Sammelkartenkaempfe, Sammlung, Rewards und Admin-To
 ## Einrichtung
 
 1. `.env.example` nach `.env` kopieren oder `BOT_TOKEN` direkt als Umgebungsvariable setzen.
-2. Optional `KARTENBOT_DB_PATH` setzen, wenn die Datenbank nicht `kartenbot.db` heissen soll.
+2. Optional `KARTENBOT_DB_PATH` setzen, wenn die Datenbank nicht `kartenbot.db` heißen soll.
 3. Abhaengigkeiten und `.venv` anlegen:
 
 ```powershell
@@ -61,7 +61,7 @@ BOT_TOKEN=dein_discord_bot_token
 KARTENBOT_DB_PATH=kartenbot.db
 ```
 
-Alpha und Beta werden nicht mehr ueber `.env` gesetzt, sondern pro Server im Entwicklerpanel ein- und ausgeschaltet. Neue Server starten mit Alpha aus.
+Alpha und Beta werden nicht mehr über `.env` gesetzt, sondern pro Server im Entwicklerpanel ein- und ausgeschaltet. Neue Server starten mit Alpha aus.
 
 ## Wichtige Befehle
 
@@ -117,13 +117,13 @@ Neue Karten werden in `karten.py` gepflegt. Jede Karte braucht mindestens:
 }
 ```
 
-Vor einem Commit sollte jede Karten-Aenderung validiert werden:
+Vor einem Commit sollte jede Karten-Änderung validiert werden:
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\validate_cards.py
 ```
 
-Der Validator prueft unter anderem:
+Der Validator prüft unter anderem:
 
 - Pflichtfelder
 - bekannte Seltenheiten
@@ -151,7 +151,7 @@ Alpha-Smoke-Check:
 .\.venv\Scripts\python.exe .\scripts\alpha_smoke.py
 ```
 
-Bei jedem Push auf `main` laeuft zusaetzlich GitHub Actions:
+Bei jedem Push auf `main` läuft zusätzlich GitHub Actions:
 
 - Setup der Python-Umgebung
 - `py_compile`
@@ -161,7 +161,7 @@ Bei jedem Push auf `main` laeuft zusaetzlich GitHub Actions:
 
 ## Alpha-Freigabe
 
-Fuer die geschlossene Alpha liegt ein kompaktes Runbook in [ALPHA_RUNBOOK.md](ALPHA_RUNBOOK.md). Dort stehen:
+Für die geschlossene Alpha liegt ein kompaktes Runbook in [ALPHA_RUNBOOK.md](ALPHA_RUNBOOK.md). Dort stehen:
 
 - lokale Pflichtchecks
 - Live-Test auf Discord

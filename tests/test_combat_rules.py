@@ -460,7 +460,7 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
         refund_mock.assert_awaited_once_with(77, 10)
         log_mock.assert_not_awaited()
         interaction.response.send_message.assert_awaited_once_with(
-            "❌ Die Verstärkung ist fehlgeschlagen. Dein Infinitydust wurde zurückerstattet.",
+            content="❌ Die Verstärkung ist fehlgeschlagen. Dein Infinitydust wurde zurückerstattet.",
             ephemeral=True,
         )
         interaction.response.edit_message.assert_not_awaited()
@@ -3357,12 +3357,25 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             {str(encounter.get("name") or ""): str(encounter.get("bild") or "") for encounter in encounters},
             {
-                "Ödland-Plünderer": "https://i.imgur.com/4mxNv2c.png",
-                "Gamma-Mutant": "https://i.imgur.com/4mxNv2c.png",
-                "Umprogrammierter Hulkbuster": "https://i.imgur.com/4mxNv2c.png",
-                "Maestro": "https://i.imgur.com/4mxNv2c.png",
+                "Ödland-Plünderer": "https://i.imgur.com/YPnvbdW.png",
+                "Gamma-Mutant": "https://i.imgur.com/sJKKeeG.png",
+                "Umprogrammierter Hulkbuster": "https://i.imgur.com/PvK2BHp.png",
+                "Maestro": "https://i.imgur.com/FnpMS1O.png",
             },
         )
+
+    def test_duplicate_mission_reward_keeps_card_name_but_shows_dust_image(self) -> None:
+        reward_card = {
+            "name": "Iron-Man",
+            "hp": 100,
+            "bild": "https://example.com/card.png",
+            "attacks": [],
+        }
+        embed = bot_module._mission_success_embed(reward_card, 4, is_new_card=False)
+        field_values = "\n".join(str(field.value) for field in embed.fields)
+        self.assertIn("Iron-Man", field_values)
+        self.assertIn("bereits", field_values)
+        self.assertEqual(str(embed.image.url), "https://i.imgur.com/PAtPxVW.png")
 
     async def test_mission_enemy_without_image_does_not_crash_embed(self) -> None:
         player_card = {
@@ -3519,11 +3532,11 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         interaction = _DummyInteraction(1, _DummyMessage())
         with patch.object(bot_module, "_safe_send_channel", new=AsyncMock(return_value=None)), patch.object(
             bot_module,
-            "_start_mission_wave_in_thread",
+            "_launch_mission_encounter_preview_or_wave",
             new=AsyncMock(return_value=None),
-        ) as start_mock:
+        ) as launch_mock:
             await view._complete_wave(interaction, None, won=True)
-        state = start_mock.await_args.kwargs["mission_state"]
+        state = launch_mock.await_args.args[1]
         self.assertEqual(state["next_wave"], 2)
         self.assertEqual(state["player_hp"], 37)
         self.assertEqual(state["player_max_hp"], 100)
@@ -3548,14 +3561,14 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(return_value=None),
         ), patch.object(
             bot_module,
-            "_start_mission_wave_in_thread",
+            "_launch_mission_encounter_preview_or_wave",
             new=AsyncMock(return_value=None),
-        ) as start_mock:
+        ) as launch_mock:
             await view._complete_wave(interaction, None, won=True)
-        state = start_mock.await_args.kwargs["mission_state"]
+        state = launch_mock.await_args.args[1]
         self.assertEqual(state["player_attack_cooldowns_by_name"], {"Big Hit": 3})
 
-    async def test_wave_three_awards_unit_full_heal_and_card_switch_pause(self) -> None:
+    async def test_wave_three_awards_unit_full_heal_without_card_switch_pause(self) -> None:
         mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)
         player_card = {
             "name": "PlayerCard",
@@ -3577,6 +3590,8 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         pause_call = send_mock.await_args_list[-1]
         pause_view = pause_call.kwargs["view"]
         self.assertIsInstance(pause_view, bot_module.MissionPauseView)
+        option_values = [str(option.value) for option in pause_view.select.options]
+        self.assertEqual(option_values, ["keep"])
         self.assertTrue(pause_view.mission_state["full_heal"])
         self.assertTrue(pause_view.mission_state["unit_awarded"])
 
@@ -3644,6 +3659,39 @@ class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):
         custom_ids = {getattr(child, "custom_id", None) for child in view.children}
         self.assertIn("mission_enc_prv:start_m", custom_ids)
         self.assertNotIn("mission_enc_prv:next", custom_ids)
+        self.assertNotIn("mission_enc_prv:hero", custom_ids)
+
+    async def test_mission_preview_allows_card_change_only_on_first_enemy_and_boss(self) -> None:
+        mission = {
+            "waves": 4,
+            "encounters": [
+                {"name": "Enemy One", "hp": 100, "seltenheit": "Mission", "attacks": []},
+                {"name": "Enemy Two", "hp": 110, "seltenheit": "Mission", "attacks": []},
+                {"name": "Enemy Three", "hp": 120, "seltenheit": "Mission", "attacks": []},
+                {"name": "Boss", "hp": 200, "seltenheit": "Mission", "attacks": [], "mission_boss": "maestro"},
+            ],
+        }
+        first_view = bot_module.MissionEncounterPreviewView(
+            1,
+            {"mission_data": mission, "next_wave": 1, "total_waves": 4},
+            "lackeys",
+        )
+        mid_view = bot_module.MissionEncounterPreviewView(
+            1,
+            {"mission_data": mission, "next_wave": 2, "total_waves": 4},
+            "lackeys",
+        )
+        boss_view = bot_module.MissionEncounterPreviewView(
+            1,
+            {"mission_data": mission, "next_wave": 4, "total_waves": 4},
+            "boss",
+        )
+        first_ids = {getattr(child, "custom_id", None) for child in first_view.children}
+        mid_ids = {getattr(child, "custom_id", None) for child in mid_view.children}
+        boss_ids = {getattr(child, "custom_id", None) for child in boss_view.children}
+        self.assertIn("mission_enc_prv:hero", first_ids)
+        self.assertNotIn("mission_enc_prv:hero", mid_ids)
+        self.assertIn("mission_enc_prv:hero", boss_ids)
 
     def test_alpha_switches_are_in_dev_action_list(self) -> None:
         self.assertIn(("Alpha ON", "alpha_on"), bot_module.DEV_ACTION_OPTIONS)

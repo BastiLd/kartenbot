@@ -2,19 +2,19 @@ from __future__ import annotations
 
 
 # Hier kannst du einstellen, ob Cooldowns von einem Kampf in den naechsten
-# uebernommen werden.
+# übernommen werden.
 # - normal: /kampf (PvP und Bot)
-# - mission: Missions-Wellen/Folgekaempfe
-# - story: Story-Kaempfe (wenn aktiv)
+# - mission: Missions-Wellen/Folgekämpfe
+# - story: Story-Kämpfe (wenn aktiv)
 COOLDOWN_CARRYOVER: dict[str, bool] = {
     "normal": False,
     "mission": True,
     "story": False,
 }
 
-# Feineinstellung fuer Missionen:
-# - lackeys: Uebernahme zwischen normalen Wellen
-# - boss: Uebernahme in die Boss-Welle / fuer Boss-Folge
+# Feineinstellung für Missionen:
+# - lackeys: übernahme zwischen normalen Wellen
+# - boss: übernahme in die Boss-Welle / für Boss-Folge
 MISSION_COOLDOWN_CARRYOVER: dict[str, bool] = {
     "lackeys": True,
     "boss": False,

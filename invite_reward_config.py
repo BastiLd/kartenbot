@@ -1,8 +1,8 @@
 """
-Konfiguration fuer die feste /eingeladen-Belohnung.
+Konfiguration für die feste /eingeladen-Belohnung.
 
 Trage hier die genaue Karten-Variante ein, die der Einlader bei seiner
-ersten bestaetigten Einladung bekommen soll.
+ersten bestätigten Einladung bekommen soll.
 
 Beispiele:
 - "Standard_Iron-Man"

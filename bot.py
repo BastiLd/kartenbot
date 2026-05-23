@@ -454,7 +454,7 @@ def _member_status_circle(member: discord.Member) -> str:
         return "🟡"
     if status == discord.Status.dnd:
         return "🔴"
-    return "⚫"
+    return "?"
 
 
 def _effect_source_text(source: object, message: str) -> str:
@@ -971,12 +971,12 @@ def _queue_flat_damage_boost(
         target_text = _restricted_damage_boost_target_text(effect)
         owner._append_effect_event(
             effect_events,
-            _effect_source_text(attack_name, f"Schadensbonus aktiv: +{amount} fuer {uses} Angriff(e) auf {target_text}."),
+            _effect_source_text(attack_name, f"Schadensbonus aktiv: +{amount} für {uses} Angriff(e) auf {target_text}."),
         )
         return
     owner.pending_flat_bonus[target_id] = max(owner.pending_flat_bonus.get(target_id, 0), amount)
     owner.pending_flat_bonus_uses[target_id] = max(owner.pending_flat_bonus_uses.get(target_id, 0), uses)
-    owner._append_effect_event(effect_events, _effect_source_text(attack_name, f"Schadensbonus aktiv: +{amount} fuer {uses} Angriff(e)."))
+    owner._append_effect_event(effect_events, _effect_source_text(attack_name, f"Schadensbonus aktiv: +{amount} für {uses} Angriff(e)."))
 
 
 def _has_status_immunity(active_effects: dict[int, list[dict[str, object]]], player_id: int) -> bool:
@@ -1508,9 +1508,9 @@ def _env_flag_enabled(name: str, *, default: bool = False) -> bool:
 
 ALPHA_PHASE_ENABLED = False
 ALPHA_HIDDEN_SLASH_COMMANDS = ("mission", "geschichte")
-ALPHA_FEATURE_DISABLED_TEXT = "🧪 Alpha ist aktiv: Mission, Story und Einladungen sind aktuell deaktiviert."
-BETA_STORY_DISABLED_TEXT = "🧪 Beta ist aktiv: Story ist aktuell deaktiviert."
-BETA_INVITE_DISABLED_TEXT = "🧪 Beta ist aktiv: Einladungen sind aktuell deaktiviert."
+ALPHA_FEATURE_DISABLED_TEXT = game_ui_texts.ALPHA_FEATURE_DISABLED_TEXT
+BETA_STORY_DISABLED_TEXT = game_ui_texts.BETA_STORY_DISABLED_TEXT
+BETA_INVITE_DISABLED_TEXT = game_ui_texts.BETA_INVITE_DISABLED_TEXT
 
 
 class KatabumpCommandTree(app_commands.CommandTree):
@@ -2289,8 +2289,8 @@ def _attack_effect_icons(attack: dict) -> list[str]:
             if "✈️" not in effect_icons:
                 effect_icons.append("✈️")
         elif eff_type in {"damage_boost", "damage_multiplier"}:
-            if "⚡" not in effect_icons:
-                effect_icons.append("⚡")
+            if "?" not in effect_icons:
+                effect_icons.append("?")
         elif eff_type in {"force_max", "mix_heal_or_max", "guaranteed_hit"}:
             if "🎯" not in effect_icons:
                 effect_icons.append("🎯")
@@ -3116,7 +3116,7 @@ class MissionView(RestrictedView):
             await interaction.response.send_message("Das ist nicht dein Button!", ephemeral=True)
             return
         karte, is_new_card = await add_mission_reward(self.user_id)
-        
+
         if is_new_card:
             embed = discord.Embed(
                 title="Mission abgeschlossen!",
@@ -4269,7 +4269,7 @@ class BattleView(DurableView):
                     continue
                 logging.exception("Failed to edit battle log")
                 return
-    
+
     def is_attack_on_cooldown(self, player_id, attack_index):
         return battle_state.is_attack_on_cooldown(self.attack_cooldowns[player_id], attack_index)
 
@@ -4465,7 +4465,7 @@ class BattleView(DurableView):
             return score, max_damage, -cooldown_turns, -idx
 
         return max(candidate_indices, key=_candidate_key)
-    
+
     def get_attack_max_damage(self, attack_damage, damage_buff=0):
         return battle_state.get_attack_max_damage(attack_damage, damage_buff)
 
@@ -4477,10 +4477,10 @@ class BattleView(DurableView):
 
     def start_attack_cooldown(self, player_id, attack_index):
         battle_state.start_attack_cooldown(self.attack_cooldowns[player_id], attack_index, turns=2)
-    
+
     def reduce_cooldowns(self, player_id):
         battle_state.reduce_cooldowns(self.attack_cooldowns[player_id])
-        
+
     async def init_with_buffs(self):
         player1_buffs = await get_card_buffs(self.player1_id, self.player1_card["name"])
         player2_buffs = await get_card_buffs(self.player2_id, self.player2_card["name"])
@@ -4493,17 +4493,17 @@ class BattleView(DurableView):
         if self.hp_view is not None:
             self.hp_view.update_hp(self.player1_hp)
         await self.update_attack_buttons()
-        
+
     async def update_attack_buttons(self):
         """Aktualisiert die Attacken-Buttons basierend auf der aktuellen Karte mit Buffs"""
         # Hole aktuelle Karte
         current_card = self.player1_card if self.current_turn == self.player1_id else self.player2_card
         attacks = current_card.get("attacks", [{"name": "Punch", "damage": [15, 25]}])
         standard_idx = _standard_attack_index(attacks)
-        
+
         # Hole Buffs für diese Karte
         card_buffs = await get_card_buffs(self.current_turn, current_card["name"])
-        
+
         # Finde die vier Angriffs-Buttons (Zeilen 0 und 1, unabhängig von Label/Style)
         attack_buttons = [child for child in self.children if isinstance(child, ui.Button) and child.row in (0, 1)]
         attack_buttons = attack_buttons[:4]
@@ -4580,7 +4580,7 @@ class BattleView(DurableView):
                     button.label = f"{attack_name} (Gesperrt)"
                 button.disabled = True
             return
-        
+
         for i, attack in enumerate(attacks[:4]):
             if i < len(attack_buttons):
                 button = attack_buttons[i]
@@ -4928,7 +4928,7 @@ class BattleView(DurableView):
             if restricted_bonus_now > 0:
                 damage_buff += restricted_bonus_now
                 applied_flat_bonus_now += max(0, restricted_bonus_now)
-                source = str((restricted_bonus_effect or {}).get("source") or "Verstaerkung")
+                source = str((restricted_bonus_effect or {}).get("source") or "Verstärkung")
                 self._append_effect_event(effect_events, f"{source}: +{restricted_bonus_now} Schaden auf diesen Angriff.")
             if self.pending_multiplier_uses.get(self.current_turn, 0) > 0:
                 attack_multiplier = float(self.pending_multiplier.get(self.current_turn, 1.0) or 1.0)
@@ -5835,13 +5835,13 @@ class BattleView(DurableView):
         previous_turn = self.current_turn
         _consume_turn_end_decay_effects(self.active_effects, previous_turn)
         self.current_turn = self.player2_id if self.current_turn == self.player1_id else self.player1_id
-        
+
         # COOLDOWN-SYSTEM: Reduziere Cooldowns am START des neuen Zugs
         self.reduce_cooldowns(self.current_turn)
-        
+
         # Attacken-Buttons für den neuen Spieler aktualisieren
         await self.update_attack_buttons()
-        
+
         # Neues Kampf-Embed erstellen
         user1 = _get_member_if_available(guild, self.player1_id)
         user2 = _get_member_if_available(guild, self.player2_id)
@@ -5858,7 +5858,7 @@ class BattleView(DurableView):
             recent_log_lines=self._recent_log_lines,
             highlight_tone=self._last_highlight_tone,
         )
-        
+
         # Aktualisiere Kampf-UI (Kampf-Log wurde bereits oben behandelt)
         if self.ui_needs_resend:
             message = await self._repost_battle_ui_if_needed(
@@ -5881,7 +5881,7 @@ class BattleView(DurableView):
             replacement = await _safe_send_channel(interaction, interaction.channel, embed=battle_embed, view=self)
             if replacement is not None:
                 await self.persist_session(interaction.channel, status="active", battle_message=replacement)
-        
+
         # BOT-ANGRIFF: Wenn der Bot an der Reihe ist, führe automatischen Angriff aus
         if self.current_turn == 0:  # Bot ist an der Reihe
             if message is not None:
@@ -5992,7 +5992,7 @@ class BattleView(DurableView):
             if restricted_bonus_now > 0:
                 damage_buff += restricted_bonus_now
                 applied_flat_bonus_now += max(0, restricted_bonus_now)
-                source = str((restricted_bonus_effect or {}).get("source") or "Verstaerkung")
+                source = str((restricted_bonus_effect or {}).get("source") or "Verstärkung")
                 self._append_effect_event(effect_events, f"{source}: +{restricted_bonus_now} Schaden auf diesen Angriff.")
             if self.pending_multiplier_uses.get(0, 0) > 0:
                 attack_multiplier = float(self.pending_multiplier.get(0, 1.0) or 1.0)
@@ -6882,20 +6882,20 @@ class UserSearchModal(RestrictedModal):
             if str(user_id).strip()
         }
         self.exclude_user_ids.add(int(exclude_user_id or self.requester_id or 0))
-    
+
     search_input = ui.TextInput(
         label="Name eingeben:",
         placeholder="z.B. John, Jane, etc...",
         max_length=50
     )
-    
+
     async def on_submit(self, interaction: discord.Interaction):
         search_term = self.search_input.value.lower().strip()
-        
+
         if not search_term:
             await interaction.response.send_message("❌ Bitte gib einen Namen ein!", ephemeral=True)
             return
-        
+
         # Finde passende User
         matches = []
         for member in self.guild.members:
@@ -6912,14 +6912,14 @@ class UserSearchModal(RestrictedModal):
                 )
             ):
                 matches.append(member)
-        
+
         if not matches:
             await interaction.response.send_message(
-                f"❌ Keine User mit '{search_term}' gefunden! Versuche es mit einem anderen Namen.", 
+                f"❌ Keine User mit '{search_term}' gefunden! Versuche es mit einem anderen Namen.",
                 ephemeral=True
             )
             return
-        
+
         # Zeige Ergebnisse (max 25)
         if len(matches) <= 25:
             options = []
@@ -6931,7 +6931,7 @@ class UserSearchModal(RestrictedModal):
                     label=safe_user_option_label(member, prefix=f"{status_emoji} "),
                     value=str(member.id)
                 ))
-            
+
             view = UserSearchResultView(self.challenger, options, parent_view=self.parent_view)
             await interaction.response.send_message(
                 f"🔍 **Suchergebnisse für '{search_term}':**",
@@ -6942,7 +6942,7 @@ class UserSearchModal(RestrictedModal):
                 f"❌ Zu viele Ergebnisse ({len(matches)}). Bitte spezifischer suchen!",
                 ephemeral=True
             )
-    
+
     def get_status_emoji(self, member):
         """Gibt Emoji für Online-Status zurück"""
         if member.status == discord.Status.online:
@@ -6952,7 +6952,7 @@ class UserSearchModal(RestrictedModal):
         elif member.status == discord.Status.dnd:
             return "🔴"
         else:
-            return "⚫"
+            return "?"
 
 class UserSearchResultView(RestrictedView):
     def __init__(self, challenger, options, parent_view: object | None = None):
@@ -6961,16 +6961,16 @@ class UserSearchResultView(RestrictedView):
         self.requester_id = int(getattr(challenger, "id", challenger))
         self.value = None
         self.parent_view = parent_view
-        
+
         self.select = ui.Select(placeholder="Wähle einen Gegner aus den Suchergebnissen...", min_values=1, max_values=1, options=options)
         self.select.callback = self.select_callback
         self.add_item(self.select)
-    
+
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
             await interaction.response.send_message("Nur der Herausforderer kann den Gegner wählen!", ephemeral=True)
             return
-        
+
         self.value = self.select.values[0]
         # Übergib die Auswahl zurück an die Eltern-View (z. B. OpponentSelectView/AdminUserSelectView) und beende sie
         if self.parent_view is not None:
@@ -6997,16 +6997,16 @@ class OpponentSelectView(RestrictedView):
         self.guild = guild
         self.value = None
         self.all_members = _get_fight_opponent_candidates(guild, challenger)
-        
+
         # Zeige intelligente Auswahl
         self.show_smart_options()
-    
+
     def show_smart_options(self):
         """Zeigt intelligente Optionen basierend auf Server-Größe (mit Status-Kreisen und Präsenz-Sortierung)"""
         def label_with_circle(m: discord.Member) -> str:
             # identische Kreise wie in der Suche: 🟢 🟡 🔴 ⚫
             return safe_user_option_label(m, prefix=f"{_member_status_circle(m)} ")
-        
+
         options = [
             SelectOption(label="🔍 Nach Name suchen", value="search"),
             SelectOption(label="🤖 Bot", value="bot"),
@@ -7022,11 +7022,11 @@ class OpponentSelectView(RestrictedView):
             for member in sorted(online_like, key=_member_presence_priority)[:22]:
                 options.append(SelectOption(label=label_with_circle(member), value=str(member.id)))
             options.append(SelectOption(label="📋 Alle User anzeigen", value="show_all"))
-        
+
         self.select = ui.Select(placeholder="Wähle einen Gegner...", min_values=1, max_values=1, options=options)
         self.select.callback = self.select_callback
         self.add_item(self.select)
-    
+
     def get_status_emoji(self, member):
         """Gibt Emoji für Online-Status zurück"""
         if member.status == discord.Status.online:
@@ -7036,15 +7036,15 @@ class OpponentSelectView(RestrictedView):
         elif member.status == discord.Status.dnd:
             return "🔴"
         else:
-            return "⚫"
-    
+            return "?"
+
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user != self.challenger:
             await interaction.response.send_message("Nur der Herausforderer kann den Gegner wählen!", ephemeral=True)
             return
-        
+
         selected_value = self.select.values[0]
-        
+
         if selected_value == "search":
             # Öffne Suchmodal und verknüpfe mit Parent-View
             modal = UserSearchModal(
@@ -7055,7 +7055,7 @@ class OpponentSelectView(RestrictedView):
             )
             await interaction.response.send_modal(modal)
             return
-        
+
         elif selected_value == "show_all":
             # Zeige alle User (mit Paginierung falls nötig)
             if len(self.all_members) <= 25:
@@ -7066,7 +7066,7 @@ class OpponentSelectView(RestrictedView):
                         label=safe_user_option_label(member, prefix=f"{status_emoji} "),
                         value=str(member.id)
                     ))
-                
+
                 view = UserSearchResultView(self.challenger, options, parent_view=self)
                 await interaction.response.send_message(
                     "📋 **Alle User:**",
@@ -7076,7 +7076,7 @@ class OpponentSelectView(RestrictedView):
                 pager = ShowAllMembersPager(self.challenger, self.all_members, parent_view=self, include_bot_option=True)
                 await interaction.response.send_message("📋 **Alle User (Seitenweise):**", view=pager, ephemeral=True)
             return
-        
+
         self.value = selected_value
         self.stop()
         await interaction.response.defer()
@@ -8619,7 +8619,7 @@ FUSE_CARD_ACTION_SEARCH = "search"
 FUSE_CARD_ACTION_BROWSE_ALL = "browse_all"
 FUSE_CARD_ACTION_BACK = "back"
 FUSE_CARD_EMPTY = "__none__"
-FUSE_OWNER_LOCKED_TEXT = "Nur die Person, die „/verbessern“ gestartet hat, kann dieses Menü benutzen."
+FUSE_OWNER_LOCKED_TEXT = 'Nur die Person, die "/verbessern" gestartet hat, kann dieses Men? benutzen.'
 
 
 def _attack_upgrade_step(attack: dict) -> int:
@@ -8831,7 +8831,7 @@ class FuseCardSearchModal(FuseFlowModal):
         matches = _search_fuse_card_groups(self.user_karten, search_query)
         if not matches:
             await interaction.response.send_message(
-                f"❌ Keine passenden Helden für „{search_query}“ gefunden.",
+                f'? Keine passenden Helden f?r "{search_query}" gefunden.',
                 ephemeral=True,
             )
             return
@@ -8967,7 +8967,7 @@ class FuseCardSelectView(FuseFlowView):
                 title="📚 Alle Helden durchsuchen",
                 guidance=(
                     f"Seite **{self.page + 1}** von **{self._page_count()}**.\n"
-                    "Wähle einen Helden oder nutze oben „Zurück“."
+                    'W?hle einen Helden oder nutze oben "Zur?ck".'
                 ),
             )
         if self.mode == "search":
@@ -9430,7 +9430,7 @@ def _build_invite_reward_card_embed(card_name: str) -> discord.Embed:
     resolved_name = str(card.get("name") or card_name or "Unbekannte Karte")
     embed = discord.Embed(
         title=f"Einladungs-Belohnung: {resolved_name}",
-        description=str(card.get("beschreibung") or "Du hast diese Karte fuer deine erste bestaetigte Einladung erhalten."),
+        description=str(card.get("beschreibung") or "Du hast diese Karte für deine erste bestätigte Einladung erhalten."),
         color=_card_rarity_color(card) or 0x00FF00,
     )
     rarity = str(card.get("seltenheit") or "").strip()
@@ -9498,7 +9498,7 @@ async def _invitee_age_error(guild: discord.Guild, invitee_id: int) -> str | Non
         return "Der Eingeladene wurde auf diesem Server nicht gefunden."
     joined_at = getattr(member, "joined_at", None)
     if joined_at is None:
-        return "Das Beitrittsdatum des Eingeladenen konnte nicht geprueft werden."
+        return "Das Beitrittsdatum des Eingeladenen konnte nicht geprüft werden."
     if joined_at.tzinfo is None:
         joined_at = joined_at.replace(tzinfo=timezone.utc)
     age_seconds = datetime.now(timezone.utc).timestamp() - joined_at.timestamp()
@@ -9646,26 +9646,26 @@ class InviteUserSelect(ui.Select):
                 SelectOption(
                     label=display_name[:100],
                     value=str(user_id),
-                    description="Einladung bestaetigen",
+                    description="Einladung bestätigen",
                     emoji="🎁",
                 )
             )
         if not options:
-            options.append(SelectOption(label="Keine Spieler verfuegbar", value="none"))
-        placeholder = "Waehle den Eingeladenen" if self.mode == "inviter" else "Waehle deinen Einlader"
+            options.append(SelectOption(label="Keine Spieler verfügbar", value="none"))
+        placeholder = "Wähle den Eingeladenen" if self.mode == "inviter" else "Wähle deinen Einlader"
         super().__init__(placeholder=placeholder, options=options)
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("âŒ Nur du kannst deine Auswahl treffen.", ephemeral=True)
+            await interaction.response.send_message("❌ Nur du kannst deine Auswahl treffen.", ephemeral=True)
             return
         if self.values[0] == "none":
-            await interaction.response.send_message("âŒ Keine Spieler verfuegbar!", ephemeral=True)
+            await interaction.response.send_message("❌ Keine Spieler verfügbar!", ephemeral=True)
             return
 
         selected_user_id = int(self.values[0])
         if selected_user_id == self.requester_id:
-            await interaction.response.send_message("âŒ Du kannst dich nicht selbst auswaehlen.", ephemeral=True)
+            await interaction.response.send_message("❌ Du kannst dich nicht selbst auswählen.", ephemeral=True)
             return
 
         if self.mode == "inviter":
@@ -9679,22 +9679,22 @@ class InviteUserSelect(ui.Select):
 
         guild = interaction.guild
         if guild is None:
-            await interaction.response.send_message("âŒ Das funktioniert nur auf einem Server.", ephemeral=True)
+            await interaction.response.send_message("❌ Das funktioniert nur auf einem Server.", ephemeral=True)
             return
         if interaction.channel is None:
-            await interaction.response.send_message("âŒ Kanal nicht gefunden.", ephemeral=True)
+            await interaction.response.send_message("❌ Kanal nicht gefunden.", ephemeral=True)
             return
 
         age_error = await _invitee_age_error(guild, invitee_id)
         if age_error:
-            await interaction.response.send_message(f"âŒ {age_error}", ephemeral=True)
+            await interaction.response.send_message(f"❌ {age_error}", ephemeral=True)
             return
 
         existing = await find_existing_invite_pair(guild.id, inviter_id, invitee_id)
         if existing:
             status = str(existing.get("status") or "pending")
             await interaction.response.send_message(
-                f"âŒ Fuer diese zwei Personen gibt es bereits eine Einladung mit Status **{status}**.",
+                f"❌ Für diese zwei Personen gibt es bereits eine Einladung mit Status **{status}**.",
                 ephemeral=True,
             )
             return
@@ -9716,7 +9716,7 @@ class InviteUserSelect(ui.Select):
         )
         if not created:
             await interaction.response.send_message(
-                "âŒ Fuer diese zwei Personen gibt es bereits eine offene oder abgeschlossene Einladung.",
+                "❌ Für diese zwei Personen gibt es bereits eine offene oder abgeschlossene Einladung.",
                 ephemeral=True,
             )
             return
@@ -9744,7 +9744,7 @@ class InviteUserSelect(ui.Select):
 
         try:
             await interaction.response.edit_message(
-                content="âœ… Oeffentliche Bestaetigung wurde gepostet. Bitte die Buttons dort nutzen.",
+                content="✅ Öffentliche Bestätigung wurde gepostet. Bitte die Buttons dort nutzen.",
                 embed=None,
                 view=None,
             )
@@ -9909,7 +9909,11 @@ class AlphaConfirmView(RestrictedView):
             actor_user_id=interaction.user.id,
             command_name="entwicklerpanel",
         )
-        refresh_text = "Letzte /anfang-Nachricht wurde aktualisiert." if refreshed else "Keine gespeicherte /anfang-Nachricht aktualisiert."
+        refresh_text = (
+            game_ui_texts.FEATURE_FLAG_REFRESH_UPDATED
+            if refreshed
+            else game_ui_texts.FEATURE_FLAG_REFRESH_NOT_UPDATED
+        )
         await interaction.response.edit_message(
             content=(game_ui_texts.ALPHA_ENABLED if self.enable else game_ui_texts.ALPHA_DISABLED) + f" {refresh_text}",
             view=None,
@@ -9949,7 +9953,11 @@ class BetaConfirmView(RestrictedView):
             actor_user_id=interaction.user.id,
             command_name="entwicklerpanel",
         )
-        refresh_text = "Letzte /anfang-Nachricht wurde aktualisiert." if refreshed else "Keine gespeicherte /anfang-Nachricht aktualisiert."
+        refresh_text = (
+            game_ui_texts.FEATURE_FLAG_REFRESH_UPDATED
+            if refreshed
+            else game_ui_texts.FEATURE_FLAG_REFRESH_NOT_UPDATED
+        )
         await interaction.response.edit_message(
             content=(game_ui_texts.BETA_ENABLED if self.enable else game_ui_texts.BETA_DISABLED) + f" {refresh_text}",
             view=None,
@@ -10407,14 +10415,14 @@ class InfinitydustAmountView(RestrictedView):
         self.user_id = user_id
         self.target_user_id = target_user_id
         self.value = None
-        
+
         # Erstelle Optionen für Mengen: 1-20, dann 25, 30, 40, 50, 70 (25 Optionen total)
         amounts = list(range(1, 21)) + [25, 30, 40, 50, 70]
         options = [SelectOption(label=f"{i}x Infinitydust", value=str(i)) for i in amounts]
         self.select = ui.Select(placeholder="Wähle die Menge...", min_values=1, max_values=1, options=options)
         self.select.callback = self.select_callback
         self.add_item(self.select)
-    
+
     async def select_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Nur der Command-User kann die Menge wählen!", ephemeral=True)
@@ -10593,7 +10601,6 @@ class MissionPauseView(DurableView):
                 label=game_ui_texts.MISSION_PAUSE_KEEP_LABEL.format(card_name=current_card_name)[:100],
                 value="keep",
             ),
-            SelectOption(label=game_ui_texts.MISSION_PAUSE_CHANGE_LABEL, value="change"),
         ]
         self.select = ui.Select(
             placeholder=game_ui_texts.MISSION_PAUSE_PLACEHOLDER,
@@ -10783,12 +10790,14 @@ class MissionEncounterPreviewView(DurableView):
         if self.mode == "boss":
             self.add_item(self._btn_skip())
             self.add_item(self._btn_start_boss())
+            self.add_item(self._btn_hero())
             return
         if n == 0:
             return
         if n == 1:
             self.add_item(self._btn_start_mission())
-            self.add_item(self._btn_hero())
+            if self._allows_card_change():
+                self.add_item(self._btn_hero())
             self.add_item(self._btn_skip())
             return
         if idx < n - 1:
@@ -10796,8 +10805,12 @@ class MissionEncounterPreviewView(DurableView):
             self.add_item(self._btn_skip())
         else:
             self.add_item(self._btn_start_mission())
-            self.add_item(self._btn_hero())
+            if self._allows_card_change():
+                self.add_item(self._btn_hero())
             self.add_item(self._btn_skip())
+
+    def _allows_card_change(self) -> bool:
+        return self.mode == "boss" or int(self.mission_state.get("next_wave", 1) or 1) <= 1
 
     def _btn_next(self) -> ui.Button:
         b = ui.Button(
@@ -10883,6 +10896,9 @@ class MissionEncounterPreviewView(DurableView):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Nur der Mission-User kann das steuern!", ephemeral=True)
             return
+        if not self._allows_card_change():
+            await interaction.response.send_message(game_ui_texts.PREVIEW_CHANGE_NOT_AVAILABLE, ephemeral=True)
+            return
         msg = interaction.message
         await interaction.response.defer()
         await self.clear_durable_registration()
@@ -10896,17 +10912,24 @@ class MissionEncounterPreviewView(DurableView):
         user_karten = _sort_user_cards_like_karten(
             _filter_owned_cards_for_current_mode(await get_user_karten(self.user_id))
         )
-        select_view = MissionStartCardSelectView(
-            self.user_id,
-            md,
-            is_admin=bool(ms.get("is_admin", False)),
-            user_karten=[name for name, _amount in user_karten],
-        )
+        if int(ms.get("next_wave", 1) or 1) <= 1 and self.mode != "boss":
+            select_view = MissionStartCardSelectView(
+                self.user_id,
+                md,
+                is_admin=bool(ms.get("is_admin", False)),
+                user_karten=[name for name, _amount in user_karten],
+            )
+            content = game_ui_texts.PREVIEW_RESELECT_CARD_PROMPT.format(mention=interaction.user.mention)
+            embed = _build_mission_embed(md)
+        else:
+            select_view = MissionNewCardSelectView(self.user_id, user_karten, mission_state=ms)
+            content = game_ui_texts.MISSION_SELECT_NEW_CARD_PROMPT
+            embed = None
         await _safe_send_channel(
             interaction,
             interaction.channel,
-            content=f"{interaction.user.mention}, wähle deine Karte für die Mission:",
-            embed=_build_mission_embed(md),
+            content=content,
+            embed=embed,
             view=select_view,
         )
         self.stop()
@@ -11004,7 +11027,7 @@ class MissionBattleView(DurableView):
         self.maestro_execute_pending = bool(self.mission_data.get("maestro_execute_pending", False))
         self._last_player_damage_dealt = int(self.mission_data.get("last_player_damage_dealt", 0) or 0)
         self._mission_actor_turn = "player"
-        
+
         # Setze Button-Labels (evtl. nach init_with_buffs erneut aufrufen)
         self.update_attack_buttons_mission()
 
@@ -11980,7 +12003,7 @@ class MissionBattleView(DurableView):
                     button.label = f"{attack_name} (Gesperrt)"
                 button.disabled = True
             return
-        
+
         for i, button in enumerate(attack_buttons):
             if i < len(current_attacks):
                 attack = current_attacks[i]
@@ -12197,7 +12220,7 @@ class MissionBattleView(DurableView):
             if restricted_bonus_now > 0:
                 dmg_buff += restricted_bonus_now
                 applied_flat_bonus_now += max(0, restricted_bonus_now)
-                source = str((restricted_bonus_effect or {}).get("source") or "Verstaerkung")
+                source = str((restricted_bonus_effect or {}).get("source") or "Verstärkung")
                 self._append_effect_event(effect_events, f"{source}: +{restricted_bonus_now} Schaden auf diesen Angriff.")
             if self.pending_multiplier_uses.get(self.user_id, 0) > 0:
                 attack_multiplier = float(self.pending_multiplier.get(self.user_id, 1.0) or 1.0)
@@ -12753,7 +12776,7 @@ class MissionBattleView(DurableView):
 
         if self.special_lock_next_turn.get(self.user_id, 0) > 0:
             self.special_lock_next_turn[self.user_id] = max(0, self.special_lock_next_turn.get(self.user_id, 0) - 1)
-        
+
         # Starte Cooldown (kartenspezifisch oder für starke Attacken) für den nächsten Zug.
         # In Missionen soll die stärkste Attacke im nächsten eigenen Zug gesperrt sein.
         # Darum KEINE sofortige Reduktion hier – die Reduktion passiert nach dem Bot-Zug.
@@ -12783,7 +12806,7 @@ class MissionBattleView(DurableView):
             if isinstance(landing_cd_index, int) and landing_cd_index >= 0 and landing_cd_turns > 0:
                 current_cd = self.user_attack_cooldowns.get(landing_cd_index, 0)
                 self.user_attack_cooldowns[landing_cd_index] = max(current_cd, landing_cd_turns)
-        
+
         # Prüfen ob Kampf vorbei nach Spieler-Angriff
         if self.bot_hp <= 0:
             self.result = True
@@ -12805,7 +12828,7 @@ class MissionBattleView(DurableView):
                 detail_text=f"❌ **Welle {self.wave_num} verloren!** Du hast dich selbst besiegt.",
             )
             return
-        
+
         # Bot-Zug: kurz große Gegnerkarte, dann Ablauf
         if message is not None:
             try:
@@ -12886,7 +12909,7 @@ class MissionBattleView(DurableView):
                 available_attacks.append(i)
                 attack_damages.append(max_dmg)
                 attack_scores.append(score)
-        
+
         if available_attacks or is_forced_bot_landing or forced_maestro_attack is not None:
             if forced_maestro_attack is not None:
                 best_index = -1
@@ -12963,7 +12986,7 @@ class MissionBattleView(DurableView):
                 if restricted_bonus_now > 0:
                     dmg_buff_bot += restricted_bonus_now
                     applied_flat_bonus_now += max(0, restricted_bonus_now)
-                    source = str((restricted_bonus_effect or {}).get("source") or "Verstaerkung")
+                    source = str((restricted_bonus_effect or {}).get("source") or "Verstärkung")
                     self._append_effect_event(bot_effect_events, f"{source}: +{restricted_bonus_now} Schaden auf diesen Angriff.")
                 if self.pending_multiplier_uses.get(0, 0) > 0:
                     attack_multiplier = float(self.pending_multiplier.get(0, 1.0) or 1.0)
@@ -13463,7 +13486,7 @@ class MissionBattleView(DurableView):
                 heal_amount=_extract_heal_amount_from_events(bot_effect_events),
                 is_reload_action=is_bot_reload_action,
             )
-            
+
             if self.battle_log_message:
                 log_embed = self.battle_log_message.embeds[0] if self.battle_log_message.embeds else create_battle_log_embed()
                 log_embed = update_battle_log(
@@ -13551,10 +13574,10 @@ class MissionBattleView(DurableView):
                     self.bot_attack_cooldowns[landing_cd_index] = max(current_cd, landing_cd_turns)
                     # Reduziere Cooldowns für den Bot direkt nach seinem Zug (entspricht /kampf)
                     self.reduce_cooldowns_bot()
-    
+
             # Reduce Cooldowns for User nach Bot-Zug
             self.reduce_cooldowns_user()
-    
+
             # Falls der Bot sich selbst/über Effekte besiegt hat, Welle sofort beenden.
             if self.bot_hp <= 0:
                 self.result = True
@@ -13589,11 +13612,11 @@ class MissionBattleView(DurableView):
             if self.bot_card.get("bild"):
                 embed.set_thumbnail(url=str(self.bot_card["bild"]))
             _add_attack_info_field(embed, self.player_card)
-    
+
             # Update attack buttons für neuen Spieler-Zug
             self._mission_actor_turn = "player"
             self.update_attack_buttons_mission()
-    
+
             if message is not None:
                 await interaction.followup.edit_message(message.id, embed=embed, view=self)
                 await self.persist_session(interaction.channel, status="active", battle_message=message)
@@ -13628,8 +13651,8 @@ class MissionBattleView(DurableView):
                     detail_text=f"❌ **Welle {self.wave_num} verloren!** Der Bot hat dich besiegt.",
                 )
                 return
-            
-            embed = discord.Embed(title=f"⚔️ Welle {self.wave_num}/{self.total_waves}", 
+
+            embed = discord.Embed(title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
                                   description=f"🤖 Bot hat keine Attacken verfügbar! Du bist wieder an der Reihe!")
             player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
             bot_label = f"🟦 Bot Karte{self._status_icons(0)}"
@@ -13640,7 +13663,7 @@ class MissionBattleView(DurableView):
             if self.bot_card.get("bild"):
                 embed.set_thumbnail(url=str(self.bot_card["bild"]))
             _add_attack_info_field(embed, self.player_card)
-            
+
             if message is not None:
                 await interaction.followup.edit_message(message.id, embed=embed, view=self)
                 await self.persist_session(interaction.channel, status="active", battle_message=message)
@@ -15804,7 +15827,7 @@ class StatusUserPickerView(RestrictedView):
 
         for m in members_sorted[:max_user_opts]:
             color = _presence_to_color(m)
-            circle = STATUS_CIRCLE_MAP.get(color, "⚫")
+            circle = STATUS_CIRCLE_MAP.get(color, "?")
             opts.append(
                 SelectOption(
                     label=safe_user_option_label(m, prefix=f"{circle} "),
@@ -15829,7 +15852,7 @@ class BotStatusSelect(ui.Select):
             SelectOption(label="🟢 Online", value="online"),
             SelectOption(label="🟡 Abwesend", value="idle"),
             SelectOption(label="🔴 Bitte nicht stören", value="dnd"),
-            SelectOption(label="⚫ Unsichtbar", value="invisible"),
+            SelectOption(label="? Unsichtbar", value="invisible"),
         ]
         super().__init__(placeholder="Wähle den neuen Bot-Status ...", min_values=1, max_values=1, options=options)
 

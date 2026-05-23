@@ -3,7 +3,7 @@ from __future__ import annotations
 # ============================================================
 # ZENTRALE UI-/STORY-TEXTE
 # ============================================================
-# Nur sichtbare Texte fuer das Spiel-UI.
+# Nur sichtbare Texte für das Spiel-UI.
 # Platzhalter wie {waves}, {card}, {invitee} werden zur Laufzeit ersetzt.
 # Nicht hier:
 # - Kartenbeschreibungen -> karten.py
@@ -32,6 +32,7 @@ INTERLUDE_HEAL_FIELD = "Der nächste Kampf wird ohne Cooldowns und mit vollen HP
 MISSION_PAUSE_PLACEHOLDER = "Was möchtest du tun?"
 MISSION_PAUSE_KEEP_LABEL = "Beibehalten: {card_name}"
 MISSION_PAUSE_CHANGE_LABEL = "Neue Karte wählen"
+MISSION_SELECT_NEW_CARD_PROMPT = "Wähle eine neue Karte:"
 
 # Gegner-Vorschau (Lakaien / Boss)
 PREVIEW_TITLE_LACKEY = "Gegner-Vorschau ({index}/{total})"
@@ -45,6 +46,8 @@ PREVIEW_BTN_SKIP = "Überspringen"
 PREVIEW_BTN_START_MISSION = "Mission starten"
 PREVIEW_BTN_START_BOSS = "Boss-Kampf starten"
 PREVIEW_BTN_CHANGE_HERO = "Held wechseln"
+PREVIEW_CHANGE_NOT_AVAILABLE = "Du kannst die Karte erst wieder vor dem Boss wechseln."
+PREVIEW_RESELECT_CARD_PROMPT = "{mention}, wähle deine Karte für die Mission:"
 
 # Bot-Zug Spotlight
 BOT_SPOTLIGHT_DESCRIPTION = "🎯 **{bot_name}** ist am Zug …"
@@ -111,38 +114,43 @@ MAINTENANCE_DISABLED = "Wartungsmodus deaktiviert."
 MAINTENANCE_CANCELLED = "Änderung am Wartungsmodus abgebrochen."
 
 # Dev-Tools: Alpha-Modus
+ALPHA_FEATURE_DISABLED_TEXT = "🧪 Alpha ist aktiv: Mission, Story und Einladungen sind aktuell deaktiviert."
 ALPHA_CONFIRM_ON_TITLE = "Alpha-Modus einschalten?"
 ALPHA_CONFIRM_OFF_TITLE = "Alpha-Modus ausschalten?"
 ALPHA_CONFIRM_ON_TEXT = (
-    "Wenn der Alpha-Modus **AN** ist, werden `/mission`, `/geschichte` und `/eingeladen` fuer diesen Server blockiert.\n"
+    "Wenn der Alpha-Modus **AN** ist, werden `/mission`, `/geschichte` und `/eingeladen` für diesen Server blockiert.\n"
     "`/anfang` zeigt Mission und Story dann nicht mehr als Buttons.\n\n"
     "Willst du das wirklich einschalten?"
 )
 ALPHA_CONFIRM_OFF_TEXT = (
-    "Wenn der Alpha-Modus **AUS** ist, sind `/mission`, `/geschichte` und `/eingeladen` wieder verfuegbar.\n"
+    "Wenn der Alpha-Modus **AUS** ist, sind `/mission`, `/geschichte` und `/eingeladen` wieder verfügbar.\n"
     "Falls Beta aktiv ist, bleiben Story und Einladungen trotzdem blockiert.\n\n"
     "Willst du das wirklich ausschalten?"
 )
 ALPHA_ENABLED = "Alpha-Modus aktiviert."
 ALPHA_DISABLED = "Alpha-Modus deaktiviert."
-ALPHA_CANCELLED = "Aenderung am Alpha-Modus abgebrochen."
+ALPHA_CANCELLED = "Änderung am Alpha-Modus abgebrochen."
+FEATURE_FLAG_REFRESH_UPDATED = "Letzte /anfang-Nachricht wurde aktualisiert."
+FEATURE_FLAG_REFRESH_NOT_UPDATED = "Keine gespeicherte /anfang-Nachricht aktualisiert."
 
 # Dev-Tools: Beta-Modus
+BETA_STORY_DISABLED_TEXT = "🧪 Beta ist aktiv: Story ist aktuell deaktiviert."
+BETA_INVITE_DISABLED_TEXT = "🧪 Beta ist aktiv: Einladungen sind aktuell deaktiviert."
 BETA_CONFIRM_ON_TITLE = "Beta-Modus einschalten?"
 BETA_CONFIRM_OFF_TITLE = "Beta-Modus ausschalten?"
 BETA_CONFIRM_ON_TEXT = (
-    "Wenn der Beta-Modus **AN** ist, werden `/geschichte` und `/eingeladen` fuer diesen Server blockiert.\n"
+    "Wenn der Beta-Modus **AN** ist, werden `/geschichte` und `/eingeladen` für diesen Server blockiert.\n"
     "`/anfang` zeigt Story dann nicht mehr als Button.\n\n"
     "Willst du das wirklich einschalten?"
 )
 BETA_CONFIRM_OFF_TEXT = (
-    "Wenn der Beta-Modus **AUS** ist, sind `/geschichte` und `/eingeladen` wieder verfuegbar.\n"
+    "Wenn der Beta-Modus **AUS** ist, sind `/geschichte` und `/eingeladen` wieder verfügbar.\n"
     "Falls Alpha aktiv ist, bleiben Mission, Story und Einladungen trotzdem blockiert.\n\n"
     "Willst du das wirklich ausschalten?"
 )
 BETA_ENABLED = "Beta-Modus aktiviert."
 BETA_DISABLED = "Beta-Modus deaktiviert."
-BETA_CANCELLED = "Aenderung am Beta-Modus abgebrochen."
+BETA_CANCELLED = "Änderung am Beta-Modus abgebrochen."
 
 # Missionen: zentrale Operationstexte
 # Neue Operationen müssen nur hier ergänzt werden.
@@ -186,7 +194,7 @@ MISSION_OPERATION_TEXTS: dict[str, dict[str, str]] = {
     },
 }
 
-# Boss-spezifische Taktiktexte fuer die Boss-Vorschau vor dem Kampf.
+# Boss-spezifische Taktiktexte für die Boss-Vorschau vor dem Kampf.
 MISSION_BOSS_TACTICS: dict[str, str] = {
     "maestro": (
         "Bleib beim Zugende bei mindestens 50 HP. "
@@ -195,7 +203,7 @@ MISSION_BOSS_TACTICS: dict[str, str] = {
     ),
     "modok": (
         "Plane Spezialangriffe sauber ein: M.O.D.O.K. kann sie mit System-Hack sperren "
-        "und mit Berechneter Heilung viel HP zurueckholen."
+        "und mit Berechneter Heilung viel HP zurückholen."
     ),
     "green_goblin": (
         "Rechne mit Verfehlungen und Kontern durch Gas/Illusionseffekte. "

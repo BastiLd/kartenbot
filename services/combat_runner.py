@@ -621,7 +621,7 @@ class CombatRunner:
                     self._append_effect_event(effect_events, "Status-Immunitaet verhindert den negativen Effekt.")
                 continue
             if eff_type == "stun" and bot_module._shield_has_stun_immunity(self.active_effects, target_id):
-                self._append_effect_event(effect_events, "Betaeubung abgewehrt: Schild schuetzt vor Stun.")
+                self._append_effect_event(effect_events, "Betäubung abgewehrt: Schild schützt vor Stun.")
                 continue
             if bot_module._apply_word_runtime_effect(self, effect_events, eff_type=eff_type, target_id=target_id, attack_name=attack_name):
                 continue
@@ -1104,9 +1104,9 @@ class CombatRunner:
                     if shield_break_counter > 0:
                         self._apply_non_heal_damage_with_event(effect_events, actor_id, shield_break_counter, source="Schildbruch", self_damage=False)
                 if reflected_damage > 0:
-                    self._apply_non_heal_damage_with_event(effect_events, actor_id, reflected_damage, source="Reflexions-Rueckschaden", self_damage=False)
+                    self._apply_non_heal_damage_with_event(effect_events, actor_id, reflected_damage, source="Reflexions-Rückschaden", self_damage=False)
                 if counter_damage > 0:
-                    self._apply_non_heal_damage_with_event(effect_events, actor_id, counter_damage, source="Konter-Rueckschaden", self_damage=False)
+                    self._apply_non_heal_damage_with_event(effect_events, actor_id, counter_damage, source="Konter-Rückschaden", self_damage=False)
                 self._guard_non_heal_damage_result(defender_id, defender_hp_before, "headless_player_attack")
                 hit_heal, heal_effect = bot_module._consume_attack_heal(self.active_effects, actor_id)
                 if hit_heal > 0:
@@ -1118,7 +1118,7 @@ class CombatRunner:
 
         self_damage_value = bot_module._resolve_self_damage_value(attack.get("self_damage", 0))
         if self_damage_value > 0:
-            self._apply_non_heal_damage_with_event(effect_events, actor_id, self_damage_value, source=f"{attack_name} / Rueckstoss", self_damage=True)
+            self._apply_non_heal_damage_with_event(effect_events, actor_id, self_damage_value, source=f"{attack_name} / Rückstoß", self_damage=True)
 
         trap_self_damage = bot_module._consume_attack_self_damage_effect(
             self.active_effects,
