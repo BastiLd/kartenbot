@@ -192,7 +192,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.2.13"
+__version__ = "2.2.14"
 
 
 class CardCatalog:
@@ -2814,7 +2814,7 @@ class DurableView(RestrictedView):
         )
 
 
-def _build_mission_embed(mission_data: dict) -> discord.Embed:
+def _build_mission_embed(mission_data: dict, *, user_already_owns_reward: bool = False) -> discord.Embed:
     title = mission_data.get("title") or "Mission"
     description = mission_data.get("description") or "Hier kommt später die Story. Hier kommt später die Story."
     reward_card = mission_data.get("reward_card") or {}
@@ -2825,10 +2825,35 @@ def _build_mission_embed(mission_data: dict) -> discord.Embed:
         embed.add_field(name="Units", value=f"+{int(mission_data.get('unit_reward_after_wave') or 0)} nach Welle 3", inline=True)
         _apply_item_media(embed, "unit", image=False, thumbnail=True)
     if reward_card:
-        embed.add_field(name="🎁 Belohnung", value=f"**{reward_card.get('name', '?')}**", inline=True)
-        if reward_card.get("bild"):
-            embed.set_image(url=reward_card["bild"])
+        if user_already_owns_reward:
+            embed.add_field(
+                name="🎁 Belohnung",
+                value=f"**{reward_card.get('name', '?')}** (bereits vorhanden – wird zu 💎 Infinitydust)",
+                inline=True,
+            )
+            dust_image_url, dust_thumbnail_url = _item_media_urls("infinitydust")
+            if dust_image_url:
+                embed.set_image(url=dust_image_url)
+            if dust_thumbnail_url:
+                embed.set_thumbnail(url=dust_thumbnail_url)
+        else:
+            embed.add_field(name="🎁 Belohnung", value=f"**{reward_card.get('name', '?')}**", inline=True)
+            if reward_card.get("bild"):
+                embed.set_image(url=reward_card["bild"])
     return embed
+
+
+async def _user_already_owns_card(user_id: int, reward_card: dict | None) -> bool:
+    if not reward_card:
+        return False
+    name = str(reward_card.get("name") or "").strip()
+    if not name:
+        return False
+    try:
+        return await has_exact_card_variant(int(user_id), name)
+    except Exception:
+        logging.exception("Failed to check user card ownership for mission preview")
+        return False
 
 
 def build_operation_broken_timeline_mission(*, mission_number: int | None = None, is_admin: bool = False) -> dict[str, Any]:
@@ -7844,7 +7869,13 @@ async def _begin_mission_thread_flow(interaction: discord.Interaction, mission_d
         is_admin=is_admin,
         user_karten=[name for name, _amount in user_karten],
     )
-    intro_embed = _build_mission_embed(_dict_str_any(mission_data))
+    intro_embed = _build_mission_embed(
+        _dict_str_any(mission_data),
+        user_already_owns_reward=await _user_already_owns_card(
+            interaction.user.id,
+            _dict_str_any(mission_data).get("reward_card"),
+        ),
+    )
     intro_embed.description = (
         f"{intro_embed.description or ''}\n\n"
         f"{interaction.user.mention}, wähle jetzt deine Karte für diese Mission."
@@ -11030,7 +11061,13 @@ class MissionEncounterPreviewView(DurableView):
                 user_karten=[name for name, _amount in user_karten],
             )
             content = game_ui_texts.PREVIEW_RESELECT_CARD_PROMPT.format(mention=interaction.user.mention)
-            embed = _build_mission_embed(md)
+            embed = _build_mission_embed(
+                md,
+                user_already_owns_reward=await _user_already_owns_card(
+                    self.user_id,
+                    md.get("reward_card"),
+                ),
+            )
         else:
             select_view = MissionNewCardSelectView(self.user_id, user_karten, mission_state=ms)
             content = game_ui_texts.MISSION_SELECT_NEW_CARD_PROMPT
@@ -14510,7 +14547,13 @@ async def resend_pending_requests() -> None:
                 mission_data = json.loads(row["mission_data"]) if row["mission_data"] else {}
             except (json.JSONDecodeError, TypeError):
                 mission_data = {}
-            embed = _build_mission_embed(mission_data)
+            embed = _build_mission_embed(
+                mission_data,
+                user_already_owns_reward=await _user_already_owns_card(
+                    int(row["user_id"]),
+                    _dict_str_any(mission_data).get("reward_card"),
+                ),
+            )
             view = MissionAcceptView(
                 int(row["user_id"]),
                 mission_data,
