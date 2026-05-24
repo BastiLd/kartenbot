@@ -95,7 +95,7 @@ items: list[dict[str, Any]] = [
                 "kind": "boss_revive",
                 "target": "mission_boss",
                 "cost": 3,
-                "mode": "restart_boss",
+                "mode": "revive_continue",
             }
         ],
         "variants": [

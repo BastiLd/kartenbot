@@ -192,6 +192,8 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
+__version__ = "2.2.13"
+
 
 class CardCatalog:
     def __init__(self, cards: list[CardData]) -> None:
@@ -436,8 +438,58 @@ def _get_fight_opponent_candidates(guild: discord.Guild, challenger: discord.Mem
     ]
 
 
+def _resolve_member_status(member: discord.Member) -> discord.Status:
+    """Liefert den robustesten verfügbaren Online-Status eines Members.
+
+    `member.status` kann je nach Cache und Geräte-Verteilung knapp daneben
+    liegen. Wir prüfen darum erst Mobile/Desktop/Web und greifen sonst auf
+    den raw_status zurück, der direkt vom Gateway gesendet wird.
+    """
+    candidates: list[object] = []
+    for attr in ("desktop_status", "mobile_status", "web_status"):
+        try:
+            candidates.append(getattr(member, attr, None))
+        except Exception:
+            continue
+    candidates.append(getattr(member, "status", None))
+
+    priority = {
+        discord.Status.online: 0,
+        discord.Status.idle: 1,
+        discord.Status.dnd: 2,
+        discord.Status.invisible: 3,
+        discord.Status.offline: 4,
+    }
+    best: discord.Status | None = None
+    best_score: int | None = None
+    for candidate in candidates:
+        if isinstance(candidate, discord.Status):
+            status_value = candidate
+        elif isinstance(candidate, str) and candidate:
+            try:
+                status_value = discord.Status(candidate)
+            except ValueError:
+                continue
+        else:
+            continue
+        score = priority.get(status_value, 4)
+        if best_score is None or score < best_score:
+            best_score = score
+            best = status_value
+    if best is not None:
+        return best
+
+    raw_status = getattr(member, "raw_status", None)
+    if isinstance(raw_status, str) and raw_status:
+        try:
+            return discord.Status(raw_status)
+        except ValueError:
+            pass
+    return discord.Status.offline
+
+
 def _member_presence_priority(member: discord.Member) -> int:
-    status = member.status
+    status = _resolve_member_status(member)
     if status == discord.Status.online:
         return 0
     if status == discord.Status.idle:
@@ -448,14 +500,14 @@ def _member_presence_priority(member: discord.Member) -> int:
 
 
 def _member_status_circle(member: discord.Member) -> str:
-    status = member.status
+    status = _resolve_member_status(member)
     if status == discord.Status.online:
         return "🟢"
     if status == discord.Status.idle:
         return "🟡"
     if status == discord.Status.dnd:
         return "🔴"
-    return "?"
+    return "⚫"
 
 
 def _effect_source_text(source: object, message: str) -> str:
@@ -11478,7 +11530,7 @@ class MissionBattleView(DurableView):
                     value=f"+{int(self.mission_data.get('unit_reward_after_wave') or 0)} Unit",
                     inline=True,
                 )
-                _apply_item_media(interlude_embed, "unit", image=True, thumbnail=True)
+                _apply_item_media(interlude_embed, "unit", image=False, thumbnail=True)
             interlude_embed.add_field(name="Heilung", value=game_ui_texts.INTERLUDE_HEAL_FIELD, inline=True)
             pause_view = MissionPauseView(self.user_id, self.selected_card_name, mission_state=next_state)
             await _safe_send_channel(
@@ -14993,7 +15045,298 @@ class SingleMultiModeView(RestrictedView):
         self.stop()
         await interaction.response.defer()
 
-class ConfirmDeleteUserView(RestrictedView):
+
+class MultiCardSelectView(RestrictedView):
+    """Sammelt mehrere Karten-Auswahlen mit Status/Fertig/Neustart-Buttons."""
+
+    def __init__(self, requester_id: int, target_user_ids: list[int], guild: discord.Guild | None):
+        super().__init__(timeout=180)
+        self.requester_id = requester_id
+        self.target_user_ids = list(target_user_ids)
+        self.guild = guild
+        # Liste der gewählten Karten (Reihenfolge bleibt erhalten)
+        self.selected_cards: list[str] = []
+        self.value: list[str] | None = None
+        self.cancelled: bool = False
+        self.page = 0
+        # Karten als Liste der Namen (gameplay catalogue)
+        self._all_cards: list[CardData] = list(karten)
+        self._message: discord.Message | None = None
+
+        self.select = ui.Select(
+            placeholder=self._placeholder(),
+            min_values=1,
+            max_values=1,
+            options=[],
+            row=0,
+        )
+        self.select.callback = self._on_select
+        self.add_item(self.select)
+
+        self.prev_button = ui.Button(label="< Zurück", style=discord.ButtonStyle.secondary, row=1)
+        self.prev_button.callback = self._on_prev
+        self.add_item(self.prev_button)
+
+        self.next_button = ui.Button(label="Weiter >", style=discord.ButtonStyle.secondary, row=1)
+        self.next_button.callback = self._on_next
+        self.add_item(self.next_button)
+
+        self.status_button = ui.Button(label="📋 Status", style=discord.ButtonStyle.primary, row=2)
+        self.status_button.callback = self._on_status
+        self.add_item(self.status_button)
+
+        self.finish_button = ui.Button(label="✅ Fertig", style=discord.ButtonStyle.success, row=2)
+        self.finish_button.callback = self._on_finish
+        self.add_item(self.finish_button)
+
+        self.cancel_button = ui.Button(label="Abbrechen", style=discord.ButtonStyle.danger, row=2)
+        self.cancel_button.callback = self._on_cancel
+        self.add_item(self.cancel_button)
+
+        self._render()
+
+    def bind_message(self, message: discord.Message | None) -> None:
+        self._message = message
+
+    @property
+    def _total_pages(self) -> int:
+        return max(1, (len(self._all_cards) + 24) // 25)
+
+    def _placeholder(self) -> str:
+        count = len(self.selected_cards)
+        suffix = f" ({count} gewählt)" if count else ""
+        return f"Wähle eine Karte... Seite {self.page + 1}/{self._total_pages}{suffix}"
+
+    def _render(self) -> None:
+        start = self.page * 25
+        subset = self._all_cards[start:start + 25]
+        self.select.options = [
+            SelectOption(label=str(c.get("name") or "?")[:100], value=str(c.get("name") or ""))
+            for c in subset
+            if c.get("name")
+        ] or [SelectOption(label="Keine Karten verfügbar", value="__none__")]
+        self.select.placeholder = self._placeholder()
+        self.prev_button.disabled = self.page == 0
+        self.next_button.disabled = start + 25 >= len(self._all_cards)
+        self.finish_button.disabled = not self.selected_cards
+
+    def content_text(self) -> str:
+        target_count = len(self.target_user_ids)
+        target_word = "Nutzer" if target_count == 1 else "Nutzern"
+        lines = [
+            f"Wähle eine oder mehrere Karten für **{target_count} {target_word}**.",
+            "Wähle Karten nacheinander aus, drücke **📋 Status** für eine Übersicht oder **✅ Fertig**, wenn du alle ausgewählt hast.",
+        ]
+        if self.selected_cards:
+            lines.append("")
+            lines.append(f"Aktuell ausgewählt: {len(self.selected_cards)} Karte(n)")
+        return "\n".join(lines)
+
+    def _summary_embed(self) -> discord.Embed:
+        target_lines: list[str] = []
+        for user_id in self.target_user_ids[:25]:
+            member = self.guild.get_member(user_id) if self.guild is not None else None
+            if member is not None:
+                target_lines.append(f"- {member.mention}")
+            else:
+                target_lines.append(f"- <@{user_id}>")
+        if len(self.target_user_ids) > 25:
+            target_lines.append(f"... und {len(self.target_user_ids) - 25} weitere")
+
+        if self.selected_cards:
+            cards_text = "\n".join(f"- **{name}**" for name in self.selected_cards)
+        else:
+            cards_text = "_Noch keine Karte gewählt._"
+
+        embed = discord.Embed(
+            title="📋 Status: Karten-Vergabe",
+            description=(
+                f"**Empfänger ({len(self.target_user_ids)}):**\n"
+                + ("\n".join(target_lines) or "_keine_")
+            ),
+            color=0x3498DB,
+        )
+        embed.add_field(
+            name=f"Karten ({len(self.selected_cards)})",
+            value=cards_text[:1024],
+            inline=False,
+        )
+        embed.set_footer(text="Mit ✅ Fertig bestätigst du die Vergabe.")
+        return embed
+
+    async def _refresh_origin(self) -> None:
+        self._render()
+        if self._message is not None:
+            try:
+                await self._message.edit(content=self.content_text(), view=self)
+            except Exception:
+                logging.exception("Failed to refresh MultiCardSelectView message")
+
+    async def _on_select(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        chosen = str(self.select.values[0] or "").strip()
+        if not chosen or chosen == "__none__":
+            await interaction.response.send_message("❌ Ungültige Auswahl.", ephemeral=True)
+            return
+        # Variante auflösen
+        if card_has_multiple_variants(chosen, cards=karten):
+            variant_rows = [
+                (variant_name, 1)
+                for variant_name in variant_names_for_base(chosen, cards=karten)
+            ]
+            variant_view = CardVariantSelectView(
+                self.requester_id,
+                chosen,
+                variant_rows,
+                placeholder=f"Wähle den Style für {chosen}...",
+            )
+            await interaction.response.send_message(
+                f"Wähle den Style für **{chosen}**:",
+                view=variant_view,
+                ephemeral=True,
+            )
+            await variant_view.wait()
+            resolved = str(variant_view.value or "").strip()
+            if not resolved:
+                return
+        else:
+            resolved = default_variant_name_for_base(chosen, cards=karten) or chosen
+            await interaction.response.defer()
+        self.selected_cards.append(resolved)
+        await self._refresh_origin()
+
+    async def _on_prev(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        if self.page > 0:
+            self.page -= 1
+        self._render()
+        await interaction.response.edit_message(content=self.content_text(), view=self)
+
+    async def _on_next(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        if (self.page + 1) * 25 < len(self._all_cards):
+            self.page += 1
+        self._render()
+        await interaction.response.edit_message(content=self.content_text(), view=self)
+
+    async def _on_status(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        status_view = MultiCardStatusView(self)
+        await interaction.response.send_message(
+            embed=self._summary_embed(),
+            view=status_view,
+            ephemeral=True,
+        )
+
+    async def _on_finish(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        if not self.selected_cards:
+            await interaction.response.send_message("Wähle erst mindestens eine Karte.", ephemeral=True)
+            return
+        self.value = list(self.selected_cards)
+        self.stop()
+        await interaction.response.edit_message(content="✅ Karten-Auswahl abgeschlossen.", view=None)
+
+    async def _on_cancel(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        self.cancelled = True
+        self.value = None
+        self.stop()
+        await interaction.response.edit_message(content="⏰ Auswahl abgebrochen.", view=None)
+
+    async def restart_selection(self) -> None:
+        self.selected_cards = []
+        self.page = 0
+        await self._refresh_origin()
+
+
+class MultiCardStatusView(RestrictedView):
+    """Status-Antwort mit Buttons Neustart / Weiter / Fertig."""
+
+    def __init__(self, parent: MultiCardSelectView):
+        super().__init__(timeout=120)
+        self.parent_view = parent
+
+    @ui.button(label="🔄 Neustart der Auswahl", style=discord.ButtonStyle.danger)
+    async def restart(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.parent_view.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        await self.parent_view.restart_selection()
+        self.stop()
+        await interaction.response.edit_message(
+            content="🔄 Auswahl wurde geleert. Wähle erneut Karten oben aus.",
+            embed=None,
+            view=None,
+        )
+
+    @ui.button(label="↩️ Weiter machen", style=discord.ButtonStyle.secondary)
+    async def keep_going(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.parent_view.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        self.stop()
+        await interaction.response.edit_message(
+            content="Wähle weitere Karten oben aus oder drücke ✅ Fertig.",
+            embed=None,
+            view=None,
+        )
+
+    @ui.button(label="✅ Fertig", style=discord.ButtonStyle.success)
+    async def finish(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.parent_view.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        if not self.parent_view.selected_cards:
+            await interaction.response.send_message("Wähle erst mindestens eine Karte.", ephemeral=True)
+            return
+        self.parent_view.value = list(self.parent_view.selected_cards)
+        self.parent_view.stop()
+        self.stop()
+        await interaction.response.edit_message(
+            content="✅ Karten-Auswahl abgeschlossen.",
+            embed=None,
+            view=None,
+        )
+
+
+class GiveCardConfirmView(RestrictedView):
+    """Final-Bestätigung im Multi-Mode bevor die Karten verteilt werden."""
+
+    def __init__(self, requester_id: int):
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        self.value: bool | None = None
+
+    @ui.button(label="✅ Karten jetzt vergeben", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        self.value = True
+        self.stop()
+        await interaction.response.edit_message(content="✅ Bestätigt – verteile Karten...", view=None)
+
+    @ui.button(label="❌ Abbrechen", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        self.value = False
+        self.stop()
+        await interaction.response.edit_message(content="❌ Vergabe abgebrochen.", view=None)
     def __init__(self, requester_id: int, target_id: int, target_name: str):
         super().__init__(timeout=60)
         self.requester_id = requester_id

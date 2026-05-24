@@ -107,7 +107,7 @@ OPERATION_BROKEN_TIMELINE_ENCOUNTERS: list[dict[str, Any]] = [
         "beschreibung": "Bruce Banner aus einer gebrochenen Zeitlinie: intelligent, grausam und brutal.",
         "bild": "https://i.imgur.com/FnpMS1O.png",
         "seltenheit": "Boss",
-        "hp": 200,
+        "hp": 185,
         "mission_boss": "maestro",
         "attacks": [
             {"name": "Tyrannen-Schlag", "damage": [20, 20], "is_standard_attack": True, "info": "Standardangriff."},
@@ -231,7 +231,7 @@ OPERATION_TECHNISCHER_KOLLAPS_ENCOUNTERS: list[dict[str, Any]] = [
         "beschreibung": "Meister der Berechnung und mentalen Kriegsführung.",
         "bild": "https://i.imgur.com/421cobH.png",
         "seltenheit": "Boss",
-        "hp": 240,
+        "hp": 190,
         "mission_boss": "modok",
         "attacks": [
             {"name": "Gedankenstrahl", "damage": [20, 24], "is_standard_attack": True, "info": "Standardangriff."},
@@ -342,7 +342,7 @@ OPERATION_GRUENER_TERROR_ENCOUNTERS: list[dict[str, Any]] = [
         "beschreibung": "Unberechenbar, schnell und tödlich.",
         "bild": "https://i.imgur.com/MsKkOLU.png",
         "seltenheit": "Boss",
-        "hp": 240,
+        "hp": 190,
         "mission_boss": "green_goblin",
         "attacks": [
             {"name": "Goblin-Handschuh", "damage": [22, 22], "is_standard_attack": True, "info": "Standardangriff."},
@@ -472,7 +472,7 @@ OPERATION_GOLDENER_KAEFIG_ENCOUNTERS: list[dict[str, Any]] = [
         "beschreibung": "Massiv, zäh und gnadenlos.",
         "bild": "https://i.imgur.com/vVZATee.png",
         "seltenheit": "Boss",
-        "hp": 250,
+        "hp": 215,
         "mission_boss": "kingpin",
         "attacks": [
             {"name": "Stockhieb", "damage": [24, 24], "is_standard_attack": True, "info": "Standardangriff."},
@@ -590,7 +590,7 @@ OPERATION_HEXENFEUER_ENCOUNTERS: list[dict[str, Any]] = [
         "beschreibung": "Meisterin der dunklen Magie.",
         "bild": "https://i.imgur.com/M2QBK4O.png",
         "seltenheit": "Boss",
-        "hp": 245,
+        "hp": 185,
         "mission_boss": "agatha_harkness",
         "attacks": [
             {"name": "Chaos-Energie-Ball", "damage": [22, 22], "is_standard_attack": True, "info": "Standardangriff."},

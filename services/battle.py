@@ -694,13 +694,51 @@ STATUS_CIRCLE_MAP = {
 
 
 def _presence_to_color(member: discord.Member) -> str:
+    candidates: list[object] = []
+    for attr in ("desktop_status", "mobile_status", "web_status", "status"):
+        try:
+            candidates.append(getattr(member, attr, None))
+        except Exception:
+            continue
+
+    priority = {
+        discord.Status.online: 0,
+        discord.Status.idle: 1,
+        discord.Status.dnd: 2,
+        discord.Status.invisible: 3,
+        discord.Status.offline: 4,
+    }
+    best: discord.Status | None = None
+    best_score: int | None = None
+    for candidate in candidates:
+        status_value: discord.Status | None = None
+        if isinstance(candidate, discord.Status):
+            status_value = candidate
+        elif isinstance(candidate, str) and candidate:
+            try:
+                status_value = discord.Status(candidate)
+            except ValueError:
+                status_value = None
+        if status_value is None:
+            continue
+        score = priority.get(status_value, 4)
+        if best_score is None or score < best_score:
+            best_score = score
+            best = status_value
+    if best is None:
+        raw = getattr(member, "raw_status", None)
+        if isinstance(raw, str) and raw:
+            try:
+                best = discord.Status(raw)
+            except ValueError:
+                best = None
+
     try:
-        status = member.status
-        if status == discord.Status.online:
+        if best == discord.Status.online:
             return "green"
-        if status == discord.Status.idle:
+        if best == discord.Status.idle:
             return "orange"
-        if status == discord.Status.dnd:
+        if best == discord.Status.dnd:
             return "red"
         return "black"
     except Exception:

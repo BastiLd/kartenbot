@@ -247,7 +247,14 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
         await module.send_test_report(interaction, visibility_key=visibility_key)
 
     @bot.tree.command(name="karte-geben", description="Nur f\u00fcr Admins!!!")
-    async def give(interaction: discord.Interaction):
+    @app_commands.describe(modus="Single f\u00fcr einen Nutzer oder Multi f\u00fcr mehrere Nutzer")
+    @app_commands.choices(
+        modus=[
+            app_commands.Choice(name="single", value="single"),
+            app_commands.Choice(name="multi", value="multi"),
+        ]
+    )
+    async def give(interaction: discord.Interaction, modus: str):
         if not await module.is_channel_allowed(interaction):
             return
         if not await module.is_admin(interaction):
@@ -256,98 +263,173 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
                 ephemeral=True,
             )
             return
-        visibility_key = module.command_visibility_key_for_interaction(interaction)
-        visibility = (
-            await module.get_message_visibility(interaction.guild_id, visibility_key)
-            if visibility_key
-            else module.VISIBILITY_PRIVATE
-        )
-        ephemeral = visibility != module.VISIBILITY_PUBLIC
-
-        user_select_view = module.AdminUserSelectView(interaction.user.id, interaction.guild)
-        await module._send_with_visibility(
-            interaction,
-            visibility_key,
-            content="W\u00e4hle einen Nutzer, dem du eine Karte geben m\u00f6chtest:",
-            view=user_select_view,
-        )
-        await user_select_view.wait()
-
-        if not user_select_view.value:
-            await interaction.followup.send("\u23f0 Keine Auswahl getroffen. Abgebrochen.", ephemeral=ephemeral)
-            return
-
-        target_user_id = int(user_select_view.value)
-        guild = interaction.guild
-        if guild is None:
-            await interaction.followup.send("\u274c Dieser Command funktioniert nur auf einem Server.", ephemeral=True)
-            return
-        target_user = guild.get_member(target_user_id)
-        if not target_user:
-            await interaction.followup.send("\u274c Nutzer nicht gefunden!", ephemeral=True)
-            return
-
-        selected_card_name = await _select_exact_card_name(
-            interaction,
-            requester_id=interaction.user.id,
-            include_infinitydust=True,
-        )
-        if not selected_card_name:
-            await interaction.followup.send("\u23f0 Keine Karte gew\u00e4hlt. Abgebrochen.", ephemeral=ephemeral)
-            return
-
-        if selected_card_name == "infinitydust":
-            amount_view = module.InfinitydustAmountView(interaction.user.id, target_user_id)
-            await interaction.followup.send(
-                f"W\u00e4hle die Menge Infinitydust f\u00fcr {target_user.mention}:",
-                view=amount_view,
-                ephemeral=ephemeral,
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "\u274c Dieser Command funktioniert nur auf einem Server.", ephemeral=True
             )
-            await amount_view.wait()
+            return
+        await interaction.response.defer(ephemeral=True)
 
-            if not amount_view.value:
-                await interaction.followup.send("\u23f0 Keine Menge gew\u00e4hlt. Abgebrochen.", ephemeral=ephemeral)
+        mode_value = str(modus or "").strip().lower()
+        if mode_value not in {"single", "multi"}:
+            await interaction.followup.send(
+                "\u274c Ung\u00fcltiger Modus. Nutze `single` oder `multi`.",
+                ephemeral=True,
+            )
+            return
+
+        visibility_key = module.command_visibility_key_for_interaction(interaction)
+
+        # 1) Nutzer-Auswahl
+        target_user_ids: list[int] = []
+        if mode_value == "single":
+            user_select_view = module.AdminUserSelectView(interaction.user.id, interaction.guild)
+            await interaction.followup.send(
+                content="W\u00e4hle den Nutzer, dem du Karten geben m\u00f6chtest:",
+                view=user_select_view,
+                ephemeral=True,
+            )
+            await user_select_view.wait()
+            if not user_select_view.value:
+                await interaction.followup.send(
+                    "\u23f0 Keine Auswahl getroffen. Abgebrochen.", ephemeral=True
+                )
+                return
+            target_user_ids = [int(user_select_view.value)]
+        else:
+            multi_view = module.DustMultiUserSelectView(
+                interaction.user.id, interaction.guild, item_label="Karten"
+            )
+            multi_message = await interaction.followup.send(
+                content=multi_view._content(),
+                embed=multi_view._summary_embed(),
+                view=multi_view,
+                ephemeral=True,
+                wait=True,
+            )
+            multi_view.bind_message(multi_message)
+            await multi_view.wait()
+            if not multi_view.value:
+                await interaction.followup.send(
+                    "\u23f0 Keine Nutzer gew\u00e4hlt. Abgebrochen.", ephemeral=True
+                )
+                return
+            target_user_ids = [int(user_id) for user_id in multi_view.value]
+
+        # 2) Karten-Auswahl (mehrfach m\u00f6glich, mit Status/Fertig/Neustart)
+        multi_card_view = module.MultiCardSelectView(
+            interaction.user.id, target_user_ids, interaction.guild
+        )
+        card_message = await interaction.followup.send(
+            content=multi_card_view.content_text(),
+            view=multi_card_view,
+            ephemeral=True,
+            wait=True,
+        )
+        multi_card_view.bind_message(card_message)
+        await multi_card_view.wait()
+        if not multi_card_view.value:
+            await interaction.followup.send(
+                "\u23f0 Keine Karten gew\u00e4hlt. Abgebrochen.", ephemeral=True
+            )
+            return
+        selected_card_names: list[str] = list(multi_card_view.value)
+
+        # 3) Bestätigung im Multi-Mode
+        if mode_value == "multi":
+            confirm_view = module.GiveCardConfirmView(interaction.user.id)
+            target_lines: list[str] = []
+            for user_id in target_user_ids[:25]:
+                member = interaction.guild.get_member(user_id)
+                target_lines.append(member.mention if member else f"<@{user_id}>")
+            if len(target_user_ids) > 25:
+                target_lines.append(f"... und {len(target_user_ids) - 25} weitere")
+            cards_text = "\n".join(f"- **{name}**" for name in selected_card_names)
+            confirm_embed = discord.Embed(
+                title="\U0001F4DD Bestätigung: Karten verteilen",
+                description=(
+                    f"**Empf\u00e4nger ({len(target_user_ids)}):**\n"
+                    + "\n".join(target_lines)
+                ),
+                color=0xF1C40F,
+            )
+            confirm_embed.add_field(
+                name=f"Karten ({len(selected_card_names)})",
+                value=cards_text[:1024],
+                inline=False,
+            )
+            confirm_embed.set_footer(text="Mit ✅ jetzt verteilen, ❌ abbrechen.")
+            await interaction.followup.send(
+                embed=confirm_embed,
+                view=confirm_view,
+                ephemeral=True,
+            )
+            await confirm_view.wait()
+            if confirm_view.value is not True:
+                if confirm_view.value is None:
+                    await interaction.followup.send(
+                        "\u23f0 Zeit abgelaufen. Vergabe abgebrochen.", ephemeral=True
+                    )
                 return
 
-            amount = amount_view.value
-            await module.add_infinitydust(target_user_id, amount)
+        # 4) Karten verteilen
+        per_user_added: dict[int, list[str]] = {user_id: [] for user_id in target_user_ids}
+        per_user_skipped: dict[int, list[str]] = {user_id: [] for user_id in target_user_ids}
+        for card_name in selected_card_names:
+            for user_id in target_user_ids:
+                was_added = await module.add_exact_card_variant_once(user_id, card_name)
+                if was_added:
+                    per_user_added[user_id].append(card_name)
+                else:
+                    per_user_skipped[user_id].append(card_name)
 
-            embed = discord.Embed(
-                title="\U0001F48E Infinitydust verschenkt!",
-                description=f"{interaction.user.mention} hat **{amount}x Infinitydust** an {target_user.mention} gegeben!",
-            )
-            dust_item = module.get_item_by_id("infinitydust")
-            dust_thumbnail_url = str((dust_item or {}).get("thumbnail") or "").strip()
-            if dust_thumbnail_url:
-                embed.set_thumbnail(url=dust_thumbnail_url)
-            await module._send_with_visibility(interaction, visibility_key, embed=embed)
-            return
-
-        selected_card = await module.get_karte_by_name(selected_card_name)
-        was_added = await module.add_exact_card_variant_once(target_user_id, selected_card_name)
-        selected_color = (
-            module._card_rarity_color(selected_card)
-            if selected_card
-            else module._card_rarity_color(module._card_by_name_local(selected_card_name))
+        # 5) Ergebnis-Embed (öffentlich gemäß visibility)
+        total_added = sum(len(v) for v in per_user_added.values())
+        total_skipped = sum(len(v) for v in per_user_skipped.values())
+        result_embed = discord.Embed(
+            title="\U0001F381 Karten vergeben",
+            description=(
+                f"{interaction.user.mention} hat **{len(selected_card_names)} Karte(n)** "
+                f"an **{len(target_user_ids)} Nutzer** verteilt."
+            ),
+            color=0x2ECC71 if total_added > 0 else 0xE67E22,
         )
-
-        if was_added:
-            embed = discord.Embed(
-                title="\U0001F381 Karte verschenkt!",
-                description=f"{interaction.user.mention} hat **{selected_card_name}** an {target_user.mention} gegeben!",
-                color=selected_color,
-            )
-            if selected_card:
-                embed.set_image(url=selected_card["bild"])
-            await module._send_with_visibility(interaction, visibility_key, embed=embed)
-            return
-
-        embed = discord.Embed(
-            title="\u26a0\ufe0f Variante bereits vorhanden",
-            description=f"{target_user.mention} besitzt **{selected_card_name}** bereits.",
-            color=selected_color,
+        result_lines: list[str] = []
+        for user_id in target_user_ids:
+            member = interaction.guild.get_member(user_id)
+            mention = member.mention if member else f"<@{user_id}>"
+            added_names = per_user_added.get(user_id, [])
+            skipped_names = per_user_skipped.get(user_id, [])
+            parts: list[str] = []
+            if added_names:
+                parts.append("\u2705 " + ", ".join(added_names))
+            if skipped_names:
+                parts.append("\u26a0\ufe0f bereits vorhanden: " + ", ".join(skipped_names))
+            line = f"{mention} \u2014 " + (" | ".join(parts) if parts else "_keine \u00c4nderung_")
+            result_lines.append(line)
+        # Discord field max 1024 chars
+        joined_lines = "\n".join(result_lines)
+        if len(joined_lines) > 4000:
+            joined_lines = joined_lines[:3990] + "\n\u2026"
+        result_embed.add_field(
+            name=f"\u00dcbersicht (\u2705 {total_added} \u00b7 \u26a0\ufe0f {total_skipped})",
+            value=joined_lines or "_keine_",
+            inline=False,
         )
-        await module._send_with_visibility(interaction, visibility_key, embed=embed)
+        # Bei Single-User + genau 1 Karte: Karte mit Bild zeigen
+        if len(target_user_ids) == 1 and len(selected_card_names) == 1:
+            single_card_name = selected_card_names[0]
+            selected_card = await module.get_karte_by_name(single_card_name)
+            if selected_card and selected_card.get("bild"):
+                result_embed.set_image(url=str(selected_card["bild"]))
+            rarity_color = (
+                module._card_rarity_color(selected_card)
+                if selected_card
+                else module._card_rarity_color(module._card_by_name_local(single_card_name))
+            )
+            if rarity_color is not None:
+                result_embed.color = rarity_color
+        await module._send_with_visibility(interaction, visibility_key, embed=result_embed)
 
     @bot.tree.command(name="dust", description="Nur f\u00fcr Admins!!!")
     @app_commands.describe(modus="Single f\u00fcr einen Nutzer oder Multi f\u00fcr mehrere Nutzer")

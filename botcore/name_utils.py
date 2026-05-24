@@ -1,13 +1,24 @@
 ﻿from __future__ import annotations
 
-import discord
+import re
+
+
+# Diese Markdown-Zeichen würden Discord-Formatierungen auslösen und müssen
+# in Anzeige-Namen escapet werden. Slashes ("/") und Backslashes lassen wir
+# bewusst unberührt, weil escape_markdown(as_needed=False) sonst zwischen
+# Buchstaben Backslashes einfügt, die Nutzernamen optisch zerstückeln.
+_MARKDOWN_ESCAPE_RE = re.compile(r"([*_~`|>])")
+
+
+def _escape_markdown_minimal(text: str) -> str:
+    return _MARKDOWN_ESCAPE_RE.sub(r"\\\1", text)
 
 
 def escape_display_text(value: object, fallback: str = "Unbekannt") -> str:
     text = str(value or "").strip()
     if not text:
         text = fallback
-    return discord.utils.escape_markdown(text, as_needed=False)
+    return _escape_markdown_minimal(text)
 
 
 def safe_display_name(user: object, fallback: str = "Unbekannt") -> str:

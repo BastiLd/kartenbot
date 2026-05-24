@@ -3507,11 +3507,15 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         }
         agatha = copy.deepcopy(mission["encounters"][3])
         view = MissionBattleView(player_card, agatha, 1, 4, 4, mission_data=mission)
-        view.bot_hp = 200
+        # Setze Agatha auf einen niedrigen Stand, damit Heilung sichtbar wird
+        # ohne durch ihr Max-HP-Cap geclamped zu werden.
+        agatha_max_hp = view._max_hp_for(0)
+        starting_hp = max(0, agatha_max_hp - 50)
+        view.bot_hp = starting_hp
         events: list[str] = []
         view._apply_agatha_action_pattern(events, "standard")
         view._apply_agatha_action_pattern(events, "standard")
-        self.assertEqual(view.bot_hp, 225)
+        self.assertEqual(view.bot_hp, min(agatha_max_hp, starting_hp + 25))
         view._apply_agatha_action_pattern(events, "special")
         view._apply_agatha_action_pattern(events, "special")
         self.assertEqual(view.player_hp, 75)
