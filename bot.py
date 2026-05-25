@@ -15468,6 +15468,11 @@ class GiveCardConfirmView(RestrictedView):
         self.value = False
         self.stop()
         await interaction.response.edit_message(content="❌ Vergabe abgebrochen.", view=None)
+
+
+class ConfirmDeleteUserView(RestrictedView):
+    """Bestätigungs-Dialog für das Löschen aller Bot-Daten eines Nutzers."""
+
     def __init__(self, requester_id: int, target_id: int, target_name: str):
         super().__init__(timeout=60)
         self.requester_id = requester_id
@@ -16145,29 +16150,129 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
         await _send_with_visibility(interaction, "give_dust", embed=embed)
         return
     if action == "grant_card":
-        user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Karte vergeben:")
-        if not user_id:
+        # 1:1 wie /karte-geben multi: Multi-User -> Multi-Karten -> Bestätigung -> Verteilen
+        if interaction.guild is None:
+            await _send_ephemeral(interaction, content=SERVER_ONLY)
             return
-        card_name = await _select_card(interaction, "Karte auswählen:")
-        if not card_name:
-            return
-        amount = await _select_number(interaction, "Anzahl wählen", [1, 2, 5, 10, 20, 50, 100])
-        if not amount:
-            return
-        await add_karte_amount(user_id, card_name, int(amount))
-        logging.info("Grant card: actor=%s target=%s card=%s amount=%s", interaction.user.id, user_id, card_name, amount)
-        await _log_event_safe(
-            "admin_card_grant",
-            guild_id=interaction.guild_id,
-            channel_id=interaction.channel_id,
-            thread_id=_thread_id_for_channel(interaction.channel),
-            actor_user_id=interaction.user.id,
-            target_user_id=user_id,
-            command_name="entwicklerpanel",
-            hero_name=card_name,
-            payload={"amount": int(amount)},
+        multi_user_view = DustMultiUserSelectView(
+            interaction.user.id, interaction.guild, item_label="Karten"
         )
-        await _send_with_visibility(interaction, "grant_card", content=f"{user_name} erhält {amount}x {card_name}.")
+        multi_user_message = await interaction.followup.send(
+            content=multi_user_view._content(),
+            embed=multi_user_view._summary_embed(),
+            view=multi_user_view,
+            ephemeral=True,
+            wait=True,
+        )
+        multi_user_view.bind_message(multi_user_message)
+        await multi_user_view.wait()
+        if not multi_user_view.value:
+            await interaction.followup.send("⏰ Keine Nutzer gewählt. Abgebrochen.", ephemeral=True)
+            return
+        target_user_ids: list[int] = [int(uid) for uid in multi_user_view.value]
+
+        multi_card_view = MultiCardSelectView(
+            interaction.user.id, target_user_ids, interaction.guild
+        )
+        card_message = await interaction.followup.send(
+            content=multi_card_view.content_text(),
+            view=multi_card_view,
+            ephemeral=True,
+            wait=True,
+        )
+        multi_card_view.bind_message(card_message)
+        await multi_card_view.wait()
+        if not multi_card_view.value:
+            await interaction.followup.send("⏰ Keine Karten gewählt. Abgebrochen.", ephemeral=True)
+            return
+        selected_card_names: list[str] = list(multi_card_view.value)
+
+        confirm_view = GiveCardConfirmView(interaction.user.id)
+        target_lines: list[str] = []
+        for uid in target_user_ids[:25]:
+            member = interaction.guild.get_member(uid)
+            target_lines.append(member.mention if member else f"<@{uid}>")
+        if len(target_user_ids) > 25:
+            target_lines.append(f"... und {len(target_user_ids) - 25} weitere")
+        cards_text = "\n".join(f"- **{n}**" for n in selected_card_names)
+        confirm_embed = discord.Embed(
+            title="📝 Bestätigung: Karten verteilen",
+            description=(
+                f"**Empfänger ({len(target_user_ids)}):**\n"
+                + "\n".join(target_lines)
+            ),
+            color=0xF1C40F,
+        )
+        confirm_embed.add_field(
+            name=f"Karten ({len(selected_card_names)})",
+            value=cards_text[:1024],
+            inline=False,
+        )
+        confirm_embed.set_footer(text="Mit ✅ jetzt verteilen, ❌ abbrechen.")
+        await interaction.followup.send(embed=confirm_embed, view=confirm_view, ephemeral=True)
+        await confirm_view.wait()
+        if confirm_view.value is not True:
+            if confirm_view.value is None:
+                await interaction.followup.send("⏰ Zeit abgelaufen. Vergabe abgebrochen.", ephemeral=True)
+            return
+
+        per_user_added: dict[int, list[str]] = {uid: [] for uid in target_user_ids}
+        per_user_skipped: dict[int, list[str]] = {uid: [] for uid in target_user_ids}
+        for card_name in selected_card_names:
+            for uid in target_user_ids:
+                was_added = await add_exact_card_variant_once(uid, card_name)
+                if was_added:
+                    per_user_added[uid].append(card_name)
+                else:
+                    per_user_skipped[uid].append(card_name)
+                logging.info(
+                    "Grant card via panel: actor=%s target=%s card=%s added=%s",
+                    interaction.user.id, uid, card_name, was_added,
+                )
+                await _log_event_safe(
+                    "admin_card_grant",
+                    guild_id=interaction.guild_id,
+                    channel_id=interaction.channel_id,
+                    thread_id=_thread_id_for_channel(interaction.channel),
+                    actor_user_id=interaction.user.id,
+                    target_user_id=uid,
+                    command_name="entwicklerpanel",
+                    hero_name=card_name,
+                    payload={"amount": 1, "added": bool(was_added)},
+                )
+
+        total_added = sum(len(v) for v in per_user_added.values())
+        total_skipped = sum(len(v) for v in per_user_skipped.values())
+        result_embed = discord.Embed(
+            title="🎁 Karten vergeben",
+            description=(
+                f"{interaction.user.mention} hat **{len(selected_card_names)} Karte(n)** "
+                f"an **{len(target_user_ids)} Nutzer** verteilt."
+            ),
+            color=0x2ECC71 if total_added > 0 else 0xE67E22,
+        )
+        result_lines: list[str] = []
+        for uid in target_user_ids:
+            member = interaction.guild.get_member(uid)
+            mention = member.mention if member else f"<@{uid}>"
+            added_names = per_user_added.get(uid, [])
+            skipped_names = per_user_skipped.get(uid, [])
+            parts: list[str] = []
+            if added_names:
+                parts.append("✅ " + ", ".join(added_names))
+            if skipped_names:
+                parts.append("⚠️ bereits vorhanden: " + ", ".join(skipped_names))
+            line = f"{mention} — " + (" | ".join(parts) if parts else "_keine Änderung_")
+            result_lines.append(line)
+        joined_lines = "\n".join(result_lines)
+        if len(joined_lines) > 4000:
+            joined_lines = joined_lines[:3990] + "\n…"
+        result_embed.add_field(
+            name=f"Übersicht (✅ {total_added} · ⚠️ {total_skipped})",
+            value=joined_lines or "_keine_",
+            inline=False,
+        )
+        await _send_with_visibility(interaction, "grant_card", embed=result_embed)
         return
     if action == "revoke_card":
         user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Karte abziehen:")
