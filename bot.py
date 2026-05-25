@@ -2705,7 +2705,8 @@ async def on_message(message: discord.Message):
             return
     if not await is_channel_allowed_ids(message.guild.id, message.channel.id, getattr(message.channel, "parent_id", None)):
         return
-    if isinstance(message.channel, discord.Thread) and await is_managed_thread(message.channel.id):
+    _is_managed = isinstance(message.channel, discord.Thread) and await is_managed_thread(message.channel.id)
+    if _is_managed:
         try:
             session = await get_active_session_for_channel(
                 message.channel.id,
@@ -2728,26 +2729,28 @@ async def on_message(message: discord.Message):
                 except Exception:
                     logging.exception("Failed to patch managed fight session %s", session.get("session_id"))
 
-    try:
-        async with db_context() as db:
-            cursor = await db.execute(
-                "SELECT 1 FROM user_seen_channels WHERE user_id = ? AND guild_id = ? AND channel_id = ?",
-                (message.author.id, message.guild.id, message.channel.id),
-            )
-            already_seen = await cursor.fetchone()
-            if not already_seen:
-                await db.execute(
-                    "INSERT OR IGNORE INTO user_seen_channels (user_id, guild_id, channel_id) VALUES (?, ?, ?)",
+    # Intro-Prompt nur in normalen Kanälen anzeigen – nicht in verwalteten Threads (Mission/PVP)
+    if not _is_managed:
+        try:
+            async with db_context() as db:
+                cursor = await db.execute(
+                    "SELECT 1 FROM user_seen_channels WHERE user_id = ? AND guild_id = ? AND channel_id = ?",
                     (message.author.id, message.guild.id, message.channel.id),
                 )
-                await db.commit()
-                await message.channel.send(
-                    f"{message.author.mention} {game_ui_texts.INTRO_PROMPT_MESSAGE}",
-                    view=IntroEphemeralPromptView(message.author.id),
-                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
-                )
-    except Exception:
-        logging.exception("Failed to handle intro prompt for first channel message")
+                already_seen = await cursor.fetchone()
+                if not already_seen:
+                    await db.execute(
+                        "INSERT OR IGNORE INTO user_seen_channels (user_id, guild_id, channel_id) VALUES (?, ?, ?)",
+                        (message.author.id, message.guild.id, message.channel.id),
+                    )
+                    await db.commit()
+                    await message.channel.send(
+                        f"{message.author.mention} {game_ui_texts.INTRO_PROMPT_MESSAGE}",
+                        view=IntroEphemeralPromptView(message.author.id),
+                        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+                    )
+        except Exception:
+            logging.exception("Failed to handle intro prompt for first channel message")
 
     # Commands weiter verarbeiten lassen
     await bot.process_commands(message)
@@ -2865,9 +2868,7 @@ def _build_mission_embed(mission_data: dict, *, user_already_owns_reward: bool =
                 value=f"**{reward_card.get('name', '?')}** (bereits vorhanden – wird zu 💎 Infinitydust)",
                 inline=True,
             )
-            dust_image_url, dust_thumbnail_url = _item_media_urls("infinitydust")
-            if dust_image_url:
-                embed.set_image(url=dust_image_url)
+            _, dust_thumbnail_url = _item_media_urls("infinitydust")
             if dust_thumbnail_url:
                 embed.set_thumbnail(url=dust_thumbnail_url)
         else:
@@ -4374,6 +4375,13 @@ class BattleView(DurableView):
                 await self.battle_log_message.edit(embed=embed)
                 self._battle_log_text_cache = str(embed.description or "")
                 self._last_log_edit_ts = time.monotonic()
+                return
+            except discord.NotFound:
+                # Kanal/Thread wurde gelöscht – weiteres Bearbeiten überspringen.
+                self.battle_log_message = None
+                return
+            except discord.Forbidden:
+                self.battle_log_message = None
                 return
             except Exception as e:
                 if getattr(e, "status", None) == 429:
@@ -6805,7 +6813,11 @@ class BattleView(DurableView):
         )
 
         # Aktualisiere Kampf-UI
-        await message.edit(embed=battle_embed, view=self)
+        try:
+            await message.edit(embed=battle_embed, view=self)
+        except (discord.NotFound, discord.Forbidden):
+            # Channel/Thread wurde gelöscht – Kampf still beenden.
+            return
 
 class CardSelectView(RestrictedView):
     def __init__(self, user_id, karten_liste, anzahl):
@@ -8642,12 +8654,7 @@ def _apply_item_media(embed: discord.Embed, item_id: str, *, image: bool = False
 def _build_units_collection_field_value(units: int) -> str | None:
     if units <= 0:
         return None
-    revive_cost, _ = _unit_boss_revive_config()
-    lines = [f"Anzahl: {units}x"]
-    if units >= revive_cost:
-        lines.append(f"Aktuell: {units}")
-        lines.append(f"Danach: {max(0, units - revive_cost)}")
-    return "\n".join(lines)
+    return f"Anzahl: {units}x"
 
 
 def _unit_boss_revive_config() -> tuple[int, str]:
@@ -11525,16 +11532,12 @@ class MissionBattleView(DurableView):
                 if revive_mode == "revive_continue":
                     revive_state["bot_hp"] = max(1, int(self.bot_hp))
                     revive_state["bot_max_hp"] = int(self.bot_max_hp)
-                mode_text = (
-                    "Du wirst mit vollen HP wiederbelebt. Der Boss behält seine aktuellen HP."
-                    if revive_mode == "revive_continue"
-                    else "Der Bosskampf startet neu. Die Lakaien musst du nicht erneut kämpfen."
-                )
+                current_units = await get_units(self.user_id)
                 embed = discord.Embed(
                     title="Bosskampf verloren",
                     description=(
-                        f"Du kannst dich für **{cost} Unit** wiederbeleben.\n\n"
-                        f"{mode_text}"
+                        f"Wiederbeleben kostet **{cost} Unit**.\n"
+                        f"Du hast aktuell **{current_units} Unit**."
                     ),
                     color=0xE67E22,
                 )
@@ -11893,6 +11896,12 @@ class MissionBattleView(DurableView):
             try:
                 await self.battle_log_message.edit(embed=embed)
                 self._last_log_edit_ts = time.monotonic()
+                return
+            except discord.NotFound:
+                self.battle_log_message = None
+                return
+            except discord.Forbidden:
+                self.battle_log_message = None
                 return
             except Exception as e:
                 if getattr(e, "status", None) == 429:
@@ -15366,8 +15375,8 @@ class MultiCardSelectView(RestrictedView):
             await interaction.response.send_message("Wähle erst mindestens eine Karte.", ephemeral=True)
             return
         self.value = list(self.selected_cards)
-        self.stop()
         await interaction.response.edit_message(content="✅ Karten-Auswahl abgeschlossen.", view=None)
+        self.stop()
 
     async def _on_cancel(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
@@ -15425,13 +15434,13 @@ class MultiCardStatusView(RestrictedView):
             await interaction.response.send_message("Wähle erst mindestens eine Karte.", ephemeral=True)
             return
         self.parent_view.value = list(self.parent_view.selected_cards)
-        self.parent_view.stop()
-        self.stop()
         await interaction.response.edit_message(
             content="✅ Karten-Auswahl abgeschlossen.",
             embed=None,
             view=None,
         )
+        self.parent_view.stop()
+        self.stop()
 
 
 class GiveCardConfirmView(RestrictedView):

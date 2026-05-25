@@ -59,6 +59,13 @@ OPERATION_BROKEN_TIMELINE_ENCOUNTERS: list[dict[str, Any]] = [
                 "effects": [{"type": "permanent_damage_boost", "target": "self", "amount": 3, "chance": 1.0}],
             },
             {
+                "name": "Strahlen-Welle",
+                "damage": [12, 14],
+                "cooldown_turns": 3,
+                "info": "12-14 Schaden plus 2 Runden lang 3 Giftschaden.",
+                "effects": [{"type": "poison", "target": "enemy", "damage": [3, 3], "duration": [2, 2], "chance": 1.0}],
+            },
+            {
                 "name": "Instabiler Kollaps",
                 "damage": [25, 25],
                 "cooldown_turns": 6,

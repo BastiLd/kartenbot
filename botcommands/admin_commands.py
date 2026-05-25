@@ -549,25 +549,70 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
             target_name = ""
 
         if action == "card_give":
-            card_name = await _select_exact_card_name(interaction, requester_id=interaction.user.id)
-            if not card_name:
-                await interaction.followup.send("\u23f0 Keine Karte gew\u00e4hlt. Abgebrochen.", ephemeral=True)
+            # Multi-Karten-Auswahl – identisch zu /karte-geben
+            multi_card_view = module.MultiCardSelectView(
+                interaction.user.id, selected_user_ids, interaction.guild
+            )
+            card_message = await interaction.followup.send(
+                content=multi_card_view.content_text(),
+                view=multi_card_view,
+                ephemeral=True,
+                wait=True,
+            )
+            multi_card_view.bind_message(card_message)
+            await multi_card_view.wait()
+            if not multi_card_view.value:
+                await interaction.followup.send("\u23f0 Keine Karten gewählt. Abgebrochen.", ephemeral=True)
                 return
+            selected_card_names: list[str] = list(multi_card_view.value)
+
+            # Bestätigung bei mehreren Nutzern
+            if len(selected_user_ids) > 1:
+                confirm_view = module.GiveCardConfirmView(interaction.user.id)
+                target_lines: list[str] = []
+                for uid in selected_user_ids[:25]:
+                    member = interaction.guild.get_member(uid)
+                    target_lines.append(member.mention if member else f"<@{uid}>")
+                if len(selected_user_ids) > 25:
+                    target_lines.append(f"... und {len(selected_user_ids) - 25} weitere")
+                cards_text = "\n".join(f"- **{n}**" for n in selected_card_names)
+                confirm_embed = discord.Embed(
+                    title="\U0001F4DD Bestätigung: Karten verteilen",
+                    description=(
+                        f"**Empfänger ({len(selected_user_ids)}):**\n"
+                        + "\n".join(target_lines)
+                    ),
+                    color=0xF1C40F,
+                )
+                confirm_embed.add_field(
+                    name=f"Karten ({len(selected_card_names)})",
+                    value=cards_text[:1024],
+                    inline=False,
+                )
+                confirm_embed.set_footer(text="Mit ✅ jetzt verteilen, ❌ abbrechen.")
+                await interaction.followup.send(embed=confirm_embed, view=confirm_view, ephemeral=True)
+                await confirm_view.wait()
+                if confirm_view.value is not True:
+                    if confirm_view.value is None:
+                        await interaction.followup.send("\u23f0 Zeit abgelaufen. Vergabe abgebrochen.", ephemeral=True)
+                    return
+
             added_user_ids: list[int] = []
             skipped_user_ids: list[int] = []
             for current_user_id in selected_user_ids:
-                was_added = await module.add_exact_card_variant_once(current_user_id, card_name)
-                if was_added:
-                    added_user_ids.append(current_user_id)
-                else:
-                    skipped_user_ids.append(current_user_id)
+                for card_name in selected_card_names:
+                    was_added = await module.add_exact_card_variant_once(current_user_id, card_name)
+                    if was_added:
+                        added_user_ids.append(current_user_id)
+                    else:
+                        skipped_user_ids.append(current_user_id)
             summary_lines: list[str] = []
             if added_user_ids:
-                summary_lines.append(f"\u2705 `{card_name}` gegeben an {_target_summary(interaction.guild, added_user_ids)}.")
+                summary_lines.append(f"\u2705 {len(selected_card_names)} Karte(n) gegeben an {_target_summary(interaction.guild, list(dict.fromkeys(added_user_ids)))}.")
             if skipped_user_ids:
-                summary_lines.append(f"\u26a0\ufe0f Bereits vorhanden bei {_target_summary(interaction.guild, skipped_user_ids)}.")
+                summary_lines.append(f"\u26a0\ufe0f Bereits vorhanden bei {_target_summary(interaction.guild, list(dict.fromkeys(skipped_user_ids)))}.")
             await interaction.followup.send(
-                "\n".join(summary_lines) or "\u26a0\ufe0f Keine \u00c4nderungen durchgef\u00fchrt.",
+                "\n".join(summary_lines) or "\u26a0\ufe0f Keine Änderungen durchgeführt.",
                 ephemeral=True,
             )
             return

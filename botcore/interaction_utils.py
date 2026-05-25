@@ -14,7 +14,11 @@ async def send_interaction_response(interaction: discord.Interaction, **kwargs):
     except discord.NotFound:
         logging.warning("Interaction expired before response could be sent.")
         return None
-    except discord.HTTPException:
+    except discord.HTTPException as exc:
+        # 10003 = Unknown Channel: Thread/Kanal wurde gelöscht – nur leise loggen.
+        if getattr(exc, "code", None) == 10003:
+            logging.info("Interaction target channel no longer exists; skipping response.")
+            return None
         logging.exception("Failed to send interaction response")
         return None
 
