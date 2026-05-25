@@ -167,6 +167,7 @@ from services.user_data import (
     delete_user_data,
     get_card_buffs,
     get_infinitydust,
+    get_units,
     get_last_karte,
     get_mission_count,
     get_team,
@@ -192,7 +193,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.2.14"
+__version__ = "2.2.15"
 
 
 class CardCatalog:
@@ -2160,6 +2161,14 @@ def _attack_has_direct_damage(attack: dict) -> bool:
     return max_damage > 0
 
 
+def _attack_allowed_at_self_hp(attack: dict, hp: int, max_hp: int) -> bool:
+    pct = _maybe_float(attack.get("conditional_self_hp_below_pct"))
+    if pct is None:
+        return True
+    safe_max_hp = max(1, int(max_hp or 0))
+    return int(hp or 0) <= int(safe_max_hp * pct)
+
+
 def _standard_attack_index(attacks: list[dict]) -> int:
     for idx, attack in enumerate(attacks[:4]):
         if bool(attack.get("is_standard_attack")):
@@ -2385,7 +2394,21 @@ def _attack_display_parts(attack: dict, *, max_only_bonus: int = 0) -> tuple[str
     return label, style, summary
 
 
-def _build_attack_info_lines(card: dict, *, max_attacks: int = 4) -> list[str]:
+def _format_passive_preview_line(passive: dict) -> str | None:
+    if not isinstance(passive, dict):
+        return None
+    passive_type = str(passive.get("type") or "").strip().lower()
+    source = str(passive.get("source") or "").strip() or "Passive Fähigkeit"
+    if passive_type == "on_hit_recoil":
+        damage = int(passive.get("damage", 0) or 0)
+        return f"• {source}: +{damage} Schaden bei Treffer"
+    info_text = str(passive.get("info") or "").strip()
+    if info_text:
+        return f"• {source}: {info_text}"
+    return f"• {source}"
+
+
+def _build_attack_info_lines(card: dict, *, max_attacks: int = 4, include_passives: bool = False) -> list[str]:
     lines: list[str] = []
     attacks = card.get("attacks", [])
     for attack in attacks[:max_attacks]:
@@ -2395,11 +2418,22 @@ def _build_attack_info_lines(card: dict, *, max_attacks: int = 4) -> list[str]:
             lines.append(f"• {attack_summary}: {info_text}")
         else:
             lines.append(f"• {attack_summary}")
+    if include_passives:
+        for passive in card.get("passives", []) or []:
+            passive_line = _format_passive_preview_line(passive)
+            if passive_line:
+                lines.append(passive_line)
     return lines
 
 
-def _add_attack_info_field(embed: discord.Embed, card: dict, *, field_name: str = "Fähigkeiten") -> None:
-    lines = _build_attack_info_lines(card)
+def _add_attack_info_field(
+    embed: discord.Embed,
+    card: dict,
+    *,
+    field_name: str = "Fähigkeiten",
+    include_passives: bool = False,
+) -> None:
+    lines = _build_attack_info_lines(card, include_passives=include_passives)
     if not lines:
         return
     value = "\n".join(lines)
@@ -3016,7 +3050,7 @@ def _build_mission_enemy_preview_embed(
     embed.add_field(name=game_ui_texts.PREVIEW_FIELD_RARITY, value=rarity, inline=True)
     if enemy.get("bild"):
         embed.set_image(url=str(enemy["bild"]))
-    _add_attack_info_field(embed, enemy)
+    _add_attack_info_field(embed, enemy, include_passives=True)
     if str(mode or "").strip().lower() == "boss":
         boss_key = str(enemy.get("mission_boss") or "").strip().lower()
         tactic_text = str(game_ui_texts.MISSION_BOSS_TACTICS.get(boss_key) or "").strip()
@@ -4500,20 +4534,26 @@ class BattleView(DurableView):
         defender_max_hp = self._max_hp_for(self.player1_id)
         standard_idx = _standard_attack_index(attacks)
 
+        attacker_hp = self._hp_for(0)
+        attacker_max_hp = self._max_hp_for(0)
         candidate_indices: list[int] = []
         for i, attack in enumerate(attacks[:4]):
             if self.special_lock_next_turn.get(0, 0) > 0 and i != standard_idx:
                 continue
             if i == standard_idx and _find_active_effect(self.active_effects, 0, "standard_lock"):
                 continue
+            if not _attack_allowed_at_self_hp(attack, attacker_hp, attacker_max_hp):
+                continue
             if not self.is_attack_on_cooldown(0, i):
                 candidate_indices.append(i)
 
         if not candidate_indices:
-            for i, _attack in enumerate(attacks[:4]):
+            for i, attack in enumerate(attacks[:4]):
                 if self.special_lock_next_turn.get(0, 0) > 0 and i != standard_idx:
                     continue
                 if i == standard_idx and _find_active_effect(self.active_effects, 0, "standard_lock"):
+                    continue
+                if not _attack_allowed_at_self_hp(attack, attacker_hp, attacker_max_hp):
                     continue
                 candidate_indices.append(i)
 
@@ -5113,13 +5153,16 @@ class BattleView(DurableView):
                         is_critical = False
                         _consume_force_min_damage(self.active_effects, self.current_turn)
                     self._append_multi_hit_roll_event(effect_events)
-                    if defender_has_stealth and not guaranteed_hit and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
+                    if (
+                        defender_has_stealth
+                        and actual_damage > 0
+                        and not guaranteed_hit
+                        and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable"))
+                    ):
                         actual_damage = 0
                         is_critical = False
                         attack_hits_enemy = False
                         miss_reason = "durch Tarnung"
-                        self.consume_stealth(defender_id)
-                    elif defender_has_stealth and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
                         self.consume_stealth(defender_id)
                 # Confusion verbraucht und UI-Icon entfernen
                 self.consume_confusion_if_any(self.current_turn)
@@ -5138,13 +5181,16 @@ class BattleView(DurableView):
                     is_critical = False
                     _consume_force_min_damage(self.active_effects, self.current_turn)
                 self._append_multi_hit_roll_event(effect_events)
-                if defender_has_stealth and not guaranteed_hit and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
+                if (
+                    defender_has_stealth
+                    and actual_damage > 0
+                    and not guaranteed_hit
+                    and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable"))
+                ):
                     actual_damage = 0
                     is_critical = False
                     attack_hits_enemy = False
                     miss_reason = "durch Tarnung"
-                    self.consume_stealth(defender_id)
-                elif defender_has_stealth and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
                     self.consume_stealth(defender_id)
 
             if attack_hits_enemy and actual_damage > 0:
@@ -6176,13 +6222,16 @@ class BattleView(DurableView):
                         guaranteed_hit,
                     )
                     self._append_multi_hit_roll_event(effect_events)
-                    if defender_has_stealth and not guaranteed_hit and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
+                    if (
+                        defender_has_stealth
+                        and actual_damage > 0
+                        and not guaranteed_hit
+                        and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable"))
+                    ):
                         actual_damage = 0
                         is_critical = False
                         bot_hits_enemy = False
                         miss_reason = "durch Tarnung"
-                        self.consume_stealth(self.player1_id)
-                    elif defender_has_stealth and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
                         self.consume_stealth(self.player1_id)
                 # Confusion verbrauchen + UI Icon entfernen
                 try:
@@ -6201,13 +6250,16 @@ class BattleView(DurableView):
                     guaranteed_hit,
                 )
                 self._append_multi_hit_roll_event(effect_events)
-                if defender_has_stealth and not guaranteed_hit and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
+                if (
+                    defender_has_stealth
+                    and actual_damage > 0
+                    and not guaranteed_hit
+                    and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable"))
+                ):
                     actual_damage = 0
                     is_critical = False
                     bot_hits_enemy = False
                     miss_reason = "durch Tarnung"
-                    self.consume_stealth(self.player1_id)
-                elif defender_has_stealth and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
                     self.consume_stealth(self.player1_id)
 
             if bot_hits_enemy and actual_damage > 0:
@@ -8585,6 +8637,17 @@ def _apply_item_media(embed: discord.Embed, item_id: str, *, image: bool = False
         embed.set_image(url=image_url)
     if thumbnail and thumbnail_url:
         embed.set_thumbnail(url=thumbnail_url)
+
+
+def _build_units_collection_field_value(units: int) -> str | None:
+    if units <= 0:
+        return None
+    revive_cost, _ = _unit_boss_revive_config()
+    lines = [f"Anzahl: {units}x"]
+    if units >= revive_cost:
+        lines.append(f"Aktuell: {units}")
+        lines.append(f"Danach: {max(0, units - revive_cost)}")
+    return "\n".join(lines)
 
 
 def _unit_boss_revive_config() -> tuple[int, str]:
@@ -11383,7 +11446,7 @@ class MissionBattleView(DurableView):
             embed.set_image(url=str(self.bot_card["bild"]))
         if self.player_card.get("bild"):
             embed.set_thumbnail(url=str(self.player_card["bild"]))
-        _add_attack_info_field(embed, self.bot_card)
+        _add_attack_info_field(embed, self.bot_card, include_passives=True)
         return embed
 
     async def _log_mission_attack_event(
@@ -12623,13 +12686,16 @@ class MissionBattleView(DurableView):
                         guaranteed_hit,
                     )
                     self._append_multi_hit_roll_event(effect_events)
-                    if defender_has_stealth and not guaranteed_hit and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
+                    if (
+                        defender_has_stealth
+                        and actual_damage > 0
+                        and not guaranteed_hit
+                        and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable"))
+                    ):
                         actual_damage = 0
                         is_critical = False
                         hits_enemy = False
                         player_miss_reason = "durch Tarnung"
-                        self.consume_stealth(0)
-                    elif defender_has_stealth and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
                         self.consume_stealth(0)
                 # consume confusion + clear UI icon
                 try:
@@ -12647,13 +12713,16 @@ class MissionBattleView(DurableView):
                     guaranteed_hit,
                 )
                 self._append_multi_hit_roll_event(effect_events)
-                if defender_has_stealth and not guaranteed_hit and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
+                if (
+                    defender_has_stealth
+                    and actual_damage > 0
+                    and not guaranteed_hit
+                    and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable"))
+                ):
                     actual_damage = 0
                     is_critical = False
                     hits_enemy = False
                     player_miss_reason = "durch Tarnung"
-                    self.consume_stealth(0)
-                elif defender_has_stealth and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
                     self.consume_stealth(0)
 
             if hits_enemy and actual_damage > 0:
@@ -13225,8 +13294,12 @@ class MissionBattleView(DurableView):
         available_attacks = []
         attack_damages = []
         attack_scores = []
+        bot_hp_gate = self._hp_for(0)
+        bot_max_hp_gate = self._max_hp_for(0)
         for i, atk in enumerate(bot_attacks[:4]):
             if self.special_lock_next_turn.get(0, 0) > 0 and i != standard_idx:
+                continue
+            if not _attack_allowed_at_self_hp(atk, bot_hp_gate, bot_max_hp_gate):
                 continue
             if not self.is_attack_on_cooldown_bot(i):
                 if atk.get("requires_reload") and self.is_reload_needed(0, i):
@@ -13398,13 +13471,16 @@ class MissionBattleView(DurableView):
                             guaranteed_hit,
                         )
                         self._append_multi_hit_roll_event(bot_effect_events)
-                        if defender_has_stealth and not guaranteed_hit and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
+                        if (
+                        defender_has_stealth
+                        and actual_damage > 0
+                        and not guaranteed_hit
+                        and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable"))
+                    ):
                             actual_damage = 0
                             is_critical = False
                             bot_hits_enemy = False
                             miss_reason = "durch Tarnung"
-                            self.consume_stealth(self.user_id)
-                        elif defender_has_stealth and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
                             self.consume_stealth(self.user_id)
                     # Confusion verbraucht
                     self.confused_next_turn[0] = False
@@ -13418,13 +13494,16 @@ class MissionBattleView(DurableView):
                         guaranteed_hit,
                     )
                     self._append_multi_hit_roll_event(bot_effect_events)
-                    if defender_has_stealth and not guaranteed_hit and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
+                    if (
+                        defender_has_stealth
+                        and actual_damage > 0
+                        and not guaranteed_hit
+                        and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable"))
+                    ):
                         actual_damage = 0
                         is_critical = False
                         bot_hits_enemy = False
                         miss_reason = "durch Tarnung"
-                        self.consume_stealth(self.user_id)
-                    elif defender_has_stealth and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
                         self.consume_stealth(self.user_id)
 
             if bot_hits_enemy and actual_damage > 0:
@@ -15620,6 +15699,7 @@ async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_na
     user_karten = await get_user_karten(user_id)
     grouped_cards = _group_owned_cards_for_current_mode(user_karten)
     infinitydust = await get_infinitydust(user_id)
+    units = await get_units(user_id)
     if not user_karten and infinitydust == 0:
         await _send_with_visibility(interaction, visibility_key, content=f"❌ {mention} hat noch keine Karten in seiner Sammlung.")
         return
@@ -15630,6 +15710,13 @@ async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_na
     if infinitydust > 0:
         embed.add_field(name="💎 Infinitydust", value=f"Anzahl: {infinitydust}x", inline=True)
         _apply_item_media(embed, "infinitydust", thumbnail=True)
+    units_value = _build_units_collection_field_value(units)
+    if units_value:
+        unit_item = get_item_by_id("unit") or {}
+        unit_label = str(unit_item.get("display_name") or "Unit").strip() or "Unit"
+        embed.add_field(name=f"🪙 {unit_label}", value=units_value, inline=True)
+        if infinitydust <= 0:
+            _apply_item_media(embed, "unit", thumbnail=True)
     for group in grouped_cards:
         base_name = str(group.get("base_name") or "")
         karte = await get_karte_by_name(base_name)

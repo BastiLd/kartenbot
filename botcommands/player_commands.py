@@ -244,6 +244,7 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
         user_id = interaction.user.id
         user_karten = await module.get_user_karten(user_id)
         infinitydust = await module.get_infinitydust(user_id)
+        units = await module.get_units(user_id)
 
         if not user_karten and infinitydust == 0:
             await module._send_ephemeral(
@@ -264,6 +265,15 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
             dust_thumbnail_url = str((dust_item or {}).get("thumbnail") or "").strip()
             if dust_thumbnail_url:
                 embed.set_thumbnail(url=dust_thumbnail_url)
+
+        units_value = module._build_units_collection_field_value(units)
+        if units_value:
+            unit_item = module.get_item_by_id("unit") or {}
+            unit_label = str(unit_item.get("display_name") or "Unit").strip() or "Unit"
+            embed.add_field(name=f"\U0001FA99 {unit_label}", value=units_value, inline=True)
+            unit_thumbnail_url = str(unit_item.get("thumbnail") or unit_item.get("bild") or "").strip()
+            if unit_thumbnail_url and infinitydust <= 0:
+                embed.set_thumbnail(url=unit_thumbnail_url)
 
         for group in grouped_cards[:10]:
             base_name = str(group.get("base_name") or "")

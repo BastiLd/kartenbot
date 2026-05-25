@@ -1013,13 +1013,16 @@ class CombatRunner:
                         is_critical = False
                         bot_module._consume_force_min_damage(self.active_effects, actor_id)
                     self._append_multi_hit_roll_event(effect_events)
-                    if defender_has_stealth and not guaranteed_hit and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
+                    if (
+                        defender_has_stealth
+                        and actual_damage > 0
+                        and not guaranteed_hit
+                        and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable"))
+                    ):
                         actual_damage = 0
                         is_critical = False
                         attack_hits_enemy = False
                         miss_reason = "durch Tarnung"
-                        self.consume_stealth(defender_id)
-                    elif defender_has_stealth and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
                         self.consume_stealth(defender_id)
                 self.consume_confusion_if_any(actor_id)
             else:
@@ -1029,13 +1032,16 @@ class CombatRunner:
                     is_critical = False
                     bot_module._consume_force_min_damage(self.active_effects, actor_id)
                 self._append_multi_hit_roll_event(effect_events)
-                if defender_has_stealth and not guaranteed_hit and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
+                if (
+                    defender_has_stealth
+                    and actual_damage > 0
+                    and not guaranteed_hit
+                    and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable"))
+                ):
                     actual_damage = 0
                     is_critical = False
                     attack_hits_enemy = False
                     miss_reason = "durch Tarnung"
-                    self.consume_stealth(defender_id)
-                elif defender_has_stealth and not bool(attack.get("ignore_defense") or attack.get("ignore_shield") or attack.get("unblockable")):
                     self.consume_stealth(defender_id)
 
             if attack_hits_enemy and actual_damage > 0:

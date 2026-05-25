@@ -2426,6 +2426,34 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         await self._execute_attack_without_buffs(view, acting_user_id=2, attack_index=3, interaction_message=message)
         self.assertEqual(view.player1_hp, hp_before_hit - 10)
 
+    async def test_stealth_not_consumed_by_airborne_phase_one(self) -> None:
+        marvel = copy.deepcopy(_find_card("Captain Marvel"))
+        widow = copy.deepcopy(_find_card("Black Widow"))
+        marvel["hp"] = 140
+        widow["hp"] = 140
+
+        view = BattleView(widow, marvel, 1, 2, None)
+        view.grant_stealth(1)
+        view.current_turn = 2
+        message = _DummyMessage()
+
+        await self._execute_attack_without_buffs(view, acting_user_id=2, attack_index=3, interaction_message=message)
+        self.assertTrue(view.has_stealth(1))
+
+    async def test_stealth_not_consumed_by_zero_damage_buff(self) -> None:
+        cap = copy.deepcopy(_find_card("Captain America"))
+        widow = copy.deepcopy(_find_card("Black Widow"))
+        cap["hp"] = 140
+        widow["hp"] = 140
+
+        view = BattleView(widow, cap, 1, 2, None)
+        view.grant_stealth(1)
+        view.current_turn = 2
+        message = _DummyMessage()
+
+        await self._execute_attack_without_buffs(view, acting_user_id=2, attack_index=2, interaction_message=message)
+        self.assertTrue(view.has_stealth(1))
+
     async def test_real_flow_no_unfair_block_when_tarnung_followup_misses(self) -> None:
         widow = copy.deepcopy(_find_card("Black Widow"))
         iron = copy.deepcopy(_find_card("Iron-Man"))
