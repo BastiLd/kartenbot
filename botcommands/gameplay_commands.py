@@ -291,6 +291,17 @@ def register_gameplay_commands(bot, api: GameplayFacade) -> dict[str, object]:
             await api._maybe_delete_fight_thread(fight_thread.id if fight_thread else None, thread_created)
             return
         await api.update_fight_request_message(request_id, message.id, getattr(message.channel, "id", None))
+        # Req. 13.1: AFK-Timer für die offene Challenge anlegen (4h -> Acceptor pingen).
+        try:
+            from services import afk_tracker
+            await afk_tracker.create_challenge_state(
+                battle_id=f"challenge:{request_id}",
+                thread_id=fight_thread.id,
+                challenger_id=interaction.user.id,
+                acceptor_id=challenged.id,
+            )
+        except Exception:
+            logging.exception("Failed to create challenge AFK state")
         await interaction.followup.send(f"Warte auf Antwort von {challenged.mention}...", ephemeral=True)
 
     return {

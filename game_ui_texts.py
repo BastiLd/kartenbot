@@ -117,6 +117,19 @@ MAINTENANCE_CONFIRM_OFF_TEXT = (
 )
 MAINTENANCE_CONFIRM_BTN_YES = "Bestätigen"
 MAINTENANCE_CONFIRM_BTN_NO = "Abbrechen"
+
+# Mode-Bestätigung mit Statusanzeige (Req. 10). Beispiel:
+#   "Maintenance ist aktuell **AKTIV** → wird **DEAKTIVIERT**"
+MODE_CONFIRM_TEMPLATE = "{mode_name} ist aktuell **{current}** → wird **{transition}**"
+
+
+def render_mode_confirm(mode_name: str, is_active: bool) -> str:
+    """Baut die Status-Übergangszeile für den Mode-Confirm-Dialog (Req. 10.1/10.2)."""
+    current = "AKTIV" if is_active else "NICHT AKTIV"
+    transition = "DEAKTIVIERT" if is_active else "AKTIVIERT"
+    return MODE_CONFIRM_TEMPLATE.format(
+        mode_name=mode_name, current=current, transition=transition
+    )
 MAINTENANCE_ENABLED = "Wartungsmodus aktiviert."
 MAINTENANCE_DISABLED = "Wartungsmodus deaktiviert."
 MAINTENANCE_CANCELLED = "Änderung am Wartungsmodus abgebrochen."

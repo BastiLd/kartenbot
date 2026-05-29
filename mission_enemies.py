@@ -117,14 +117,14 @@ OPERATION_BROKEN_TIMELINE_ENCOUNTERS: list[dict[str, Any]] = [
         "hp": 185,
         "mission_boss": "maestro",
         "attacks": [
-            {"name": "Tyrannen-Schlag", "damage": [20, 20], "is_standard_attack": True, "info": "Standardangriff."},
+            {"name": "Tyrannen-Schlag", "damage": [14, 20], "is_standard_attack": True, "info": "Standardangriff."},
             {
                 "name": "Trophäensaal-Raub",
                 "damage": [0, 0],
                 "cooldown_turns": 4,
                 "bot_priority": 35,
-                "info": "Zufällig: Schild blockt 20 oder Tyrannen-Schlag verursacht +15 Schaden.",
-                "effects": [{"type": "maestro_artifact", "target": "self", "chance": 1.0, "bonus_attack_name": "Tyrannen-Schlag", "amount": 15, "uses": 1}],
+                "info": "Zufällig: Schild blockt 20 oder Tyrannen-Schlag verursacht +10 Schaden.",
+                "effects": [{"type": "maestro_artifact", "target": "self", "chance": 1.0, "bonus_attack_name": "Tyrannen-Schlag", "amount": 10, "uses": 1}],
             },
             {
                 "name": "Maestros Hohn",
@@ -134,7 +134,7 @@ OPERATION_BROKEN_TIMELINE_ENCOUNTERS: list[dict[str, Any]] = [
                 "info": "Reduziert den nächsten Spielerangriff auf 0 Schaden.",
                 "effects": [{"type": "next_attack_damage_override", "target": "enemy", "damage": 0, "uses": 1, "chance": 1.0}],
             },
-            {"name": "Gamma-Eruption", "damage": [40, 40], "cooldown_turns": 6, "info": "40 Schaden."},
+            {"name": "Gamma-Eruption", "damage": [26, 35], "cooldown_turns": 6, "info": "26-35 Schaden."},
         ],
     },
 ]
@@ -212,10 +212,12 @@ OPERATION_TECHNISCHER_KOLLAPS_ENCOUNTERS: list[dict[str, Any]] = [
         "beschreibung": "Letzte Verteidigung vor M.O.D.O.K.",
         "bild": "https://i.imgur.com/ASXNdbC.png",
         "seltenheit": "Mission",
-        "hp": 120,
+        # v2.3.0 (2026-05-29): Lakei-3-Abschwächung ~15 % (HP 120->102) + Damage-Ranges
+        # gemäß Req. 17.2/17.3 (Rammstoß 14-18, Kanone 20-24).
+        "hp": 102,
         "attacks": [
-            {"name": "Rammstoß", "damage": [18, 18], "is_standard_attack": True, "info": "Standardangriff."},
-            {"name": "Gatling-Kanone", "damage": [28, 28], "cooldown_turns": 4, "info": "28 Schaden."},
+            {"name": "Rammstoß", "damage": [14, 18], "is_standard_attack": True, "info": "Standardangriff."},
+            {"name": "Gatling-Kanone", "damage": [20, 24], "cooldown_turns": 4, "info": "20-24 Schaden."},
             {
                 "name": "Energieschild",
                 "damage": [0, 0],
@@ -241,22 +243,25 @@ OPERATION_TECHNISCHER_KOLLAPS_ENCOUNTERS: list[dict[str, Any]] = [
         "hp": 190,
         "mission_boss": "modok",
         "attacks": [
-            {"name": "Gedankenstrahl", "damage": [20, 24], "is_standard_attack": True, "info": "Standardangriff."},
+            {"name": "Gedankenstrahl", "damage": [12, 20], "is_standard_attack": True, "info": "Standardangriff."},
             {
                 "name": "System-Hack",
                 "damage": [15, 15],
                 "cooldown_turns": 4,
-                "info": "15 Schaden. Spezialangriffe des Spielers nächste Runde gesperrt.",
+                "info": "15 Schaden. Alle Cooldown-Fähigkeiten des Spielers nächste Runde gesperrt.",
                 "effects": [{"type": "special_lock", "target": "enemy", "turns": 1, "chance": 1.0}],
             },
             {
                 "name": "Berechnete Heilung",
                 "damage": [0, 0],
                 "cooldown_turns": 5,
-                "heal": [30, 50],
-                "info": "Heilt 30-50 HP.",
+                "heal": [15, 15],
+                # v2.3.0 (Req. 17.6/17.7): 15 HP normal, 30 HP wenn Spieler in der Vorrunde
+                # eine Cooldown-Fähigkeit eingesetzt hat.
+                "heal_if_player_used_cd_last_round": 30,
+                "info": "Heilt 15 HP (30 HP, wenn der Spieler zuletzt eine Spezialfähigkeit nutzte).",
             },
-            {"name": "Gehirn-Explosion", "damage": [40, 40], "cooldown_turns": 6, "info": "40 Schaden."},
+            {"name": "Gehirn-Explosion", "damage": [25, 25], "cooldown_turns": 6, "info": "25 Schaden."},
         ],
     },
 ]
@@ -324,9 +329,11 @@ OPERATION_GRUENER_TERROR_ENCOUNTERS: list[dict[str, Any]] = [
         "beschreibung": "Schwere Luftunterstützung für den Boss.",
         "bild": "https://i.imgur.com/ne9mFFp.png",
         "seltenheit": "Mission",
-        "hp": 115,
+        # v2.3.0 (2026-05-29): Lakei-3-Abschwächung ~15 % (HP 115->98) + MG-Sperrfeuer
+        # Range 14-18 gemäß Req. 18.2.
+        "hp": 98,
         "attacks": [
-            {"name": "MG-Sperrfeuer", "damage": [18, 18], "is_standard_attack": True, "info": "Standardangriff."},
+            {"name": "MG-Sperrfeuer", "damage": [14, 18], "is_standard_attack": True, "info": "Standardangriff."},
             {
                 "name": "Turbinen-Schock",
                 "damage": [15, 15],
@@ -352,13 +359,13 @@ OPERATION_GRUENER_TERROR_ENCOUNTERS: list[dict[str, Any]] = [
         "hp": 190,
         "mission_boss": "green_goblin",
         "attacks": [
-            {"name": "Goblin-Handschuh", "damage": [22, 22], "is_standard_attack": True, "info": "Standardangriff."},
+            {"name": "Goblin-Handschuh", "damage": [14, 18], "is_standard_attack": True, "info": "Standardangriff."},
             {
                 "name": "Gleiter-Ramme",
                 "damage": [20, 20],
                 "cooldown_turns": 4,
-                "info": "20 Schaden und nächster Spieler-Spezialangriff verursacht 10 Rückstoß.",
-                "effects": [{"type": "counter_flat", "target": "enemy", "damage": 10, "uses": 1, "chance": 1.0}],
+                "info": "20 Schaden und nächster Spieler-Spezialangriff verursacht 6 Rückstoß.",
+                "effects": [{"type": "counter_flat", "target": "enemy", "damage": 6, "uses": 1, "chance": 1.0}],
             },
             {
                 "name": "Halluzinogenes Gas",
@@ -369,10 +376,10 @@ OPERATION_GRUENER_TERROR_ENCOUNTERS: list[dict[str, Any]] = [
             },
             {
                 "name": "Kürbisbomben-Teppich",
-                "damage": [0, 36],
+                "damage": [0, 24],
                 "cooldown_turns": 6,
-                "multi_hit": {"hits": 3, "hit_chance": 1.0, "per_hit_damage": [12, 12]},
-                "info": "3 Treffer mit je 12 Schaden.",
+                "multi_hit": {"hits": 3, "hit_chance": 1.0, "per_hit_damage": [8, 8]},
+                "info": "3 Treffer mit je 8 Schaden.",
             },
         ],
     },
@@ -482,7 +489,7 @@ OPERATION_GOLDENER_KAEFIG_ENCOUNTERS: list[dict[str, Any]] = [
         "hp": 215,
         "mission_boss": "kingpin",
         "attacks": [
-            {"name": "Stockhieb", "damage": [24, 24], "is_standard_attack": True, "info": "Standardangriff."},
+            {"name": "Stockhieb", "damage": [13, 17], "is_standard_attack": True, "info": "Standardangriff."},
             {
                 "name": "Sumo-Ansturm",
                 "damage": [22, 22],
@@ -494,16 +501,18 @@ OPERATION_GOLDENER_KAEFIG_ENCOUNTERS: list[dict[str, Any]] = [
                 "name": "Bestechungs-Versuch",
                 "damage": [0, 0],
                 "cooldown_turns": 5,
-                "heal": [35, 60],
-                "info": "Heilt 60 HP, wenn der Spieler im Zug davor 0 Schaden gemacht hat. Sonst heilt der Angriff 35 HP.",
+                # v2.3.0 (Req. 19.3/19.4): 30 HP wenn Spieler in der Vorrunde 0 Schaden
+                # gemacht hat, sonst 35 HP. Heilung wird im Boss-Turn in bot.py berechnet.
+                "heal": [35, 35],
+                "info": "Heilt 30 HP, wenn der Spieler im Zug davor 0 Schaden gemacht hat. Sonst 35 HP.",
             },
             {
                 "name": "Zermalmender Griff",
-                "damage": [40, 60],
+                # v2.3.0 (Req. 19.6/19.7): 26 Schaden wenn Spieler >= 60 HP, sonst 38.
+                "damage": [38, 38],
                 "cooldown_turns": 6,
-                "conditional_enemy_hp_below_pct": 0.6,
-                "bonus_damage_if_condition": 20,
-                "info": "40 Schaden, gegen geschwächte Ziele deutlich mehr.",
+                "reduced_damage_if_player_hp_at_least": {"hp": 60, "damage": 26},
+                "info": "38 Schaden (26, wenn das Ziel noch 60 HP oder mehr hat).",
             },
         ],
     },
@@ -566,7 +575,8 @@ OPERATION_HEXENFEUER_ENCOUNTERS: list[dict[str, Any]] = [
         "beschreibung": "Runenmagier mit starkem Schutzschild.",
         "bild": "https://i.imgur.com/X7ltg61.png",
         "seltenheit": "Mission",
-        "hp": 115,
+        # v2.3.0 (2026-05-29): Lakei-3-Abschwächung ~15 % (HP 115->98).
+        "hp": 98,
         "attacks": [
             {"name": "Runen-Stab", "damage": [18, 18], "is_standard_attack": True, "info": "Standardangriff."},
             {
@@ -600,13 +610,13 @@ OPERATION_HEXENFEUER_ENCOUNTERS: list[dict[str, Any]] = [
         "hp": 185,
         "mission_boss": "agatha_harkness",
         "attacks": [
-            {"name": "Chaos-Energie-Ball", "damage": [22, 22], "is_standard_attack": True, "info": "Standardangriff."},
+            {"name": "Chaos-Energie-Ball", "damage": [11, 11], "is_standard_attack": True, "info": "Standardangriff."},
             {
                 "name": "Darkhold-Fluch",
-                "damage": [15, 15],
+                "damage": [10, 10],
                 "cooldown_turns": 4,
-                "info": "15 Schaden und nächste Heilung des Spielers wird aufgehoben.",
-                "effects": [{"type": "healing_block", "target": "enemy", "turns": 1, "chance": 1.0}],
+                "info": "10 Schaden und die nächste heilende Spielerfähigkeit heilt 0 HP.",
+                "effects": [{"type": "next_player_heal_negation", "target": "enemy", "turns": 1, "chance": 1.0}],
             },
             {
                 "name": "Lila Illusion",

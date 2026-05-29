@@ -4,6 +4,7 @@ import discord
 from discord import app_commands
 
 from botcore.facades import AdminFacade
+from services.card_grant import grant_cards_to_users
 
 
 def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
@@ -372,27 +373,41 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
                     )
                 return
 
-        # 4) Karten verteilen
-        per_user_added: dict[int, list[str]] = {user_id: [] for user_id in target_user_ids}
-        per_user_skipped: dict[int, list[str]] = {user_id: [] for user_id in target_user_ids}
-        for card_name in selected_card_names:
-            for user_id in target_user_ids:
-                was_added = await module.add_exact_card_variant_once(user_id, card_name)
-                if was_added:
-                    per_user_added[user_id].append(card_name)
-                else:
-                    per_user_skipped[user_id].append(card_name)
+        # 4) Karten verteilen — drei Buckets pro Nutzer:
+        #    added (Erfolg), skipped (bereits vorhanden), failed (Fehler / unbekannt)
+        summary = await grant_cards_to_users(
+            target_user_ids=target_user_ids,
+            card_names=selected_card_names,
+            add_card=module.add_exact_card_variant_once,
+            is_card_known=lambda name: module._card_by_name_local(name) is not None,
+        )
+        per_user_added: dict[int, list[str]] = {
+            user_id: summary.per_user_added(user_id) for user_id in target_user_ids
+        }
+        per_user_skipped: dict[int, list[str]] = {
+            user_id: summary.per_user_skipped(user_id) for user_id in target_user_ids
+        }
+        per_user_failed: dict[int, list[str]] = {
+            user_id: summary.per_user_failed(user_id) for user_id in target_user_ids
+        }
 
         # 5) Ergebnis-Embed (öffentlich gemäß visibility)
-        total_added = sum(len(v) for v in per_user_added.values())
-        total_skipped = sum(len(v) for v in per_user_skipped.values())
+        total_added = summary.total_added
+        total_skipped = summary.total_skipped
+        total_failed = summary.total_failed
+        if total_failed > 0:
+            embed_color = 0xE74C3C
+        elif total_added > 0:
+            embed_color = 0x2ECC71
+        else:
+            embed_color = 0xE67E22
         result_embed = discord.Embed(
             title="\U0001F381 Karten vergeben",
             description=(
                 f"{interaction.user.mention} hat **{len(selected_card_names)} Karte(n)** "
                 f"an **{len(target_user_ids)} Nutzer** verteilt."
             ),
-            color=0x2ECC71 if total_added > 0 else 0xE67E22,
+            color=embed_color,
         )
         result_lines: list[str] = []
         for user_id in target_user_ids:
@@ -400,11 +415,14 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
             mention = member.mention if member else f"<@{user_id}>"
             added_names = per_user_added.get(user_id, [])
             skipped_names = per_user_skipped.get(user_id, [])
+            failed_names = per_user_failed.get(user_id, [])
             parts: list[str] = []
             if added_names:
-                parts.append("\u2705 " + ", ".join(added_names))
+                parts.append("\u2705 hinzugef\u00fcgt: " + ", ".join(added_names))
             if skipped_names:
                 parts.append("\u26a0\ufe0f bereits vorhanden: " + ", ".join(skipped_names))
+            if failed_names:
+                parts.append("\u274c fehlgeschlagen: " + ", ".join(failed_names))
             line = f"{mention} \u2014 " + (" | ".join(parts) if parts else "_keine \u00c4nderung_")
             result_lines.append(line)
         # Discord field max 1024 chars
@@ -412,7 +430,10 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
         if len(joined_lines) > 4000:
             joined_lines = joined_lines[:3990] + "\n\u2026"
         result_embed.add_field(
-            name=f"\u00dcbersicht (\u2705 {total_added} \u00b7 \u26a0\ufe0f {total_skipped})",
+            name=(
+                f"\u00dcbersicht (\u2705 {total_added} \u00b7 "
+                f"\u26a0\ufe0f {total_skipped} \u00b7 \u274c {total_failed})"
+            ),
             value=joined_lines or "_keine_",
             inline=False,
         )

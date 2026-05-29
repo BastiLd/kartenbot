@@ -27,6 +27,9 @@ from botcommands import (
     register_player_commands,
 )
 from botcore.command_api import build_command_api
+from botcore.feature_config import boss_switch_enabled
+from services.mission_rewards import MissionRewardAccumulator, commit_on_mission_success
+from services import afk_tracker
 from botcore.facades import AdminFacade, GameplayFacade, PlayerFacade
 from botcore.bootstrap import BOT_START_TIME, build_bot, run_bot
 from botcore.interaction_utils import defer_interaction, edit_interaction_message, send_interaction_response
@@ -69,11 +72,13 @@ from mission_enemies import (
 from services.battle import (
     STATUS_CIRCLE_MAP,
     STATUS_PRIORITY_MAP,
+    _format_attack_label,
     _presence_to_color,
     build_battle_log_entry,
     calculate_damage,
     create_battle_embed,
     create_battle_log_embed,
+    render_boss_special_activation,
     resolve_multi_hit_damage,
     update_battle_log,
 )
@@ -155,6 +160,7 @@ from services.runtime_store import (
     upsert_durable_view,
 )
 from services.stats_export import build_stats_workbook
+from services.card_grant import grant_cards_to_users
 from services.user_data import (
     add_exact_card_variant_once,
     add_card_buff,
@@ -188,12 +194,12 @@ configure_logging()
 
 KATABUMP_MAX_INTERACTIONS_PER_MIN = 200
 KATABUMP_INTERACTION_WINDOW_SEC = 60
-DUST_MENU_AMOUNTS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 70, 100]
+DUST_MENU_AMOUNTS = [5, 10, 15, 20, 25, 30]
 FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.2.15"
+__version__ = "2.3.0"
 
 
 class CardCatalog:
@@ -2413,6 +2419,13 @@ def _build_attack_info_lines(card: dict, *, max_attacks: int = 4, include_passiv
     attacks = card.get("attacks", [])
     for attack in attacks[:max_attacks]:
         _label, _style, attack_summary = _attack_display_parts(attack)
+        # Req. 14.1/14.4: In der Fähigkeiten-Vorschau das Cooldown-Suffix „(<n>CD)"
+        # an verfügbare Fähigkeiten mit konfiguriertem Cooldown anhängen.
+        cd_suffix = _format_attack_label(attack, is_on_cooldown=False)
+        if isinstance(attack, dict) and cd_suffix.endswith("CD)"):
+            suffix = cd_suffix[len(str(attack.get("name") or "")):].strip()
+            if suffix:
+                attack_summary = f"{attack_summary} {suffix}"
         info_text = str(attack.get("info") or "").strip()
         if info_text:
             lines.append(f"• {attack_summary}: {info_text}")
@@ -2679,6 +2692,30 @@ async def on_ready():
         await resend_pending_requests()
     except Exception:
         logging.exception("Failed to resend pending requests on startup")
+    # Req. 13: AFK-Ticker starten (idempotent; nur einmal pro Prozess).
+    global _afk_loop_task
+    if _afk_loop_task is None or _afk_loop_task.done():
+        _afk_loop_task = asyncio.create_task(afk_tracker_loop())
+
+
+_afk_loop_task: "asyncio.Task | None" = None
+
+
+async def afk_tracker_loop() -> None:
+    """Lädt alle 5 Minuten alle aktiven AFK-Zustände und ruft ``tick`` auf (Req. 13.1-13.5)."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            states = await afk_tracker.restore_all_states()
+            now = int(time.time())
+            for state in states:
+                try:
+                    await afk_tracker.tick(bot, state, now)
+                except Exception:
+                    logging.exception("AFK-Tick fehlgeschlagen (battle=%s)", getattr(state, "battle_id", "?"))
+        except Exception:
+            logging.exception("AFK-Tracker-Loop-Durchlauf fehlgeschlagen")
+        await asyncio.sleep(300)
 
 
 @bot.event
@@ -3240,13 +3277,16 @@ class MissionView(RestrictedView):
             await interaction.response.send_message(embed=embed, view=MissionView(self.user_id))
         else:
             # Karte wurde zu Infinitydust umgewandelt
+            # Req. 7.3/7.8: bereits besessene Karte gibt zusätzlich +1 Infinitydust (sofort).
+            await add_infinitydust(self.user_id, 1)
             embed = discord.Embed(
                 title="💎 Mission abgeschlossen - Infinitydust!",
                 description=f"Du hattest **{karte['name']}** bereits!",
                 color=_card_rarity_color(karte),
             )
             embed.add_field(name="Umwandlung", value="Die Karte wurde zu **Infinitydust** umgewandelt!", inline=False)
-            _apply_item_media(embed, "infinitydust", image=True, thumbnail=True)
+            # Req. 8.2/8.3: Dust-Bild ausschließlich als Thumbnail, nie als großes Bild.
+            _apply_item_media(embed, "infinitydust", image=False, thumbnail=True)
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # View für HP-Button (über der Karte)
@@ -7897,13 +7937,12 @@ def _mission_success_embed(reward_card: dict[str, Any], total_waves: int, *, is_
         value=game_ui_texts.MISSION_SUCCESS_DUST_FIELD_VALUE.format(card=card_name),
         inline=False,
     )
+    # Req. 8.2/8.3: Bei Dust-Belohnung (Karte bereits besessen) erscheint das Dust-Bild
+    # ausschließlich als Thumbnail; kein großes Bild.
     dust_image_url, dust_thumbnail_url = _item_media_urls("infinitydust")
-    if dust_image_url:
-        embed.set_image(url=dust_image_url)
-    elif reward_card.get("bild"):
-        embed.set_image(url=str(reward_card["bild"]))
-    if dust_thumbnail_url:
-        embed.set_thumbnail(url=dust_thumbnail_url)
+    thumb = dust_thumbnail_url or dust_image_url
+    if thumb:
+        embed.set_thumbnail(url=thumb)
     _add_attack_info_field(embed, reward_card)
     return embed
 
@@ -8078,6 +8117,11 @@ class ChallengeResponseView(DurableView):
         if not await claim_fight_request(self.request_id, "accepted"):
             await interaction.response.send_message("❌ Diese Kampf-Anfrage ist nicht mehr offen.", ephemeral=True)
             return
+        # Req. 13: Challenge-AFK-Timer endet mit der Annahme.
+        try:
+            await afk_tracker.delete_state(f"challenge:{self.request_id}")
+        except Exception:
+            logging.exception("Failed to delete challenge AFK state on accept")
         await interaction.response.defer()
         thread: discord.Thread | None = None
         try:
@@ -8126,6 +8170,10 @@ class ChallengeResponseView(DurableView):
         if not await claim_fight_request(self.request_id, "declined"):
             await interaction.response.send_message("❌ Diese Kampf-Anfrage ist nicht mehr offen.", ephemeral=True)
             return
+        try:
+            await afk_tracker.delete_state(f"challenge:{self.request_id}")
+        except Exception:
+            logging.exception("Failed to delete challenge AFK state on decline")
         await interaction.response.send_message("Kampf abgelehnt.", ephemeral=True)
         try:
             await _safe_send_channel(
@@ -8135,6 +8183,35 @@ class ChallengeResponseView(DurableView):
             )
         except Exception:
             logging.exception("Unexpected error")
+        await _maybe_delete_fight_thread(self.thread_id, self.thread_created)
+        self.stop()
+
+    @ui.button(label="Abbrechen", style=discord.ButtonStyle.danger, custom_id="fight_challenge:cancel")
+    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
+        # Req. 12.1/12.3: sowohl Herausforderer als auch Herausgeforderter dürfen abbrechen.
+        if interaction.user.id not in (self.challenger_id, self.challenged_id):
+            await interaction.response.send_message("Nur Herausforderer oder Herausgeforderter können abbrechen!", ephemeral=True)
+            return
+        if not await claim_fight_request(self.request_id, "cancelled"):
+            await interaction.response.send_message("❌ Diese Kampf-Anfrage ist nicht mehr offen.", ephemeral=True)
+            return
+        # Req. 12.5: AFK-Pings sofort stoppen, bevor weitere Cleanup-Verarbeitung läuft.
+        try:
+            await afk_tracker.delete_state(f"challenge:{self.request_id}")
+        except Exception:
+            logging.exception("Failed to delete AFK state on challenge cancel")
+        await interaction.response.send_message("Challenge abgebrochen.", ephemeral=True)
+        try:
+            await _safe_send_channel(
+                interaction,
+                interaction.channel,
+                content=(
+                    f"<@{self.challenger_id}> <@{self.challenged_id}> — "
+                    f"die Challenge wurde von {interaction.user.mention} abgebrochen."
+                ),
+            )
+        except Exception:
+            logging.exception("Failed to notify challenge cancellation")
         await _maybe_delete_fight_thread(self.thread_id, self.thread_created)
         self.stop()
 
@@ -8944,6 +9021,10 @@ class FuseCancelButton(ui.Button):
         )
 
 
+# DEPRECATED v2.3.0: FuseCardActionSelect is no longer added to the rendered
+# FuseCardSelectView (the top action menu was removed in /verbessern). The class
+# is kept defined so existing tests in tests/test_combat_rules.py that import it
+# continue to load. Do not add it back to the active UI.
 class FuseCardActionSelect(ui.Select):
     def __init__(self, parent_view: "FuseCardSelectView"):
         self.parent_view = parent_view
@@ -8974,6 +9055,10 @@ class CardSelect(ui.Select):
         await self.parent_view.handle_card_selection(interaction, str(self.values[0] or ""))
 
 
+# DEPRECATED v2.3.0: FuseCardSearchModal is no longer reachable from the
+# rendered /verbessern UI because the top action menu (which contained the
+# "Suchen" entry) was removed. Kept defined for backward compatibility with
+# existing tests that instantiate it directly.
 class FuseCardSearchModal(FuseFlowModal):
     def __init__(
         self,
@@ -9047,7 +9132,7 @@ class FuseCardSelectView(FuseFlowView):
         dust_amount: int,
         user_karten: list[tuple[str, int]],
         *,
-        mode: str = "root",
+        mode: str = "browse",
         grouped_cards: list[dict[str, Any]] | None = None,
         search_query: str | None = None,
         page: int = 0,
@@ -9055,7 +9140,13 @@ class FuseCardSelectView(FuseFlowView):
         super().__init__(requester_id, timeout=600)
         self.dust_amount = int(dust_amount)
         self.user_karten = list(user_karten)
-        self.mode = str(mode or "root")
+        # v2.3.0: the top action menu was removed; the legacy "root" mode is
+        # aliased to "browse" so older call sites and tests keep working
+        # without forcing them to pass mode="browse" explicitly.
+        normalized_mode = str(mode or "browse")
+        if normalized_mode == "root":
+            normalized_mode = "browse"
+        self.mode = normalized_mode
         self.search_query = str(search_query or "").strip()
         self.grouped_cards = list(grouped_cards) if grouped_cards is not None else _group_owned_cards_for_current_mode(list(self.user_karten))
         self.page = max(0, int(page))
@@ -9161,11 +9252,15 @@ class FuseCardSelectView(FuseFlowView):
 
     def _render(self) -> None:
         self.clear_items()
+        # v2.3.0: action_select is intentionally NOT added to the view. The top
+        # action menu ("Suchen" / "Alle durchsuchen" / "Zurück") was removed
+        # from /verbessern; only the card list and pagination remain. We still
+        # refresh its options/placeholder so existing tests that read
+        # view.action_select.options keep seeing up-to-date values.
         self.action_select.options = self.action_options()
         self.action_select.placeholder = self.action_placeholder()
         self.card_select.options = self.card_options()
         self.card_select.placeholder = self.card_placeholder()
-        self.add_item(self.action_select)
         self.add_item(self.card_select)
         if self.mode in {"browse", "search"} and self._page_count() > 1:
             self.prev_button.disabled = self.page <= 0
@@ -9454,6 +9549,604 @@ class BuffTypeSelect(ui.Select):
         if self.view is not None:
             self.view.stop()
         await edit_interaction_message(interaction, embed=embed, view=None)
+
+
+class FuseStatSelectView(FuseFlowView):
+    """Stat-Auswahl im /verbessern-Flow (Schritt B nach Karten-Auswahl).
+
+    Zeigt Optionen für HP und jede aufwertungsfähige Attacke. Optionen werden
+    ausgeblendet, wenn der Stat bereits am Cap ist. Bei keiner möglichen
+    Aufwertung wird ein Hinweis angezeigt.
+
+    Validates: Requirements 6.5, 6.12
+    """
+
+    def __init__(self, requester_id, selected_card, karte_data, user_buffs):
+        super().__init__(requester_id, timeout=600)
+        self.selected_card = selected_card
+        self.karte_data = karte_data
+        self.user_buffs = list(user_buffs)
+        self.stat_select = FuseStatSelect(selected_card, karte_data, list(user_buffs))
+        self.add_item(self.stat_select)
+        self.add_item(FuseCancelButton())
+
+    def has_upgradeable_stats(self) -> bool:
+        return self._upgradeable_count() > 0
+
+    def _upgradeable_count(self) -> int:
+        # Counts HP-upgrade option + each non-capped damage upgrade option.
+        # Mirrors the option-building logic in `FuseStatSelect.__init__` but
+        # without instantiating the Select itself.
+        count = 0
+        total_health, damage_map = battle_state.summarize_card_buffs(self.user_buffs)
+        base_hp = int(self.karte_data.get("hp", 100) or 100)
+        current_hp = base_hp + total_health
+        if current_hp < FUSE_HP_CAP:
+            count += 1
+        attacks = self.karte_data.get("attacks", [])
+        for i, attack in enumerate(attacks[:4]):
+            if not _attack_is_damage_upgradeable(attack):
+                continue
+            current_bonus = damage_map.get(i + 1, 0)
+            if current_bonus >= _attack_upgrade_max_bonus(attack):
+                continue
+            _min_dmg, max_dmg = _attack_total_damage_range(
+                attack, max_only_bonus=current_bonus, flat_bonus=0
+            )
+            if max_dmg + _attack_upgrade_step(attack) > MAX_ATTACK_DAMAGE_PER_HIT:
+                continue
+            count += 1
+        return count
+
+
+class FuseStatSelect(ui.Select):
+    """Select-Menu für die Stat-Auswahl im neuen /verbessern-Flow.
+
+    Optionen: ``health_0`` für HP, ``damage_<n>`` für Attacke n. Wenn keine
+    Stats aufwertbar sind, wird eine Hinweis-Option mit value ``__none__``
+    angezeigt (Req. 6.12).
+    """
+
+    def __init__(self, selected_card, karte_data, user_buffs):
+        self.selected_card = selected_card
+        self.karte_data = karte_data
+        self.user_buffs = list(user_buffs)
+        total_health, damage_map = battle_state.summarize_card_buffs(self.user_buffs)
+        base_hp = int(karte_data.get("hp", 100) or 100)
+        current_hp = base_hp + total_health
+        options: list[SelectOption] = []
+        if current_hp < FUSE_HP_CAP:
+            options.append(
+                SelectOption(
+                    label="Leben verstärken",
+                    value="health_0",
+                    description=(
+                        f"Aktuell {current_hp} HP, "
+                        f"+{FUSE_HEALTH_BONUS} Lebenspunkte pro 5 Dust"
+                    ),
+                    emoji="❤️",
+                )
+            )
+        attacks = karte_data.get("attacks", [])
+        for i, attack in enumerate(attacks[:4]):
+            if not _attack_is_damage_upgradeable(attack):
+                continue
+            attack_name = str(attack.get("name") or f"Attacke {i + 1}")
+            current_bonus = damage_map.get(i + 1, 0)
+            if current_bonus >= _attack_upgrade_max_bonus(attack):
+                continue
+            min_dmg, max_dmg = _attack_total_damage_range(
+                attack, max_only_bonus=current_bonus, flat_bonus=0
+            )
+            upgrade_step = _attack_upgrade_step(attack)
+            if max_dmg + upgrade_step > MAX_ATTACK_DAMAGE_PER_HIT:
+                continue
+            options.append(
+                SelectOption(
+                    label=f"{attack_name} verstärken",
+                    value=f"damage_{i + 1}",
+                    description=(
+                        f"Aktuell {min_dmg}-{max_dmg} Schaden, "
+                        f"+{upgrade_step} Max-Schaden pro 5 Dust"
+                    ),
+                    emoji="⚔️",
+                )
+            )
+        if not options:
+            options.append(
+                SelectOption(
+                    label="Keine Aufwertung möglich",
+                    value="__none__",
+                    description="Alle Stats sind am Cap.",
+                )
+            )
+        super().__init__(
+            placeholder="Wähle was verstärkt werden soll...",
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await defer_interaction(interaction, ephemeral=True)
+        choice = str(self.values[0] or "")
+        if choice == "__none__":
+            await send_interaction_response(
+                interaction,
+                content="❌ Alle aufwertbaren Stats dieser Karte sind am Cap.",
+                ephemeral=True,
+            )
+            return
+        # Schritt C: Multiplikator-Auswahl. Ab v2.3.0 (Task 6.4) ersetzt
+        # `FuseMultiplierView` die alte `DustAmountView` und filtert die
+        # Multiplikator-Optionen dynamisch nach Stat-Cap und Dust-Saldo.
+        user_dust = await get_infinitydust(interaction.user.id)
+        requester_id = self.view.requester_id if self.view is not None else interaction.user.id
+        next_view = FuseMultiplierView(
+            requester_id,
+            selected_card=self.selected_card,
+            karte_data=self.karte_data,
+            user_buffs=self.user_buffs,
+            stat_choice=choice,
+            dust_balance=user_dust,
+        )
+        if self.view is not None:
+            self.view.stop()
+        embed = discord.Embed(
+            title="💎 Karten-Verstärkung",
+            description=(
+                f"Du hast **{user_dust} Infinitydust**\n\n"
+                "Wähle einen Multiplikator (1× = 5 Dust, 2× = 10 Dust, …, 6× = 30 Dust)."
+            ),
+            color=0x9D4EDD,
+        )
+        await edit_interaction_message(interaction, embed=embed, view=next_view)
+
+
+# ---------------------------------------------------------------------------
+# /verbessern Schritt C: Multiplikator-Auswahl (Task 6.4)
+# ---------------------------------------------------------------------------
+# Multiplier-Beträge im /verbessern-Flow ab v2.3.0.
+# 1× = 5 Dust (entspricht der alten "normalen" Aufwertung).
+FUSE_MULTIPLIER_DUST_PER_STEP = 5
+FUSE_MULTIPLIER_VALUES: tuple[int, ...] = (1, 2, 3, 4, 5, 6)
+
+
+def _fuse_available_multipliers(
+    *,
+    base_step: int,
+    cap_remaining: int,
+    dust_balance: int,
+) -> tuple[list[int], list[int]]:
+    """Liefert (visible, affordable) für den Multiplikator-Filter.
+
+    - visible: Multiplikatoren 1..min(6, cap_remaining // base_step) — alle
+      Optionen, die laut Stat-Cap noch zulässig sind (Req. 6.7).
+    - affordable: Teilmenge von ``visible``, die mit ``dust_balance`` bezahlt
+      werden können. Nicht-bezahlbare Multiplikatoren bleiben sichtbar, werden
+      aber als nicht wählbar markiert (Req. 6.9).
+    """
+    if base_step <= 0:
+        return [], []
+    max_by_cap = max(0, cap_remaining // base_step)
+    visible_max = min(6, max_by_cap)
+    visible = [m for m in FUSE_MULTIPLIER_VALUES if m <= visible_max]
+    affordable = [m for m in visible if m * FUSE_MULTIPLIER_DUST_PER_STEP <= dust_balance]
+    return visible, affordable
+
+
+def _fuse_resolve_stat_context(
+    *,
+    karte_data: dict,
+    user_buffs: list,
+    stat_choice: str,
+) -> tuple[int, int]:
+    """Bestimmt ``(base_step, cap_remaining)`` für die gewählte Stat-Option.
+
+    HP nutzt ``FUSE_HEALTH_BONUS`` und den globalen ``FUSE_HP_CAP`` von 200.
+    Für Damage-Optionen (``damage_<n>``) wird sowohl der attack-spezifische
+    Upgrade-Cap (``_attack_upgrade_max_bonus``) als auch der globale Schadens-
+    Hartcap (``MAX_ATTACK_DAMAGE_PER_HIT``) berücksichtigt.
+
+    Bei ungültiger Auswahl wird ``(0, 0)`` zurückgegeben.
+    """
+    total_health, damage_map = battle_state.summarize_card_buffs(user_buffs)
+    if stat_choice == "health_0":
+        base_step = int(FUSE_HEALTH_BONUS)
+        base_hp = int(karte_data.get("hp", 100) or 100)
+        current_hp = base_hp + total_health
+        cap_remaining = max(0, FUSE_HP_CAP - current_hp)
+        return base_step, cap_remaining
+    if not stat_choice.startswith("damage_"):
+        return 0, 0
+    try:
+        attack_number = int(stat_choice.split("_", 1)[1])
+    except (IndexError, ValueError):
+        return 0, 0
+    attacks = karte_data.get("attacks", []) or []
+    if attack_number <= 0 or attack_number > len(attacks):
+        return 0, 0
+    attack = attacks[attack_number - 1]
+    base_step = int(_attack_upgrade_step(attack))
+    upgrade_cap = int(_attack_upgrade_max_bonus(attack))
+    current_bonus = int(damage_map.get(attack_number, 0))
+    cap_remaining = max(0, upgrade_cap - current_bonus)
+    # Zusätzlicher Hartcap: globaler Per-Hit-Schadens-Cap.
+    _min_dmg, max_dmg = _attack_total_damage_range(
+        attack, max_only_bonus=current_bonus, flat_bonus=0
+    )
+    hard_cap_remaining = max(0, MAX_ATTACK_DAMAGE_PER_HIT - max_dmg)
+    cap_remaining = min(cap_remaining, hard_cap_remaining)
+    return base_step, cap_remaining
+
+
+class FuseMultiplierView(FuseFlowView):
+    """Multiplikator-Auswahl im /verbessern-Flow (Schritt C).
+
+    Zeigt 1×–6× je nach verbleibendem Cap-Abstand des gewählten Stats. Optionen,
+    die zu teuer sind, bleiben sichtbar, werden aber als nicht wählbar markiert.
+
+    Validates: Requirements 6.1, 6.2, 6.6, 6.7, 6.8, 6.9, 6.10
+    """
+
+    def __init__(
+        self,
+        requester_id: int,
+        *,
+        selected_card: str,
+        karte_data: dict,
+        user_buffs: list,
+        stat_choice: str,
+        dust_balance: int,
+    ):
+        super().__init__(requester_id, timeout=600)
+        self.selected_card = selected_card
+        self.karte_data = karte_data
+        self.user_buffs = list(user_buffs)
+        self.stat_choice = str(stat_choice or "")
+        self.dust_balance = int(dust_balance)
+        self.multiplier_select = FuseMultiplierSelect(
+            selected_card=selected_card,
+            karte_data=karte_data,
+            user_buffs=user_buffs,
+            stat_choice=stat_choice,
+            dust_balance=dust_balance,
+        )
+        self.add_item(self.multiplier_select)
+        self.add_item(FuseCancelButton())
+
+
+class FuseMultiplierSelect(ui.Select):
+    """Select-Menu für Multiplikator-Auswahl mit dynamischer Cap-/Dust-Filterung."""
+
+    def __init__(
+        self,
+        *,
+        selected_card: str,
+        karte_data: dict,
+        user_buffs: list,
+        stat_choice: str,
+        dust_balance: int,
+    ):
+        self.selected_card = selected_card
+        self.karte_data = karte_data
+        self.user_buffs = list(user_buffs)
+        self.stat_choice = str(stat_choice or "")
+        self.dust_balance = int(dust_balance)
+
+        base_step, cap_remaining = _fuse_resolve_stat_context(
+            karte_data=karte_data,
+            user_buffs=user_buffs,
+            stat_choice=stat_choice,
+        )
+        self.base_step = int(base_step)
+        self.cap_remaining = int(cap_remaining)
+
+        visible, affordable = _fuse_available_multipliers(
+            base_step=self.base_step,
+            cap_remaining=self.cap_remaining,
+            dust_balance=self.dust_balance,
+        )
+        self._visible = list(visible)
+        self._affordable = set(affordable)
+
+        options: list[SelectOption] = []
+        for m in visible:
+            cost = m * FUSE_MULTIPLIER_DUST_PER_STEP
+            stat_gain = m * self.base_step
+            if m in self._affordable:
+                label = f"{m}× ({cost} Dust → +{stat_gain})"
+                description = f"Kosten: {cost} Dust • Gewinn: +{stat_gain}"
+            else:
+                label = f"{m}× ({cost} Dust → +{stat_gain}) ⚠️ zu teuer"
+                description = f"Du hast nur {self.dust_balance} Dust."
+            options.append(
+                SelectOption(
+                    label=label[:100],
+                    value=str(m),
+                    description=description[:100],
+                )
+            )
+
+        if not options:
+            options.append(
+                SelectOption(
+                    label="Keine Aufwertung möglich",
+                    value="__none__",
+                    description="Stat ist am Cap oder Basiswert ungültig.",
+                )
+            )
+
+        super().__init__(
+            placeholder=f"Multiplikator wählen (du hast {self.dust_balance} Dust)...",
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await defer_interaction(interaction, ephemeral=True)
+        choice = str(self.values[0] or "")
+        if choice == "__none__":
+            await send_interaction_response(
+                interaction,
+                content=(
+                    "❌ Diese Karte kann mit deinen aktuellen Stats und deinem "
+                    "Dust-Vorrat nicht weiter aufgewertet werden."
+                ),
+                ephemeral=True,
+            )
+            return
+        try:
+            multiplier = int(choice)
+        except ValueError:
+            multiplier = 0
+        if multiplier <= 0 or multiplier not in self._affordable:
+            await send_interaction_response(
+                interaction,
+                content=(
+                    f"❌ Du hast nicht genug Dust für **{multiplier}×**. "
+                    f"Wähle einen niedrigeren Multiplikator."
+                ),
+                ephemeral=True,
+            )
+            return
+        # Apply path: vorerst über die bestehende Step-by-Step-Logik. Tasks 6.6
+        # und 6.7 ersetzen das durch eine atomare Transaktion mit Vorher/Nachher-
+        # Bestätigungs-Embed.
+        await _apply_fuse_multi_upgrade_legacy(
+            interaction=interaction,
+            view=self.view,
+            selected_card=self.selected_card,
+            karte_data=self.karte_data,
+            stat_choice=self.stat_choice,
+            multiplier=multiplier,
+            cost_per_step=FUSE_MULTIPLIER_DUST_PER_STEP,
+            base_step=self.base_step,
+        )
+
+
+async def _apply_fuse_multi_upgrade_legacy(
+    *,
+    interaction: discord.Interaction,
+    view: ui.View | None,
+    selected_card: str,
+    karte_data: dict,
+    stat_choice: str,
+    multiplier: int,
+    cost_per_step: int,
+    base_step: int,
+) -> None:
+    """Apply-Logik für Multi-Multiplikator-Aufwertung (Tasks 6.4 + 6.6 + 6.7).
+
+    Wendet ``multiplier`` Aufwertungs-Schritte als **eine atomare Operation** an
+    (Req. 6.13): ``total_dust_cost = multiplier × cost_per_step`` wird in einem
+    einzigen ``spend_infinitydust``-Aufruf abgebucht und ``total_gain =
+    multiplier × base_step`` in einem einzigen ``add_card_buff``-Aufruf gewährt.
+    Schlägt der Stat-Apply-Schritt fehl, wird der gesamte Dust-Betrag in einem
+    Zug refundiert — der Spieler bleibt also entweder im vollständig
+    aufgewerteten Zustand oder unverändert. Anschließend wird ein
+    Bestätigungs-Embed mit Vorher/Nachher-Werten, verbrauchtem Dust und
+    verbleibendem Saldo gepostet (Req. 6.11).
+    """
+    user_id = interaction.user.id
+    is_hp = (stat_choice == "health_0")
+    attacks = karte_data.get("attacks", []) or []
+    if is_hp:
+        buff_type = "health"
+        attack_number = 0
+        emoji = "❤️"
+        attack_name = ""
+        attack_for_stat: dict | None = None
+    else:
+        try:
+            attack_number = int(stat_choice.split("_", 1)[1])
+        except (IndexError, ValueError):
+            await send_interaction_response(
+                interaction,
+                content="❌ Ungültige Stat-Auswahl.",
+                ephemeral=True,
+            )
+            return
+        if attack_number <= 0 or attack_number > len(attacks):
+            await send_interaction_response(
+                interaction,
+                content="❌ Ungültige Attacke.",
+                ephemeral=True,
+            )
+            return
+        buff_type = "damage"
+        emoji = "⚔️"
+        attack_for_stat = attacks[attack_number - 1]
+        attack_name = str(attack_for_stat.get("name") or f"Attacke {attack_number}")
+
+    # Vorher-Werte (Req. 6.11): Buffs vor der Aufwertung laden, um prev_value
+    # exakt zu kennen. Bei DB-Fehler nehmen wir 0 als Defaults und loggen.
+    try:
+        prior_user_buffs = await get_card_buffs(user_id, selected_card)
+    except Exception:
+        logging.exception(
+            "Failed to load prior buffs for %s before multi-upgrade", selected_card
+        )
+        prior_user_buffs = []
+    prior_total_health, prior_damage_map = battle_state.summarize_card_buffs(
+        prior_user_buffs
+    )
+
+    # Atomares Persistieren (Req. 6.13, Task 6.7): statt N Einzel-Schritten
+    # buchen wir die gesamten Dust-Kosten in EINEM `spend_infinitydust`-Aufruf
+    # ab und gewähren den gesamten Stat-Gain in EINEM `add_card_buff`-Aufruf.
+    # Schlägt das Apply nach dem Spend fehl, refundieren wir den vollen Betrag
+    # — der Spieler bleibt damit immer entweder vollständig aufgewertet oder
+    # unverändert.
+    multiplier_int = int(multiplier)
+    total_dust_cost = multiplier_int * int(cost_per_step)
+    total_gain = multiplier_int * int(base_step)
+
+    spend_ok = False
+    try:
+        spend_ok = await spend_infinitydust(user_id, total_dust_cost)
+    except Exception:
+        logging.exception(
+            "spend_infinitydust raised during multi-upgrade for user %s", user_id
+        )
+        spend_ok = False
+
+    if not spend_ok:
+        await send_interaction_response(
+            interaction,
+            content=(
+                f"❌ Nicht genug Infinitydust für **{multiplier_int}× "
+                f"({total_dust_cost} Dust)**."
+            ),
+            ephemeral=True,
+        )
+        return
+
+    try:
+        await add_card_buff(
+            user_id,
+            selected_card,
+            buff_type,
+            attack_number,
+            total_gain,
+        )
+    except Exception:
+        logging.exception(
+            "Failed to apply card buff during multi-upgrade for %s; "
+            "refunding %d dust",
+            selected_card,
+            total_dust_cost,
+        )
+        try:
+            await add_infinitydust(user_id, total_dust_cost)
+        except Exception:
+            logging.exception(
+                "Failed to refund %d dust after apply failure for user %s",
+                total_dust_cost,
+                user_id,
+            )
+        await send_interaction_response(
+            interaction,
+            content=(
+                "❌ Die Verstärkung ist fehlgeschlagen. Dein Infinitydust "
+                "wurde zurückerstattet."
+            ),
+            ephemeral=True,
+        )
+        return
+
+    applied_steps = multiplier_int
+    spent_dust = total_dust_cost
+
+    if applied_steps <= 0:
+        await send_interaction_response(
+            interaction,
+            content="❌ Die Verstärkung ist fehlgeschlagen. Es wurde kein Dust verbraucht.",
+            ephemeral=True,
+        )
+        return
+
+    total_gain = applied_steps * int(base_step)
+
+    # Vorher/Nachher-Werte für das Bestätigungs-Embed (Req. 6.11).
+    if is_hp:
+        base_hp = int(karte_data.get("hp", 100) or 100)
+        prev_value = base_hp + int(prior_total_health)
+        new_value = prev_value + total_gain
+        stat_label = "Leben"
+        prev_display = f"{prev_value} HP"
+        new_display = f"{new_value} HP"
+    else:
+        existing_bonus = int(prior_damage_map.get(int(attack_number), 0))
+        prev_min, prev_max = _attack_total_damage_range(
+            attack_for_stat or {},
+            max_only_bonus=existing_bonus,
+            flat_bonus=0,
+        )
+        new_max = prev_max + total_gain
+        new_min = prev_min
+        stat_label = attack_name
+        prev_display = f"{prev_min}–{prev_max} Schaden"
+        new_display = f"{new_min}–{new_max} Schaden"
+
+    # Verbleibender Dust-Saldo nach allen Spend-Operationen (Req. 6.11).
+    try:
+        remaining_dust = int(await get_infinitydust(user_id) or 0)
+    except Exception:
+        logging.exception(
+            "Failed to load remaining infinitydust after multi-upgrade for user %s",
+            user_id,
+        )
+        remaining_dust = 0
+
+    await _log_event_safe(
+        "upgrade_applied",
+        guild_id=interaction.guild_id,
+        channel_id=interaction.channel_id,
+        thread_id=_thread_id_for_channel(interaction.channel),
+        actor_user_id=user_id,
+        hero_name=selected_card,
+        attack_name=attack_name,
+        payload={
+            "upgrade_type": buff_type,
+            "upgrade_attack_number": int(attack_number),
+            "upgrade_attack_name": attack_name,
+            "upgrade_amount": int(total_gain),
+            "upgrade_multiplier": int(multiplier),
+            "applied_steps": int(applied_steps),
+            "dust_cost": int(spent_dust),
+        },
+    )
+
+    embed = discord.Embed(
+        title="✅ Verstärkung erfolgreich!",
+        description=(
+            f"🃏 **{selected_card}**\n"
+            f"{emoji} **{stat_label}**: **{prev_display}** → **{new_display}**"
+        ),
+        color=0x00FF00,
+    )
+    embed.add_field(
+        name="💎 Dust verbraucht",
+        value=f"**{spent_dust}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="💎 Dust verbleibend",
+        value=f"**{remaining_dust}**",
+        inline=True,
+    )
+    if applied_steps < int(multiplier):
+        embed.add_field(
+            name="⚠️ Hinweis",
+            value=(
+                f"Es wurden nur **{applied_steps}** Schritte angewendet "
+                f"(statt {int(multiplier)})."
+            ),
+            inline=False,
+        )
+    _apply_item_media(embed, "infinitydust", thumbnail=True)
+    if view is not None:
+        view.stop()
+    await edit_interaction_message(interaction, embed=embed, view=None)
+
 
 class InviteConfirmationView(DurableView):
     durable_view_kind = VIEW_KIND_INVITE_CONFIRM
@@ -9930,6 +10623,12 @@ class InviteUserSelect(ui.Select):
 class DustAmountView(FuseFlowView):
     def __init__(self, requester_id: int, user_dust: int):
         super().__init__(requester_id, timeout=600)
+        # Optional pre-bindings for the new card->stat->multiplier flow
+        # introduced in v2.3.0 Task 6.3. The legacy DustAmountSelect path does
+        # not consume these yet — Task 6.4 wires them through to the
+        # multiplier-aware apply step.
+        self.preselected_card: str | None = None
+        self.preselected_stat_choice: str | None = None
         self.add_item(DustAmountSelect(int(user_dust)))
         self.add_item(FuseCancelButton())
 
@@ -10840,7 +11539,20 @@ class MissionNewCardSelectView(DurableView):
             ]
         else:
             grouped_cards = group_owned_cards_by_base([(name, 1) for name in self.user_karten], cards=karten)
-            options = [SelectOption(label=_group_option_label(group)[:100], value=str(group.get("base_name") or "")) for group in grouped_cards[:25]]
+            # Req. 1.2: ursprünglich gewählte Karte mit Marker "(aktuell)" als erste Option.
+            raw_selected = str(self.mission_state.get("selected_card_name") or "")
+            current_base = base_card_name(raw_selected, cards=karten) if raw_selected else ""
+            ordered = sorted(
+                grouped_cards,
+                key=lambda g: 0 if str(g.get("base_name") or "") == current_base else 1,
+            )
+            options = []
+            for group in ordered[:25]:
+                base_name = str(group.get("base_name") or "")
+                label = _group_option_label(group)
+                if base_name and base_name == current_base:
+                    label = f"{label} (aktuell)"
+                options.append(SelectOption(label=label[:100], value=base_name))
         if not options:
             options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
         self.select = ui.Select(
@@ -11020,7 +11732,9 @@ class MissionEncounterPreviewView(DurableView):
         idx = int(self.mission_state.get("preview_index", 0) or 0)
         if self.mode == "boss":
             self.add_item(self._btn_start_boss())
-            self.add_item(self._btn_hero())
+            # Req. 1.6: Wechsel-Button nur anbieten, wenn boss_switch_enabled True ist.
+            if boss_switch_enabled():
+                self.add_item(self._btn_hero())
             return
         if n == 0:
             return
@@ -11037,7 +11751,9 @@ class MissionEncounterPreviewView(DurableView):
                 self.add_item(self._btn_hero())
 
     def _allows_card_change(self) -> bool:
-        return self.mode == "boss" or int(self.mission_state.get("next_wave", 1) or 1) <= 1
+        if self.mode == "boss":
+            return boss_switch_enabled()
+        return int(self.mission_state.get("next_wave", 1) or 1) <= 1
 
     def _btn_next(self) -> ui.Button:
         b = ui.Button(
@@ -11571,9 +12287,16 @@ class MissionBattleView(DurableView):
 
         await self.persist_session(interaction.channel, status="completed")
 
+        # Req. 7.1/7.2: jeder besiegte Gegner (Lakei oder Boss) erhöht die akkumulierte
+        # Infinitydust-Belohnung um 1. Ausgezahlt wird erst beim Mission-Erfolg (Req. 7.5).
+        self.mission_data["reward_infinitydust"] = (
+            int(self.mission_data.get("reward_infinitydust", 0) or 0) + 1
+        )
+
         next_wave = self.wave_num + 1
         if next_wave > self.total_waves:
             reward_card = _dict_str_any(self.mission_data.get("reward_card"))
+            is_new_card = True
             if reward_card:
                 is_new_card = await check_and_add_karte(self.user_id, reward_card)
                 await _safe_send_channel(
@@ -11581,6 +12304,19 @@ class MissionBattleView(DurableView):
                     interaction.channel,
                     embed=_mission_success_embed(reward_card, self.total_waves, is_new_card=is_new_card),
                 )
+            # Req. 7.3/7.4/7.5/7.7: akkumulierte Belohnung auszahlen (Lakeien + Boss),
+            # plus +1, falls die verknüpfte Reward-Karte bereits im Besitz war. Cap 5.
+            acc = MissionRewardAccumulator(
+                user_id=self.user_id,
+                mission_id=str(self.mission_data.get("mission_id") or ""),
+            )
+            acc.infinitydust = int(self.mission_data.get("reward_infinitydust", 0) or 0)
+            if reward_card and not is_new_card:
+                acc.on_daily_card_already_owned()
+            try:
+                await commit_on_mission_success(acc, add_infinitydust=add_infinitydust)
+            except Exception:
+                logging.exception("Infinitydust-Mission-Auszahlung fehlgeschlagen")
             await _send_mission_feedback_prompt(
                 interaction.channel,
                 interaction.guild,
@@ -12877,6 +13613,12 @@ class MissionBattleView(DurableView):
             heal_chance = float(attack.get("heal_chance", 1.0) or 1.0)
             if random.random() <= heal_chance:
                 heal_amount = _random_int_from_range(heal_data)
+                # Req. 20.4 (Agatha „Darkhold-Fluch"): die nächste heilende Spielerfähigkeit
+                # heilt 0 HP; der Effekt läuft mit dieser Auflösung ab.
+                if heal_amount > 0 and bool(self.mission_data.get("player_heal_negation_pending")):
+                    self.mission_data["player_heal_negation_pending"] = False
+                    heal_amount = 0
+                    self._append_effect_event(effect_events, "Darkhold-Fluch: Heilung wird negiert (0 HP).")
                 healed_now = self.heal_player(self.user_id, heal_amount)
                 if healed_now > 0:
                     self._append_effect_event(effect_events, f"Heilung: +{healed_now} HP.")
@@ -12896,6 +13638,15 @@ class MissionBattleView(DurableView):
         self._resolve_green_goblin_bomb_after_player_attack(effect_events, damage_dealt=int(actual_damage or 0))
         self._last_player_damage_dealt = int(actual_damage or 0)
         self.mission_data["last_player_damage_dealt"] = int(self._last_player_damage_dealt)
+        # Req. 17.7: merken, ob der Spieler in dieser Runde eine Cooldown-Fähigkeit
+        # (Nicht-Standardangriff mit cooldown_turns > 0) eingesetzt hat.
+        if not is_reload_action:
+            used_cd_ability = (
+                isinstance(attack, dict)
+                and not bool(attack.get("is_standard_attack"))
+                and int(attack.get("cooldown_turns", 0) or 0) > 0
+            )
+            self.mission_data["player_used_cd_last_round"] = bool(used_cd_ability)
         self._mark_maestro_execute_if_needed(effect_events)
         self._sync_maestro_execute_for_current_hp(effect_events)
 
@@ -13360,6 +14111,11 @@ class MissionBattleView(DurableView):
                 conditional_enemy_triggered = True
                 damage_if_condition = attack.get("damage_if_condition")
                 damage = _coerce_damage_input(damage_if_condition, default=0)
+            # Req. 19.6/19.7 (Kingpin „Zermalmender Griff"): reduzierter Schaden, solange das
+            # Ziel noch über einem HP-Schwellwert liegt.
+            reduced_hp_cfg = attack.get("reduced_damage_if_player_hp_at_least")
+            if isinstance(reduced_hp_cfg, dict) and defender_hp >= int(reduced_hp_cfg.get("hp", 0) or 0):
+                damage = _coerce_damage_input(reduced_hp_cfg.get("damage"), default=damage)
             permanent_boost_bot = _permanent_damage_boost_amount(self.active_effects, 0)
             if permanent_boost_bot > 0:
                 dmg_buff_bot += permanent_boost_bot
@@ -13648,7 +14404,14 @@ class MissionBattleView(DurableView):
                 str(self.bot_card.get("name") or "").strip().lower() == "kingpin"
                 and str(bot_attack_name or "").strip() == "Bestechungs-Versuch"
             ):
-                heal_data = [60, 60] if int(self._last_player_damage_dealt or 0) <= 0 else [35, 35]
+                # Req. 19.3/19.4: 30 HP wenn Spieler in der Vorrunde 0 Schaden gemacht hat,
+                # sonst 35 HP.
+                heal_data = [30, 30] if int(self._last_player_damage_dealt or 0) <= 0 else [35, 35]
+            # Req. 17.6/17.7: MODOK „Berechnete Heilung" heilt 30 statt 15, wenn der Spieler
+            # in der vorherigen Runde eine Cooldown-Fähigkeit eingesetzt hat.
+            boosted_heal = attack.get("heal_if_player_used_cd_last_round")
+            if boosted_heal is not None and bool(self.mission_data.get("player_used_cd_last_round")):
+                heal_data = [int(boosted_heal), int(boosted_heal)]
             if heal_data is not None:
                 heal_chance = float(attack.get("heal_chance", 1.0) or 1.0)
                 if random.random() <= heal_chance:
@@ -13865,6 +14628,11 @@ class MissionBattleView(DurableView):
                     turns = max(1, int(effect.get("turns", 1) or 1))
                     self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), turns)
                     self._append_effect_event(bot_effect_events, f"Spezialfähigkeiten des Gegners sind für {turns} Runde(n) gesperrt.")
+                elif eff_type == "next_player_heal_negation":
+                    # Req. 20.4 (Agatha „Darkhold-Fluch"): die nächste heilende Spielerfähigkeit
+                    # heilt 0 HP. Konsumiert wird der Marker beim nächsten Spieler-Heal.
+                    self.mission_data["player_heal_negation_pending"] = True
+                    self._append_effect_event(bot_effect_events, "Darkhold-Fluch: Die nächste heilende Fähigkeit des Spielers heilt 0 HP.")
                 elif eff_type == "blind":
                     miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
                     self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
@@ -14852,15 +15620,15 @@ async def _select_card(interaction: discord.Interaction, prompt: str):
     return view.value
 
 class NumberInputModal(RestrictedModal):
-    def __init__(self, requester_id: int, parent_view: "NumberSelectView"):
+    def __init__(self, requester_id: int, parent_view: "NumberSelectView | DustQuickAmountView"):
         super().__init__(title="Eigene Menge eingeben")
         self.requester_id = requester_id
         self.parent_view = parent_view
         self.amount = ui.TextInput(
             label="Menge",
-            placeholder="Gib eine positive Zahl ein",
+            placeholder="Gib eine positive Zahl ein (1-1.000.000)",
             required=True,
-            max_length=9,
+            max_length=7,
         )
         self.add_item(self.amount)
 
@@ -14869,12 +15637,27 @@ class NumberInputModal(RestrictedModal):
             await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
             return
         raw_value = str(self.amount.value or "").strip()
-        if not raw_value.isdigit() or int(raw_value) <= 0:
-            await interaction.response.send_message("❌ Bitte gib eine gültige positive Zahl ein.", ephemeral=True)
+        if not raw_value.isdigit():
+            await interaction.response.send_message(
+                "❌ Bitte einen Betrag zwischen 1 und 1.000.000 eingeben.",
+                ephemeral=True,
+            )
             return
-        self.parent_view.value = int(raw_value)
+        parsed_amount = int(raw_value)
+        if parsed_amount <= 0 or parsed_amount > 1_000_000:
+            await interaction.response.send_message(
+                "❌ Bitte einen Betrag zwischen 1 und 1.000.000 eingeben.",
+                ephemeral=True,
+            )
+            return
+        # Memo Change 4: only update value if input is valid AND non-zero.
+        # If the parent view already has an active quick-pick value, a 0/invalid
+        # input must NOT overwrite it — the early returns above ensure that.
+        self.parent_view.value = parsed_amount
         self.parent_view.stop()
-        await interaction.response.send_message(f"✅ Eigene Menge gewählt: **{int(raw_value)}**", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ Eigene Menge gewählt: **{parsed_amount}**", ephemeral=True
+        )
 
 
 class NumberSelectView(RestrictedView):
@@ -14901,6 +15684,64 @@ class NumberSelectView(RestrictedView):
         await interaction.response.defer()
 
 
+class DustQuickAmountView(RestrictedView):
+    """Multi-Modus Schnellauswahl für Infinitydust-Beträge.
+
+    Sechs Schnellauswahl-Buttons {5,10,15,20,25,30} (auf zwei Zeilen verteilt,
+    da Discord max. 5 Buttons pro Reihe erlaubt) plus ein primärer Button
+    „Eigener Betrag…", der das bestehende `NumberInputModal` öffnet.
+    Vergleichbar mit der Multi-Karten-Auswahl in `/karte-geben`.
+    """
+
+    def __init__(self, requester_id: int, *, amounts: list[int] | None = None):
+        super().__init__(timeout=60)
+        self.requester_id = requester_id
+        self.value: int | None = None
+        quick_amounts = list(amounts) if amounts is not None else list(DUST_MENU_AMOUNTS)
+        # Discord erlaubt max. 5 Buttons pro Reihe → wir brechen die sechs
+        # Quick-Pick-Buttons in 3+3 auf, Custom-Amount-Button kommt eine
+        # Zeile darunter.
+        for index, amount in enumerate(quick_amounts[:6]):
+            row = 0 if index < 3 else 1
+            self.add_item(_DustQuickAmountButton(amount, row=row))
+        self.add_item(_DustCustomAmountButton(row=2))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return False
+        return await super().interaction_check(interaction)
+
+
+class _DustQuickAmountButton(ui.Button):
+    def __init__(self, amount: int, *, row: int = 0):
+        super().__init__(
+            label=str(int(amount)),
+            style=discord.ButtonStyle.secondary,
+            row=row,
+        )
+        self.amount = int(amount)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view: DustQuickAmountView = self.view  # type: ignore[assignment]
+        view.value = self.amount
+        view.stop()
+        await interaction.response.defer()
+
+
+class _DustCustomAmountButton(ui.Button):
+    def __init__(self, *, row: int = 1):
+        super().__init__(
+            label="Eigener Betrag…",
+            style=discord.ButtonStyle.primary,
+            row=row,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view: DustQuickAmountView = self.view  # type: ignore[assignment]
+        await interaction.response.send_modal(NumberInputModal(view.requester_id, view))
+
+
 def _member_mention_or_fallback(guild: discord.Guild | None, user_id: int) -> str:
     member = guild.get_member(user_id) if guild is not None else None
     return member.mention if member is not None else f"<@{user_id}>"
@@ -14913,9 +15754,42 @@ async def _post_dust_result_message(
     remove: bool,
     amount: int,
     results: list[tuple[int, int]],
+    visibility_key: str | None = None,
 ) -> bool:
     action_title = "Infinitydust entfernt" if remove else "Infinitydust vergeben"
     actor_mention = getattr(interaction.user, "mention", None) or f"<@{interaction.user.id}>"
+
+    # Bucket-Klassifikation analog zu /karte-geben:
+    # - applied: vollständig angewendet (== requested)
+    # - partial: teilweise angewendet (0 < applied < requested) — nur bei remove möglich
+    # - failed:  gar nicht angewendet (applied == 0 trotz requested > 0) — nur bei remove möglich
+    requested_amount = int(amount)
+    applied_count = 0
+    partial_count = 0
+    failed_count = 0
+    for _, applied_amount in results:
+        applied_int = int(applied_amount)
+        if applied_int >= requested_amount:
+            applied_count += 1
+        elif applied_int <= 0:
+            failed_count += 1
+        else:
+            partial_count += 1
+
+    # Color-Logik:
+    # - Give-Pfad: immer grün (per Definition kein Teilfehler)
+    # - Remove-Pfad: rot, wenn ≥ 1 User komplett fehlgeschlagen; orange bei
+    #   Teilfehlern; sonst grün.
+    if remove:
+        if failed_count > 0:
+            embed_color = 0xE74C3C
+        elif partial_count > 0:
+            embed_color = 0xE67E22
+        else:
+            embed_color = 0x2ECC71
+    else:
+        embed_color = 0x2ECC71
+
     lines = [
         f"{actor_mention} hat {'Infinitydust entfernt' if remove else 'Infinitydust vergeben'}.",
         f"Modus: **{escape_display_text(mode, fallback='single')}**",
@@ -14923,26 +15797,86 @@ async def _post_dust_result_message(
     ]
     for user_id, applied_amount in results:
         target = _member_mention_or_fallback(interaction.guild, user_id)
+        applied_int = int(applied_amount)
         if remove:
-            lines.append(f"• {target}: **{applied_amount}x** entfernt")
+            if applied_int <= 0:
+                lines.append(f"❌ {target}: **0x** entfernt (von **{requested_amount}x** angefordert)")
+            elif applied_int < requested_amount:
+                lines.append(
+                    f"⚠️ {target}: **{applied_int}x** entfernt "
+                    f"(von **{requested_amount}x** angefordert)"
+                )
+            else:
+                lines.append(f"✅ {target}: **{applied_int}x** entfernt")
         else:
-            lines.append(f"• {target}: **{applied_amount}x** erhalten")
+            lines.append(f"✅ {target}: **{applied_int}x** erhalten")
     if remove:
         lines.append("")
-        lines.append(f"Angeforderte Menge pro Nutzer: **{amount}x**")
+        lines.append(f"Angeforderte Menge pro Nutzer: **{requested_amount}x**")
 
     embed = discord.Embed(
         title=f"💎 {action_title}",
         description="\n".join(lines),
-        color=0xD64B4B if remove else 0x2ECC71,
+        color=embed_color,
+    )
+    # Übersicht-Field analog zu /karte-geben — visuell parallel halten,
+    # auch wenn Give-Pfad immer alles im ✅-Bucket hat.
+    embed.add_field(
+        name=(
+            f"\u00dcbersicht (\u2705 {applied_count} angewendet \u00b7 "
+            f"\u26a0\ufe0f {partial_count} unvollst\u00e4ndig \u00b7 "
+            f"\u274c {failed_count} fehlgeschlagen)"
+        ),
+        value="_keine weiteren Details_" if not results else " ",
+        inline=False,
     )
     _apply_item_media(embed, "infinitydust", thumbnail=True)
     embed.set_footer(text=f"Ausgeführt von {safe_display_name(interaction.user, fallback='Unbekannt')}")
-    sent_message = await _send_channel_message(
-        interaction.channel,
+    sent_message = await _send_with_visibility(
+        interaction,
+        visibility_key,
         embed=embed,
     )
     return sent_message is not None
+
+
+class DustGiveConfirmView(RestrictedView):
+    """Final-Bestätigung im Multi-Mode bevor Infinitydust verteilt wird.
+
+    Analog zu `GiveCardConfirmView` für `/karte-geben`. Single-Mode nutzt
+    keine Confirm-View — Parität mit `/karte-geben`.
+    """
+
+    def __init__(self, requester_id: int, *, remove: bool = False):
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        self.remove = bool(remove)
+        self.value: bool | None = None
+        confirm_label = "✅ Jetzt entfernen" if self.remove else "✅ Jetzt verteilen"
+        self.confirm_button = ui.Button(label=confirm_label, style=discord.ButtonStyle.success)
+        self.confirm_button.callback = self._confirm
+        self.add_item(self.confirm_button)
+        self.cancel_button = ui.Button(label="❌ Abbrechen", style=discord.ButtonStyle.danger)
+        self.cancel_button.callback = self._cancel
+        self.add_item(self.cancel_button)
+
+    async def _confirm(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        self.value = True
+        self.stop()
+        followup = "✅ Bestätigt – entferne Infinitydust..." if self.remove else "✅ Bestätigt – verteile Infinitydust..."
+        await interaction.response.edit_message(content=followup, view=None)
+
+    async def _cancel(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        self.value = False
+        self.stop()
+        cancelled = "❌ Entfernen abgebrochen." if self.remove else "❌ Vergabe abgebrochen."
+        await interaction.response.edit_message(content=cancelled, view=None)
 
 
 async def run_dust_command_flow(
@@ -14963,6 +15897,7 @@ async def run_dust_command_flow(
         )
         return
 
+    visibility_key = command_visibility_key_for_interaction(interaction)
     action_phrase = "entfernen" if remove else "geben"
     target_user_ids: list[int] = []
 
@@ -14982,7 +15917,9 @@ async def run_dust_command_flow(
             return
         target_user_ids = [int(user_select_view.value)]
     else:
-        multi_view = DustMultiUserSelectView(interaction.user.id, interaction.guild)
+        multi_view = DustMultiUserSelectView(
+            interaction.user.id, interaction.guild, item_label="Infinitydust"
+        )
         multi_message = await interaction.followup.send(
             content=multi_view._content(),
             embed=multi_view._summary_embed(),
@@ -15000,11 +15937,21 @@ async def run_dust_command_flow(
             return
         target_user_ids = [int(user_id) for user_id in multi_view.value]
 
-    amount = await _select_number(
-        interaction,
-        "W\u00e4hle die Menge Infinitydust:",
-        DUST_MENU_AMOUNTS,
-    )
+    if mode_value == "multi":
+        amount_view = DustQuickAmountView(interaction.user.id)
+        await interaction.followup.send(
+            content="W\u00e4hle die Menge Infinitydust:",
+            view=amount_view,
+            ephemeral=True,
+        )
+        await amount_view.wait()
+        amount = amount_view.value
+    else:
+        amount = await _select_number(
+            interaction,
+            "W\u00e4hle die Menge Infinitydust:",
+            DUST_MENU_AMOUNTS,
+        )
     if not amount:
         await interaction.followup.send(
             "\u23f0 Keine Menge gew\u00e4hlt. Abgebrochen.",
@@ -15012,10 +15959,51 @@ async def run_dust_command_flow(
         )
         return
 
+    requested_amount = int(amount)
+
+    # Confirm-Schritt im Multi-Mode (Parität zu /karte-geben).
+    if mode_value == "multi":
+        confirm_view = DustGiveConfirmView(interaction.user.id, remove=remove)
+        target_lines: list[str] = []
+        for user_id in target_user_ids[:25]:
+            target_lines.append(_member_mention_or_fallback(interaction.guild, user_id))
+        if len(target_user_ids) > 25:
+            target_lines.append(f"... und {len(target_user_ids) - 25} weitere")
+        action_word = "entfernen" if remove else "verteilen"
+        confirm_embed = discord.Embed(
+            title=f"\U0001F4DD Bestätigung: Infinitydust {action_word}",
+            description=(
+                f"**Empf\u00e4nger ({len(target_user_ids)}):**\n"
+                + "\n".join(target_lines)
+            ),
+            color=0xF1C40F,
+        )
+        confirm_embed.add_field(
+            name="Menge pro Nutzer",
+            value=f"**{requested_amount}x** Infinitydust",
+            inline=False,
+        )
+        if remove:
+            confirm_embed.set_footer(text="Mit ✅ jetzt entfernen, ❌ abbrechen.")
+        else:
+            confirm_embed.set_footer(text="Mit ✅ jetzt verteilen, ❌ abbrechen.")
+        await interaction.followup.send(
+            embed=confirm_embed,
+            view=confirm_view,
+            ephemeral=True,
+        )
+        await confirm_view.wait()
+        if confirm_view.value is not True:
+            if confirm_view.value is None:
+                await interaction.followup.send(
+                    "\u23f0 Zeit abgelaufen. Vergabe abgebrochen.",
+                    ephemeral=True,
+                )
+            return
+
     channel_id = int(getattr(interaction.channel, "id", 0) or 0)
     guild_id = int(getattr(interaction, "guild_id", 0) or getattr(interaction.guild, "id", 0) or 0)
     action_key = "remove" if remove else "give"
-    requested_amount = int(amount)
     results: list[tuple[int, int]] = []
     for user_id in target_user_ids:
         if remove:
@@ -15042,6 +16030,7 @@ async def run_dust_command_flow(
         remove=remove,
         amount=requested_amount,
         results=results,
+        visibility_key=visibility_key,
     )
     if result_sent:
         return
@@ -16075,34 +17064,47 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
             view = AlphaConfirmView(interaction.user.id, enable=enabled)
             title = game_ui_texts.ALPHA_CONFIRM_ON_TITLE if enabled else game_ui_texts.ALPHA_CONFIRM_OFF_TITLE
             text = game_ui_texts.ALPHA_CONFIRM_ON_TEXT if enabled else game_ui_texts.ALPHA_CONFIRM_OFF_TEXT
+            # Req. 10.1/10.2: aktuellen Status im Dialog anzeigen.
+            status_line = game_ui_texts.render_mode_confirm(
+                "Alpha", await is_alpha_enabled(interaction.guild_id)
+            )
         else:
             view = BetaConfirmView(interaction.user.id, enable=enabled)
             title = game_ui_texts.BETA_CONFIRM_ON_TITLE if enabled else game_ui_texts.BETA_CONFIRM_OFF_TITLE
             text = game_ui_texts.BETA_CONFIRM_ON_TEXT if enabled else game_ui_texts.BETA_CONFIRM_OFF_TEXT
+            status_line = game_ui_texts.render_mode_confirm(
+                "Beta", await is_beta_enabled(interaction.guild_id)
+            )
 
         await _send_with_visibility(
             interaction,
             "feature_flags",
-            content=f"**{title}**\n\n{text}",
+            content=f"**{title}**\n\n{status_line}\n\n{text}",
             view=view,
         )
         return
 
     if action == "maintenance_on":
         view = MaintenanceConfirmView(interaction.user.id, enable=True)
+        status_line = game_ui_texts.render_mode_confirm(
+            "Maintenance", await is_maintenance_enabled(interaction.guild_id)
+        )
         await _send_with_visibility(
             interaction,
             "maintenance",
-            content=f"**{game_ui_texts.MAINTENANCE_CONFIRM_ON_TITLE}**\n\n{game_ui_texts.MAINTENANCE_CONFIRM_ON_TEXT}",
+            content=f"**{game_ui_texts.MAINTENANCE_CONFIRM_ON_TITLE}**\n\n{status_line}\n\n{game_ui_texts.MAINTENANCE_CONFIRM_ON_TEXT}",
             view=view,
         )
         return
     if action == "maintenance_off":
         view = MaintenanceConfirmView(interaction.user.id, enable=False)
+        status_line = game_ui_texts.render_mode_confirm(
+            "Maintenance", await is_maintenance_enabled(interaction.guild_id)
+        )
         await _send_with_visibility(
             interaction,
             "maintenance",
-            content=f"**{game_ui_texts.MAINTENANCE_CONFIRM_OFF_TITLE}**\n\n{game_ui_texts.MAINTENANCE_CONFIRM_OFF_TEXT}",
+            content=f"**{game_ui_texts.MAINTENANCE_CONFIRM_OFF_TITLE}**\n\n{status_line}\n\n{game_ui_texts.MAINTENANCE_CONFIRM_OFF_TEXT}",
             view=view,
         )
         return
@@ -16216,40 +17218,60 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
                 await interaction.followup.send("⏰ Zeit abgelaufen. Vergabe abgebrochen.", ephemeral=True)
             return
 
-        per_user_added: dict[int, list[str]] = {uid: [] for uid in target_user_ids}
-        per_user_skipped: dict[int, list[str]] = {uid: [] for uid in target_user_ids}
-        for card_name in selected_card_names:
-            for uid in target_user_ids:
-                was_added = await add_exact_card_variant_once(uid, card_name)
-                if was_added:
-                    per_user_added[uid].append(card_name)
-                else:
-                    per_user_skipped[uid].append(card_name)
-                logging.info(
-                    "Grant card via panel: actor=%s target=%s card=%s added=%s",
-                    interaction.user.id, uid, card_name, was_added,
-                )
-                await _log_event_safe(
-                    "admin_card_grant",
-                    guild_id=interaction.guild_id,
-                    channel_id=interaction.channel_id,
-                    thread_id=_thread_id_for_channel(interaction.channel),
-                    actor_user_id=interaction.user.id,
-                    target_user_id=uid,
-                    command_name="entwicklerpanel",
-                    hero_name=card_name,
-                    payload={"amount": 1, "added": bool(was_added)},
-                )
+        async def _audit_grant_outcome(uid: int, card_name: str, outcome: str) -> None:
+            logging.info(
+                "Grant card via panel: actor=%s target=%s card=%s outcome=%s",
+                interaction.user.id, uid, card_name, outcome,
+            )
+            await _log_event_safe(
+                "admin_card_grant",
+                guild_id=interaction.guild_id,
+                channel_id=interaction.channel_id,
+                thread_id=_thread_id_for_channel(interaction.channel),
+                actor_user_id=interaction.user.id,
+                target_user_id=uid,
+                command_name="entwicklerpanel",
+                hero_name=card_name,
+                payload={
+                    "amount": 1,
+                    "added": outcome == "added",
+                    "outcome": outcome,
+                },
+            )
 
-        total_added = sum(len(v) for v in per_user_added.values())
-        total_skipped = sum(len(v) for v in per_user_skipped.values())
+        summary = await grant_cards_to_users(
+            target_user_ids=target_user_ids,
+            card_names=selected_card_names,
+            add_card=add_exact_card_variant_once,
+            is_card_known=lambda name: _card_by_name_local(name) is not None,
+            on_outcome=_audit_grant_outcome,
+        )
+        per_user_added: dict[int, list[str]] = {
+            uid: summary.per_user_added(uid) for uid in target_user_ids
+        }
+        per_user_skipped: dict[int, list[str]] = {
+            uid: summary.per_user_skipped(uid) for uid in target_user_ids
+        }
+        per_user_failed: dict[int, list[str]] = {
+            uid: summary.per_user_failed(uid) for uid in target_user_ids
+        }
+
+        total_added = summary.total_added
+        total_skipped = summary.total_skipped
+        total_failed = summary.total_failed
+        if total_failed > 0:
+            embed_color = 0xE74C3C
+        elif total_added > 0:
+            embed_color = 0x2ECC71
+        else:
+            embed_color = 0xE67E22
         result_embed = discord.Embed(
             title="🎁 Karten vergeben",
             description=(
                 f"{interaction.user.mention} hat **{len(selected_card_names)} Karte(n)** "
                 f"an **{len(target_user_ids)} Nutzer** verteilt."
             ),
-            color=0x2ECC71 if total_added > 0 else 0xE67E22,
+            color=embed_color,
         )
         result_lines: list[str] = []
         for uid in target_user_ids:
@@ -16257,18 +17279,24 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
             mention = member.mention if member else f"<@{uid}>"
             added_names = per_user_added.get(uid, [])
             skipped_names = per_user_skipped.get(uid, [])
+            failed_names = per_user_failed.get(uid, [])
             parts: list[str] = []
             if added_names:
-                parts.append("✅ " + ", ".join(added_names))
+                parts.append("✅ hinzugefügt: " + ", ".join(added_names))
             if skipped_names:
                 parts.append("⚠️ bereits vorhanden: " + ", ".join(skipped_names))
+            if failed_names:
+                parts.append("❌ fehlgeschlagen: " + ", ".join(failed_names))
             line = f"{mention} — " + (" | ".join(parts) if parts else "_keine Änderung_")
             result_lines.append(line)
         joined_lines = "\n".join(result_lines)
         if len(joined_lines) > 4000:
             joined_lines = joined_lines[:3990] + "\n…"
         result_embed.add_field(
-            name=f"Übersicht (✅ {total_added} · ⚠️ {total_skipped})",
+            name=(
+                f"Übersicht (✅ {total_added} · "
+                f"⚠️ {total_skipped} · ❌ {total_failed})"
+            ),
             value=joined_lines or "_keine_",
             inline=False,
         )

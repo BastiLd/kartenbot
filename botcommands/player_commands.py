@@ -217,16 +217,36 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
             await module._send_ephemeral(interaction, embed=embed)
             return
 
-        view = module.DustAmountView(interaction.user.id, user_dust)
+        # v2.3.0 Task 6.8 (Req. 6.14): Edge case "0 Karten im Besitz".
+        # Wenn der Spieler keine (filterbaren) Karten besitzt, würde das
+        # Karten-Auswahl-Menü leer angezeigt werden. Stattdessen klar
+        # kommunizieren, dass nichts zum Aufwerten da ist, und früh aussteigen.
+        user_karten = await module.get_user_karten(user_id)
+        eligible_karten = module._filter_owned_cards_for_current_mode(user_karten)
+        if not eligible_karten:
+            empty_embed = discord.Embed(
+                title="\u274c Keine Karten zum Verst\u00e4rken",
+                description=(
+                    "Du hast aktuell keine Karten in deinem Besitz, die du "
+                    "aufwerten k\u00f6nntest. Sammle erst Karten und versuche "
+                    "es dann erneut."
+                ),
+                color=0xFF0000,
+            )
+            await module._send_ephemeral(interaction, embed=empty_embed)
+            return
+
+        # v2.3.0 Task 6.8: Einstieg in den \u00fcberarbeiteten /verbessern-Flow
+        # geht jetzt direkt in die Karten-Auswahl (FuseCardSelectView).
+        # Stat-Auswahl und Multiplikator-Auswahl folgen in den Schritten B/C.
+        view = module.FuseCardSelectView(interaction.user.id, user_dust, eligible_karten)
         embed = discord.Embed(
             title="\U0001F48E Karten-Verst\u00e4rkung",
             description=(
                 f"Du hast **{user_dust} Infinitydust**\n\n"
-                "Wähle die Menge für die Verstärkung:\n\n"
-                f"💎 **{module.FUSE_DUST_COST} Dust** = +{module.FUSE_HEALTH_BONUS} Leben\n"
-                f"⚔️ Standard: {module.STANDARD_DAMAGE_UPGRADE_MAX_TIMES}x +{module.STANDARD_DAMAGE_UPGRADE_STEP} Max-Schaden\n"
-                f"⚔️ Spezial: {module.SPECIAL_DAMAGE_UPGRADE_MAX_TIMES}x +{module.SPECIAL_DAMAGE_UPGRADE_STEP} Max-Schaden\n"
-                "Min-Schaden bleibt gleich."
+                "W\u00e4hle eine Karte zum Verst\u00e4rken. Danach kannst du "
+                "den Stat (Leben oder eine Attacke) und einen Multiplikator "
+                "von **1\u00d7 (5 Dust)** bis **6\u00d7 (30 Dust)** w\u00e4hlen."
             ),
             color=0x9D4EDD,
         )

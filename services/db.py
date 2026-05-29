@@ -469,4 +469,28 @@ async def init_db():
 
     await _migrate_default_variant_card_names(db)
 
+    # AFK-Markierungssystem (v2.3.0, Req. 13.8/13.9): persistente Timer für offene
+    # Challenges und laufende Kämpfe, damit Pings auch nach Bot-Neustart weiterlaufen.
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS afk_timers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            battle_id TEXT NOT NULL UNIQUE,
+            thread_id INTEGER,
+            challenger_id INTEGER NOT NULL,
+            acceptor_id INTEGER NOT NULL,
+            active_player_id INTEGER,
+            round_number INTEGER NOT NULL DEFAULT 0,
+            round_started_at INTEGER NOT NULL,
+            last_action_at INTEGER NOT NULL,
+            pings_sent_mask INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL
+        )
+        """
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_afk_battle_id ON afk_timers(battle_id)"
+    )
+
     await db.commit()

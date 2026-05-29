@@ -3,7 +3,7 @@ import copy
 import unittest
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import ANY, AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 # pyright: reportArgumentType=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalSubscript=false, reportAssignmentType=false
 
@@ -494,10 +494,12 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
         kwargs = interaction.response.edit_message.await_args.kwargs
         next_view = kwargs["view"]
         self.assertIsInstance(next_view, bot_module.FuseCardSelectView)
-        self.assertEqual(next_view.mode, "root")
+        # v2.3.0: top action menu was removed and "root" mode is aliased to
+        # "browse"; returning to the card picker now lands directly in browse.
+        self.assertEqual(next_view.mode, "browse")
         self.assertEqual(
             [str(opt.value) for opt in next_view.action_select.options],
-            [bot_module.FUSE_CARD_ACTION_SEARCH, bot_module.FUSE_CARD_ACTION_BROWSE_ALL],
+            [bot_module.FUSE_CARD_ACTION_BACK],
         )
         next_view.stop()
 
@@ -548,9 +550,12 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(len(actual_values), 25)
             self.assertEqual(actual_values, [f"Testheld {index}" for index in range(1, 26)])
+            # v2.3.0: default mode is "browse"; the (deprecated) action_select
+            # therefore exposes the browse-mode options ("Zurück") rather than
+            # the legacy root-mode pair (Suchen / Alle durchsuchen).
             self.assertEqual(
                 [str(opt.value) for opt in view.action_select.options],
-                [bot_module.FUSE_CARD_ACTION_SEARCH, bot_module.FUSE_CARD_ACTION_BROWSE_ALL],
+                [bot_module.FUSE_CARD_ACTION_BACK],
             )
         finally:
             view.stop()
@@ -652,10 +657,13 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
             kwargs = back_interaction.response.edit_message.await_args.kwargs
             root_view = kwargs["view"]
             self.assertIsInstance(root_view, bot_module.FuseCardSelectView)
-            self.assertEqual(root_view.mode, "root")
+            # v2.3.0: "root" mode is aliased to "browse" because the top
+            # action menu was removed; "Zurück" lands us in browse mode and
+            # the deprecated action_select exposes only the BACK option.
+            self.assertEqual(root_view.mode, "browse")
             self.assertEqual(
                 [str(opt.value) for opt in root_view.action_select.options],
-                [bot_module.FUSE_CARD_ACTION_SEARCH, bot_module.FUSE_CARD_ACTION_BROWSE_ALL],
+                [bot_module.FUSE_CARD_ACTION_BACK],
             )
         finally:
             browse_view.stop()
@@ -1242,6 +1250,503 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot_module._resolve_final_damage_cooldown_turns(attack, 55), 8)
 
 
+class FuseCardSelectViewPaginationTests(unittest.TestCase):
+    """Verifies the pagination behaviour of the /verbessern card-select step.
+
+    Validates: Requirements 6.4 — pagination is offered only on the card-select
+    step and only when the number of card groups exceeds the Discord 25-option
+    list limit. Subsequent steps (Stat-Auswahl, Multiplikator-Auswahl) must not
+    expose page navigation.
+    """
+
+    @staticmethod
+    def _make_groups(count: int) -> list[dict[str, object]]:
+        return [
+            {"base_name": f"Testheld {index}", "total_amount": 1}
+            for index in range(1, count + 1)
+        ]
+
+    @staticmethod
+    def _pagination_buttons(view: bot_module.ui.View) -> list[bot_module.ui.Button]:
+        return [
+            child
+            for child in view.children
+            if isinstance(child, bot_module.ui.Button)
+            and str(getattr(child, "label", "")) in {"Zurück", "Weiter"}
+        ]
+
+    def test_no_pagination_buttons_when_under_25_cards(self) -> None:
+        view = bot_module.FuseCardSelectView(
+            77, 10, [], grouped_cards=self._make_groups(5)
+        )
+        try:
+            labels = [
+                str(getattr(child, "label", ""))
+                for child in view.children
+                if isinstance(child, bot_module.ui.Button)
+            ]
+            self.assertNotIn("Zurück", labels)
+            self.assertNotIn("Weiter", labels)
+        finally:
+            view.stop()
+
+    def test_pagination_buttons_visible_when_over_25_cards(self) -> None:
+        view = bot_module.FuseCardSelectView(
+            77, 10, [], grouped_cards=self._make_groups(30)
+        )
+        try:
+            buttons = self._pagination_buttons(view)
+            labels = sorted(str(getattr(btn, "label", "")) for btn in buttons)
+            self.assertEqual(labels, ["Weiter", "Zurück"])
+        finally:
+            view.stop()
+
+    def test_prev_disabled_on_first_page(self) -> None:
+        view = bot_module.FuseCardSelectView(
+            77, 10, [], grouped_cards=self._make_groups(30), page=0
+        )
+        try:
+            self.assertTrue(view.prev_button.disabled)
+            self.assertFalse(view.next_button.disabled)
+        finally:
+            view.stop()
+
+    def test_next_disabled_on_last_page(self) -> None:
+        view = bot_module.FuseCardSelectView(
+            77, 10, [], grouped_cards=self._make_groups(30), page=1
+        )
+        try:
+            self.assertFalse(view.prev_button.disabled)
+            self.assertTrue(view.next_button.disabled)
+        finally:
+            view.stop()
+
+    def test_pagination_only_on_card_step(self) -> None:
+        card = {
+            "name": "Iron-Man",
+            "hp": 70,
+            "attacks": [{"name": "Repulsor", "damage": [10, 20]}],
+        }
+        post_card_views = [
+            bot_module.BuffTypeSelectView(77, 10, "Iron-Man", card, []),
+            bot_module.DustAmountView(77, 10),
+        ]
+        try:
+            for view in post_card_views:
+                buttons = self._pagination_buttons(view)
+                self.assertEqual(
+                    buttons,
+                    [],
+                    f"{type(view).__name__} must not expose pagination buttons",
+                )
+        finally:
+            for view in post_card_views:
+                view.stop()
+
+
+class FuseStatSelectViewTests(unittest.TestCase):
+    """Validates the new Card -> Stat -> Multiplier flow for /verbessern.
+
+    Validates: Requirements 6.5, 6.12
+    """
+
+    def _basic_card(self) -> dict:
+        return {
+            "name": "Iron-Man",
+            "hp": 100,
+            "attacks": [{"name": "Repulsor", "damage": [10, 20]}],
+        }
+
+    def _option_values(self, view: "bot_module.FuseStatSelectView") -> list[str]:
+        return [str(opt.value) for opt in view.stat_select.options]
+
+    def test_stat_select_shows_hp_and_damage_options_for_basic_card(self) -> None:
+        card = self._basic_card()
+        view = bot_module.FuseStatSelectView(77, "Iron-Man", card, [])
+        try:
+            values = self._option_values(view)
+            self.assertIn("health_0", values)
+            self.assertIn("damage_1", values)
+            self.assertNotIn("__none__", values)
+            self.assertTrue(view.has_upgradeable_stats())
+        finally:
+            view.stop()
+
+    def test_stat_select_hides_capped_hp(self) -> None:
+        card = self._basic_card()
+        # Base HP 100 + 100 health buff == 200 == FUSE_HP_CAP -> HP option hidden
+        buffs = [("health", 0, 100)]
+        view = bot_module.FuseStatSelectView(77, "Iron-Man", card, buffs)
+        try:
+            values = self._option_values(view)
+            self.assertNotIn("health_0", values)
+            # damage option for the only attack stays available
+            self.assertIn("damage_1", values)
+        finally:
+            view.stop()
+
+    def test_stat_select_hides_capped_attack_damage(self) -> None:
+        card = self._basic_card()
+        # Iron-Man's only attack is a non-special damage attack: max bonus is
+        # STANDARD_DAMAGE_UPGRADE_STEP * STANDARD_DAMAGE_UPGRADE_MAX_TIMES.
+        attack = card["attacks"][0]
+        max_bonus = bot_module._attack_upgrade_max_bonus(attack)
+        buffs = [("damage", 1, max_bonus)]
+        view = bot_module.FuseStatSelectView(77, "Iron-Man", card, buffs)
+        try:
+            values = self._option_values(view)
+            self.assertNotIn("damage_1", values)
+            # HP option remains available because HP is at base 100 < cap 200
+            self.assertIn("health_0", values)
+        finally:
+            view.stop()
+
+    def test_stat_select_shows_no_upgrade_hint_when_all_capped(self) -> None:
+        card = self._basic_card()
+        attack = card["attacks"][0]
+        max_bonus = bot_module._attack_upgrade_max_bonus(attack)
+        buffs = [
+            ("health", 0, 100),
+            ("damage", 1, max_bonus),
+        ]
+        view = bot_module.FuseStatSelectView(77, "Iron-Man", card, buffs)
+        try:
+            values = self._option_values(view)
+            self.assertEqual(values, ["__none__"])
+            self.assertFalse(view.has_upgradeable_stats())
+        finally:
+            view.stop()
+
+
+class FuseMultiplierViewTests(unittest.IsolatedAsyncioTestCase):
+    """Validates the new multiplier picker (1×–6×) for /verbessern Schritt C.
+
+    Validates: Requirements 6.1, 6.2, 6.6, 6.7, 6.8, 6.9, 6.10
+    """
+
+    def _basic_card(self) -> dict:
+        return {
+            "name": "Iron-Man",
+            "hp": 100,
+            "attacks": [
+                {"name": "Repulsor", "damage": [10, 20], "is_standard_attack": True},
+            ],
+        }
+
+    def _option_values(self, view: "bot_module.FuseMultiplierView") -> list[str]:
+        return [str(opt.value) for opt in view.multiplier_select.options]
+
+    def test_multiplier_options_for_uncapped_hp_show_all_six(self) -> None:
+        # Base HP 100, FUSE_HP_CAP 200, FUSE_HEALTH_BONUS 10 → cap_remaining 100,
+        # max_by_cap 10 → clipped to 6 visible options. Dust 1000 → all
+        # affordable.
+        card = self._basic_card()
+        view = bot_module.FuseMultiplierView(
+            77,
+            selected_card="Iron-Man",
+            karte_data=card,
+            user_buffs=[],
+            stat_choice="health_0",
+            dust_balance=1000,
+        )
+        try:
+            values = self._option_values(view)
+            self.assertEqual(values, ["1", "2", "3", "4", "5", "6"])
+            # All visible multipliers are affordable with 1000 Dust.
+            self.assertEqual(view.multiplier_select._affordable, {1, 2, 3, 4, 5, 6})
+            # No "zu teuer" marker because everything is affordable.
+            for opt in view.multiplier_select.options:
+                self.assertNotIn("zu teuer", str(opt.label))
+        finally:
+            view.stop()
+
+    def test_multiplier_options_clip_when_close_to_cap(self) -> None:
+        # Base HP 100 + 90 health buff = 190 → cap_remaining 10. With base_step
+        # 10 only 1× is allowed, 2×–6× must be hidden (Req. 6.7).
+        card = self._basic_card()
+        buffs = [("health", 0, 90)]
+        view = bot_module.FuseMultiplierView(
+            77,
+            selected_card="Iron-Man",
+            karte_data=card,
+            user_buffs=buffs,
+            stat_choice="health_0",
+            dust_balance=1000,
+        )
+        try:
+            values = self._option_values(view)
+            self.assertEqual(values, ["1"])
+        finally:
+            view.stop()
+
+    def test_multiplier_options_marked_too_expensive_when_dust_low(self) -> None:
+        # cap_remaining 100, base_step 10 → visible 1×–6×. Dust 12 → only 1× and
+        # 2× affordable. 3×–6× must remain visible but be marked (Req. 6.9).
+        card = self._basic_card()
+        view = bot_module.FuseMultiplierView(
+            77,
+            selected_card="Iron-Man",
+            karte_data=card,
+            user_buffs=[],
+            stat_choice="health_0",
+            dust_balance=12,
+        )
+        try:
+            values = self._option_values(view)
+            self.assertEqual(values, ["1", "2", "3", "4", "5", "6"])
+            self.assertEqual(view.multiplier_select._affordable, {1, 2})
+            options_by_value = {
+                str(opt.value): opt for opt in view.multiplier_select.options
+            }
+            for affordable in ("1", "2"):
+                self.assertNotIn(
+                    "zu teuer",
+                    str(options_by_value[affordable].label),
+                    f"{affordable}× should not be marked too expensive",
+                )
+            for too_expensive in ("3", "4", "5", "6"):
+                self.assertIn(
+                    "zu teuer",
+                    str(options_by_value[too_expensive].label),
+                    f"{too_expensive}× should be marked too expensive",
+                )
+        finally:
+            view.stop()
+
+    def test_multiplier_options_for_attack_use_attack_step(self) -> None:
+        # Standardangriff: STANDARD_DAMAGE_UPGRADE_STEP=4,
+        # STANDARD_DAMAGE_UPGRADE_MAX_TIMES=2 → upgrade cap 8 = 2 Schritte à 4.
+        card = self._basic_card()
+        view = bot_module.FuseMultiplierView(
+            77,
+            selected_card="Iron-Man",
+            karte_data=card,
+            user_buffs=[],
+            stat_choice="damage_1",
+            dust_balance=1000,
+        )
+        try:
+            values = self._option_values(view)
+            self.assertEqual(values, ["1", "2"])
+            self.assertEqual(view.multiplier_select.base_step, 4)
+            self.assertEqual(view.multiplier_select.cap_remaining, 8)
+        finally:
+            view.stop()
+
+    async def test_callback_rejects_too_expensive_choice(self) -> None:
+        # Dust 5 → nur 1× ist bezahlbar. Wenn der Spieler "2" einsendet, lehnt
+        # der Callback ab und ruft kein spend_infinitydust auf.
+        card = self._basic_card()
+        view = bot_module.FuseMultiplierView(
+            77,
+            selected_card="Iron-Man",
+            karte_data=card,
+            user_buffs=[],
+            stat_choice="health_0",
+            dust_balance=5,
+        )
+        try:
+            select = view.multiplier_select
+            select._values = ["2"]
+
+            interaction = SimpleNamespace(
+                user=SimpleNamespace(id=77),
+                guild_id=123,
+                channel_id=456,
+                channel=SimpleNamespace(id=456),
+                response=SimpleNamespace(
+                    send_message=AsyncMock(),
+                    edit_message=AsyncMock(),
+                    is_done=lambda: False,
+                ),
+                followup=SimpleNamespace(send=AsyncMock()),
+            )
+
+            with patch(
+                "bot.defer_interaction", new=AsyncMock()
+            ), patch(
+                "bot.send_interaction_response", new=AsyncMock()
+            ) as send_mock, patch(
+                "bot.spend_infinitydust",
+                new=AsyncMock(return_value=True),
+            ) as spend_mock, patch(
+                "bot.add_card_buff", new=AsyncMock()
+            ) as add_buff_mock, patch(
+                "bot.add_infinitydust", new=AsyncMock()
+            ):
+                await select.callback(interaction)
+
+            spend_mock.assert_not_awaited()
+            add_buff_mock.assert_not_awaited()
+            send_mock.assert_awaited_once()
+            content = send_mock.await_args.kwargs.get("content", "")
+            self.assertIn("nicht genug Dust", content)
+            self.assertIn("2×", content)
+        finally:
+            view.stop()
+
+    def test_multiplier_view_placeholder_displays_dust_balance(self) -> None:
+        # Req. 6.10: Vor der Multiplikator-Auswahl muss der aktuelle Dust-
+        # Vorrat sichtbar sein. Der Select-Placeholder enthält den Saldo.
+        card = self._basic_card()
+        view = bot_module.FuseMultiplierView(
+            77,
+            selected_card="Iron-Man",
+            karte_data=card,
+            user_buffs=[],
+            stat_choice="health_0",
+            dust_balance=42,
+        )
+        try:
+            placeholder = str(view.multiplier_select.placeholder or "")
+            self.assertIn("42", placeholder)
+        finally:
+            view.stop()
+
+    async def test_apply_emits_result_embed_with_prev_and_new_stats(self) -> None:
+        # Req. 6.11: Nach erfolgreicher Aufwertung muss der Bestätigungs-Embed
+        # Vorher/Nachher-Werte, verbrauchten Dust und neuen Saldo enthalten.
+        # HP mit Multiplikator 2× und base_step 10 → +20 HP. Basis-HP 100,
+        # keine vorherigen Buffs → 100 HP → 120 HP.
+        card = self._basic_card()
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=77),
+            guild_id=123,
+            channel_id=456,
+            channel=SimpleNamespace(id=456),
+            response=SimpleNamespace(
+                send_message=AsyncMock(),
+                edit_message=AsyncMock(),
+                is_done=lambda: False,
+            ),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+
+        captured: dict = {}
+
+        async def _capture_edit(_inter, **kwargs):
+            captured["embed"] = kwargs.get("embed")
+            captured["view"] = kwargs.get("view")
+            return None
+
+        with patch(
+            "bot.spend_infinitydust", new=AsyncMock(return_value=True)
+        ), patch(
+            "bot.add_card_buff", new=AsyncMock()
+        ), patch(
+            "bot.add_infinitydust", new=AsyncMock()
+        ), patch(
+            "bot.get_card_buffs", new=AsyncMock(return_value=[])
+        ), patch(
+            "bot.get_infinitydust", new=AsyncMock(return_value=50)
+        ), patch(
+            "bot._log_event_safe", new=AsyncMock()
+        ), patch(
+            "bot.edit_interaction_message", new=AsyncMock(side_effect=_capture_edit)
+        ):
+            await bot_module._apply_fuse_multi_upgrade_legacy(
+                interaction=interaction,
+                view=None,
+                selected_card="Iron-Man",
+                karte_data=card,
+                stat_choice="health_0",
+                multiplier=2,
+                cost_per_step=bot_module.FUSE_MULTIPLIER_DUST_PER_STEP,
+                base_step=10,
+            )
+
+        embed = captured.get("embed")
+        self.assertIsNotNone(embed, "expected an embed to be posted")
+        description = str(embed.description or "")
+        self.assertIn("100 HP", description)
+        self.assertIn("120 HP", description)
+        self.assertIn("Iron-Man", description)
+
+        field_names = [str(field.name or "") for field in embed.fields]
+        field_values = {
+            str(field.name or ""): str(field.value or "")
+            for field in embed.fields
+        }
+        self.assertIn("💎 Dust verbraucht", field_names)
+        self.assertIn("💎 Dust verbleibend", field_names)
+        # 2× × 5 Dust = 10 Dust verbraucht; remaining = 50 (mock).
+        self.assertIn("10", field_values["💎 Dust verbraucht"])
+        self.assertIn("50", field_values["💎 Dust verbleibend"])
+        # Alle Schritte angewendet → kein Hinweis-Feld.
+        self.assertNotIn("⚠️ Hinweis", field_names)
+
+    async def test_apply_rollback_on_add_card_buff_failure(self) -> None:
+        # Req. 6.13: Schlägt der Stat-Apply nach erfolgreichem Dust-Spend fehl,
+        # muss der gesamte Dust-Betrag in einem Zug refundiert werden, damit
+        # der Spieler entweder vollständig aufgewertet oder unverändert bleibt.
+        # Setup: multiplier=3, cost_per_step=5 → total_dust_cost=15.
+        card = self._basic_card()
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=77),
+            guild_id=123,
+            channel_id=456,
+            channel=SimpleNamespace(id=456),
+            response=SimpleNamespace(
+                send_message=AsyncMock(),
+                edit_message=AsyncMock(),
+                is_done=lambda: False,
+            ),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+
+        send_mock = AsyncMock()
+        refund_mock = AsyncMock()
+        spend_mock = AsyncMock(return_value=True)
+        add_buff_mock = AsyncMock(side_effect=RuntimeError("DB fail"))
+        edit_mock = AsyncMock()
+
+        with patch(
+            "bot.spend_infinitydust", new=spend_mock
+        ), patch(
+            "bot.add_card_buff", new=add_buff_mock
+        ), patch(
+            "bot.add_infinitydust", new=refund_mock
+        ), patch(
+            "bot.get_card_buffs", new=AsyncMock(return_value=[])
+        ), patch(
+            "bot.get_infinitydust", new=AsyncMock(return_value=0)
+        ), patch(
+            "bot._log_event_safe", new=AsyncMock()
+        ), patch(
+            "bot.send_interaction_response", new=send_mock
+        ), patch(
+            "bot.edit_interaction_message", new=edit_mock
+        ):
+            await bot_module._apply_fuse_multi_upgrade_legacy(
+                interaction=interaction,
+                view=None,
+                selected_card="Iron-Man",
+                karte_data=card,
+                stat_choice="health_0",
+                multiplier=3,
+                cost_per_step=5,
+                base_step=10,
+            )
+
+        # Spend wurde einmal mit dem Gesamtbetrag aufgerufen.
+        spend_mock.assert_awaited_once_with(77, 15)
+        # Apply hat genau einmal versucht zu schreiben (mit dem vollen Gain).
+        add_buff_mock.assert_awaited_once()
+        apply_args = add_buff_mock.await_args.args
+        self.assertEqual(apply_args[0], 77)
+        self.assertEqual(apply_args[1], "Iron-Man")
+        self.assertEqual(apply_args[2], "health")
+        self.assertEqual(apply_args[3], 0)
+        self.assertEqual(apply_args[4], 30)  # 3× × 10 base_step
+        # Refund: voller Betrag (15) wurde in einem Aufruf zurückerstattet.
+        refund_mock.assert_awaited_once_with(77, 15)
+        # Kein Bestätigungs-Embed bei Rollback — stattdessen Fehlermeldung.
+        edit_mock.assert_not_awaited()
+        send_mock.assert_awaited_once()
+        content = send_mock.await_args.kwargs.get("content", "")
+        self.assertIn("zurückerstattet", content)
+
+
 class BattleBotChoiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_bot_choice_prefers_heal_at_low_hp(self) -> None:
         player_card = {"name": "Player", "hp": 140, "attacks": [{"name": "Punch", "damage": [10, 20]}]}
@@ -1451,6 +1956,7 @@ class DustFlowTests(unittest.IsolatedAsyncioTestCase):
             user=SimpleNamespace(id=99, mention="<@99>", display_name="Admin"),
             followup=followup,
             channel=object(),
+            command=None,
         )
 
         with patch("bot.AdminUserSelectView", side_effect=lambda *args, **kwargs: _FakeAdminSelectView()), patch(
@@ -1481,6 +1987,90 @@ class DustFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["results"], [(7, 4)])
         self.assertEqual(kwargs["amount"], 10)
         self.assertTrue(kwargs["remove"])
+
+    async def test_run_dust_command_flow_loedust_multi_uses_quick_amount_view(self) -> None:
+        """`/lödust` (remove=True) im Multi-Modus läuft durch denselben Flow wie
+        `/dust` und trifft dabei `DustQuickAmountView` + `DustGiveConfirmView`.
+
+        Smoke-Test für Task 4.3: bestätigt, dass die Änderungen aus Task 4.2
+        (Quick-Pick-Buttons, Confirm-Schritt, neues Ergebnis-Embed) automatisch
+        auch auf `/lödust` greifen, weil `loedust` denselben
+        `run_dust_command_flow(remove=True)` aufruft.
+        """
+
+        class _FakeMultiUserSelectView:
+            def __init__(self, *_args, **_kwargs):
+                self.value = [42, 43]
+
+            def _content(self) -> str:
+                return "fake-content"
+
+            def _summary_embed(self):
+                return None
+
+            def bind_message(self, _message) -> None:
+                return None
+
+            async def wait(self) -> None:
+                return None
+
+        class _FakeQuickAmountView:
+            def __init__(self, *_args, **_kwargs):
+                self.value = 15
+
+            async def wait(self) -> None:
+                return None
+
+        class _FakeConfirmView:
+            def __init__(self, *_args, **_kwargs):
+                self.value = True
+
+            async def wait(self) -> None:
+                return None
+
+        guild = SimpleNamespace(get_member=lambda user_id: None, id=0)
+        followup = SimpleNamespace(send=AsyncMock(return_value=object()))
+        interaction = SimpleNamespace(
+            guild=guild,
+            guild_id=0,
+            user=SimpleNamespace(id=99, mention="<@99>", display_name="Admin"),
+            followup=followup,
+            channel=SimpleNamespace(id=0),
+            command=None,
+        )
+
+        multi_view_mock = MagicMock(side_effect=lambda *a, **kw: _FakeMultiUserSelectView())
+        quick_amount_mock = MagicMock(side_effect=lambda *a, **kw: _FakeQuickAmountView())
+        confirm_mock = MagicMock(side_effect=lambda *a, **kw: _FakeConfirmView())
+
+        with patch("bot.DustMultiUserSelectView", new=multi_view_mock), patch(
+            "bot.DustQuickAmountView", new=quick_amount_mock
+        ), patch("bot.DustGiveConfirmView", new=confirm_mock), patch(
+            "bot.remove_infinitydust", new=AsyncMock(return_value=15)
+        ) as remove_mock, patch(
+            "bot.log_admin_dust_action", new=AsyncMock()
+        ), patch(
+            "bot._post_dust_result_message", new=AsyncMock(return_value=True)
+        ) as result_mock:
+            await bot_module.run_dust_command_flow(
+                interaction, mode="multi", remove=True
+            )
+
+        # DustQuickAmountView und DustGiveConfirmView wurden im Multi-Pfad genutzt.
+        self.assertTrue(quick_amount_mock.called, "DustQuickAmountView nicht instanziiert")
+        self.assertTrue(confirm_mock.called, "DustGiveConfirmView nicht instanziiert")
+
+        # remove_infinitydust wurde pro Ziel-User einmal awaited (2 User × 15 Dust).
+        self.assertEqual(remove_mock.await_count, 2)
+        remove_mock.assert_any_await(42, 15)
+        remove_mock.assert_any_await(43, 15)
+
+        # Ergebnis-Embed wurde einmal mit den erwarteten Kwargs gepostet.
+        result_mock.assert_awaited_once()
+        kwargs = result_mock.await_args.kwargs
+        self.assertEqual(kwargs["mode"], "multi")
+        self.assertTrue(kwargs["remove"])
+        self.assertEqual(kwargs["amount"], 15)
 
     def test_dust_multi_user_select_view_has_search_and_done_first(self) -> None:
         class _Member:
@@ -1531,7 +2121,7 @@ class DustFlowTests(unittest.IsolatedAsyncioTestCase):
             view.selected_user_ids = [1, 3]
             embed = view._summary_embed()
             self.assertEqual(embed.title, "\U0001f48e Multi-Auswahl f\u00fcr Infinitydust")
-            self.assertIn("Alpha\\_User", embed.fields[2].value)
+            self.assertIn("Alpha\u200b_User", embed.fields[2].value)
             self.assertIn("Beta-User", embed.fields[2].value)
             self.assertEqual(embed.fields[0].value, "2")
         finally:
@@ -3403,7 +3993,10 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         field_values = "\n".join(str(field.value) for field in embed.fields)
         self.assertIn("Iron-Man", field_values)
         self.assertIn("bereits", field_values)
-        self.assertEqual(str(embed.image.url), "https://i.imgur.com/PAtPxVW.png")
+        # v2.3.0 (Req. 8.2/8.3): Dust-Bild erscheint ausschließlich als Thumbnail,
+        # nicht mehr im großen Image-Slot.
+        self.assertIsNone(embed.image.url)
+        self.assertEqual(str(embed.thumbnail.url), "https://i.imgur.com/PAtPxVW.png")
 
     async def test_mission_enemy_without_image_does_not_crash_embed(self) -> None:
         player_card = {
@@ -3635,7 +4228,8 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
             attack_index=0,
             standard_index=0,
         )
-        self.assertEqual(bonus, 15)
+        # v2.3.0 (Req. 16.2): Trophäensaal-Raub gewährt +10 Bonus-Schaden (vorher +15).
+        self.assertEqual(bonus, 10)
 
     async def test_completed_wave_carries_player_hp_forward(self) -> None:
         mission = bot_module.build_operation_broken_timeline_mission(mission_number=1, is_admin=False)

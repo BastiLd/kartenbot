@@ -1,3 +1,4 @@
+import logging
 import random
 import re
 from typing import Literal, overload
@@ -9,6 +10,51 @@ from services.battle_types import CardData, DamageValue, MultiHitConfig, MultiHi
 
 DamageInput = DamageValue
 MultiHitDetails = MultiHitRollDetails
+
+logger = logging.getLogger(__name__)
+
+
+def _format_attack_label(attack: dict, is_on_cooldown: bool) -> str:
+    """Hängt das Cooldown-Suffix ``(<n>CD)`` an verfügbare Fähigkeiten an (Req. 14).
+
+    Regeln:
+        * Fähigkeit liegt gerade auf Cooldown -> nur der Name (bleibt ausgegraut,
+          kein Rest-Counter, Req. 14.3).
+        * Fähigkeit verfügbar und konfigurierter Cooldown > 0 -> ``"{name} ({n}CD)"``
+          (Req. 14.1/14.4).
+        * Cooldown = 0 oder nicht gesetzt -> nur der Name (Req. 14.5).
+    """
+    name = str((attack or {}).get("name") or "")
+    if is_on_cooldown:
+        return name
+    try:
+        cd = int((attack or {}).get("cooldown_turns") or 0)
+    except (TypeError, ValueError):
+        cd = 0
+    if cd > 0:
+        return f"{name} ({cd}CD)"
+    return name
+
+
+def render_boss_special_activation(boss_name: str, ability_name: str, effect_text: str) -> str | None:
+    """Rendert die hervorgehobene Boss-Spezial-Aktivierungszeile (Req. 15).
+
+    Format: ``⚡ **{ability_name}** — {effect_text}``.
+
+    Fehlt Name oder Effekt-Text, wird ``None`` zurückgegeben und eine Warnung
+    geloggt (Req. 15.3) – es darf dann keine Meldung gesendet werden.
+    """
+    ability = str(ability_name or "").strip()
+    effect = str(effect_text or "").strip()
+    if not ability or not effect:
+        logger.warning(
+            "Boss special missing fields (boss=%r, ability=%r, effect=%r)",
+            boss_name,
+            ability_name,
+            effect_text,
+        )
+        return None
+    return f"⚡ **{ability}** — {effect}"
 
 
 def _safe_int(value: object, default: int = 0) -> int:
