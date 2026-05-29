@@ -409,9 +409,13 @@ def _damage_breakdown_lines(
     final_damage = max(0, int(actual_damage or 0))
     effect_damage = max(0, int(pre_effect_damage or 0))
     base_damage, boosted_damage, boost_bonus = _extract_boost_breakdown(effect_events)
-    direct_damage = final_damage
-    if boosted_damage == final_damage and boost_bonus > 0:
+    # Bei aktiver Verstärkung den AUSGANGSSCHADEN (vor Schutz-Reduktion) anzeigen:
+    # Grundschaden + Verstärkung. Eine evtl. Schutz-Reduktion erscheint separat in der
+    # "Schutzwirkung: X -> Y"-Zeile, daher hier NICHT den bereits reduzierten Endwert nehmen.
+    if boost_bonus > 0 and base_damage > 0:
         direct_damage = max(0, int(base_damage))
+    else:
+        direct_damage = final_damage
     total_damage = max(0, direct_damage + boost_bonus + effect_damage)
 
     lines: list[str] = []

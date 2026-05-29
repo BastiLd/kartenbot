@@ -30,6 +30,7 @@ from botcore.command_api import build_command_api
 from botcore.feature_config import boss_switch_enabled
 from services.mission_rewards import MissionRewardAccumulator, commit_on_mission_success
 from services import afk_tracker
+from services import mission_rewards
 from botcore.facades import AdminFacade, GameplayFacade, PlayerFacade
 from botcore.bootstrap import BOT_START_TIME, build_bot, run_bot
 from botcore.interaction_utils import defer_interaction, edit_interaction_message, send_interaction_response
@@ -199,7 +200,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.0"
+__version__ = "2.3.1"
 
 
 class CardCatalog:
@@ -2766,8 +2767,9 @@ async def on_message(message: discord.Message):
                 except Exception:
                     logging.exception("Failed to patch managed fight session %s", session.get("session_id"))
 
-    # Intro-Prompt nur in normalen Kanälen anzeigen – nicht in verwalteten Threads (Mission/PVP)
-    if not _is_managed:
+    # Intro-Prompt nur in normalen Kanälen anzeigen – niemals in Threads (Mission/PVP),
+    # auch wenn ein Thread (noch) nicht als "managed" registriert ist.
+    if not _is_managed and not isinstance(message.channel, discord.Thread):
         try:
             async with db_context() as db:
                 cursor = await db.execute(
@@ -3277,8 +3279,10 @@ class MissionView(RestrictedView):
             await interaction.response.send_message(embed=embed, view=MissionView(self.user_id))
         else:
             # Karte wurde zu Infinitydust umgewandelt
-            # Req. 7.3/7.8: bereits besessene Karte gibt zusätzlich +1 Infinitydust (sofort).
-            await add_infinitydust(self.user_id, 1)
+            # Req. 7.3/7.8: bereits besessene Karte gibt den konfigurierten Bonus-Staub (sofort).
+            _dup_bonus = mission_rewards.daily_duplicate_bonus()
+            if _dup_bonus > 0:
+                await add_infinitydust(self.user_id, _dup_bonus)
             embed = discord.Embed(
                 title="💎 Mission abgeschlossen - Infinitydust!",
                 description=f"Du hattest **{karte['name']}** bereits!",
@@ -8731,7 +8735,13 @@ def _apply_item_media(embed: discord.Embed, item_id: str, *, image: bool = False
 def _build_units_collection_field_value(units: int) -> str | None:
     if units <= 0:
         return None
-    return f"Anzahl: {units}x"
+    cost, _mode = _unit_boss_revive_config()
+    lines = [f"Aktuell: {units}x"]
+    # Wiederbelebungs-Vorschau (kein Timer/Cooldown): zeigt, wie viele Units nach
+    # einer Boss-Wiederbelebung verbleiben würden.
+    if cost > 0 and units >= cost:
+        lines.append(f"Danach: {units - cost}x (nach einer Wiederbelebung für {cost})")
+    return "\n".join(lines)
 
 
 def _unit_boss_revive_config() -> tuple[int, str]:
@@ -12287,10 +12297,12 @@ class MissionBattleView(DurableView):
 
         await self.persist_session(interaction.channel, status="completed")
 
-        # Req. 7.1/7.2: jeder besiegte Gegner (Lakei oder Boss) erhöht die akkumulierte
-        # Infinitydust-Belohnung um 1. Ausgezahlt wird erst beim Mission-Erfolg (Req. 7.5).
+        # Req. 7.1/7.2: pro gewonnener Welle den in mission_dust_config.py konfigurierten
+        # Staub-Betrag aufaddieren (Welle 1-3 = Lakeien, Welle 4 = Boss). Ausgezahlt wird
+        # erst beim Mission-Erfolg (Req. 7.5).
         self.mission_data["reward_infinitydust"] = (
-            int(self.mission_data.get("reward_infinitydust", 0) or 0) + 1
+            int(self.mission_data.get("reward_infinitydust", 0) or 0)
+            + mission_rewards.wave_dust_reward(int(self.wave_num))
         )
 
         next_wave = self.wave_num + 1
@@ -15124,9 +15136,19 @@ async def _handle_durable_view_error(
         return
     try:
         if channel is not None:
+            # Kurze, verständliche Fehlererklärung direkt in den Thread schreiben
+            # (technische Details gehen zusätzlich per DM an Basti).
+            error_summary = f"{type(error).__name__}: {error}"
+            if len(error_summary) > 400:
+                error_summary = error_summary[:397] + "..."
             await _send_channel_message(
                 channel,
-                content=f"{user_text} Es gab vermutlich einen Bug. Wenn du willst, nutze das Formular unten.",
+                content=(
+                    f"{user_text} ⚠️ **Der Kampf wurde durch einen Fehler unterbrochen.**\n"
+                    f"Was passiert ist (technisch):\n```\n{error_summary}\n```\n"
+                    "Basti wurde mit den vollständigen Log-Details informiert. "
+                    "Wenn du willst, nutze das Formular unten."
+                ),
                 view=BugReportLinkView(),
             )
     except Exception:

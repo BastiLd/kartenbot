@@ -17,8 +17,58 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-# Obergrenze für eine voll abgeschlossene Standard-Mission:
-# 3 Lakeien + 1 Boss + 1 Daily-Duplikat-Bonus = 5 (Req. 7.7).
+# Standard-Fallback, falls mission_dust_config.py fehlt: jede Welle 1 Staub.
+_DEFAULT_WAVE_REWARDS = {1: 1, 2: 1, 3: 1, 4: 1}
+
+
+def _wave_config() -> dict:
+    """Lädt ``mission_dust_config.WAVE_DUST_REWARDS`` defensiv."""
+    try:
+        import mission_dust_config as _cfg  # type: ignore[import-not-found]
+        raw = getattr(_cfg, "WAVE_DUST_REWARDS", None)
+        if isinstance(raw, dict):
+            return raw
+    except Exception:
+        logger.warning("mission_dust_config.py nicht ladbar - Standardwerte aktiv")
+    return {w: {"enabled": True, "amount": a} for w, a in _DEFAULT_WAVE_REWARDS.items()}
+
+
+def wave_dust_reward(wave_num: int) -> int:
+    """Liefert den konfigurierten Staub-Betrag für eine Welle (0 wenn deaktiviert)."""
+    entry = _wave_config().get(int(wave_num))
+    if not isinstance(entry, dict) or not entry.get("enabled", False):
+        return 0
+    try:
+        return max(0, int(entry.get("amount", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def daily_duplicate_bonus() -> int:
+    """Liefert den konfigurierten Daily-Duplikat-Bonus (0 wenn deaktiviert)."""
+    try:
+        import mission_dust_config as _cfg  # type: ignore[import-not-found]
+        if not bool(getattr(_cfg, "DAILY_DUPLICATE_BONUS_ENABLED", True)):
+            return 0
+        return max(0, int(getattr(_cfg, "DAILY_DUPLICATE_BONUS_AMOUNT", 1) or 0))
+    except Exception:
+        return 1
+
+
+def max_mission_total() -> int:
+    """Maximal möglicher Mission-Staub (Summe aller Wellen + Daily-Bonus)."""
+    cfg = _wave_config()
+    total = 0
+    for entry in cfg.values():
+        if isinstance(entry, dict) and entry.get("enabled", False):
+            try:
+                total += max(0, int(entry.get("amount", 0) or 0))
+            except (TypeError, ValueError):
+                pass
+    return total + daily_duplicate_bonus()
+
+
+# Rückwärtskompatibler Default-Cap (Standard-Mission: 3 Lakeien + Boss + Daily = 5).
 MISSION_INFINITYDUST_CAP = 5
 
 
@@ -44,9 +94,9 @@ class MissionRewardAccumulator:
         self.daily_card_bonus_pending = True
 
     def total(self) -> int:
-        """Gesamtsumme inkl. Daily-Bonus, gedeckelt auf den Mission-Cap."""
-        raw = self.infinitydust + (1 if self.daily_card_bonus_pending else 0)
-        return min(raw, MISSION_INFINITYDUST_CAP)
+        """Gesamtsumme inkl. Daily-Bonus, gedeckelt auf den konfigurierten Maximalwert."""
+        raw = self.infinitydust + (daily_duplicate_bonus() if self.daily_card_bonus_pending else 0)
+        return min(raw, max_mission_total())
 
 
 async def commit_on_mission_success(acc: MissionRewardAccumulator, *, add_infinitydust) -> int:
