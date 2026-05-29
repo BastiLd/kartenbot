@@ -200,7 +200,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.1"
+__version__ = "2.3.2"
 
 
 class CardCatalog:
@@ -8733,15 +8733,10 @@ def _apply_item_media(embed: discord.Embed, item_id: str, *, image: bool = False
 
 
 def _build_units_collection_field_value(units: int) -> str | None:
+    # In /sammlung nur die Anzahl anzeigen – exakt wie bei Staub ("Anzahl: Nx").
     if units <= 0:
         return None
-    cost, _mode = _unit_boss_revive_config()
-    lines = [f"Aktuell: {units}x"]
-    # Wiederbelebungs-Vorschau (kein Timer/Cooldown): zeigt, wie viele Units nach
-    # einer Boss-Wiederbelebung verbleiben würden.
-    if cost > 0 and units >= cost:
-        lines.append(f"Danach: {units - cost}x (nach einer Wiederbelebung für {cost})")
-    return "\n".join(lines)
+    return f"Anzahl: {units}x"
 
 
 def _unit_boss_revive_config() -> tuple[int, str]:
@@ -12259,11 +12254,13 @@ class MissionBattleView(DurableView):
                     revive_state["bot_hp"] = max(1, int(self.bot_hp))
                     revive_state["bot_max_hp"] = int(self.bot_max_hp)
                 current_units = await get_units(self.user_id)
+                after_units = max(0, current_units - cost)
                 embed = discord.Embed(
                     title="Bosskampf verloren",
                     description=(
                         f"Wiederbeleben kostet **{cost} Unit**.\n"
-                        f"Du hast aktuell **{current_units} Unit**."
+                        f"Aktuell hast du **{current_units} Unit**.\n"
+                        f"Nach dem Wiederbeleben hättest du **{after_units} Unit**."
                     ),
                     color=0xE67E22,
                 )
