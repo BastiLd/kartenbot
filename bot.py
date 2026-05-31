@@ -216,7 +216,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.5"
+__version__ = "2.3.6"
 
 
 class CardCatalog:
@@ -17056,6 +17056,9 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
         if interaction.guild is None:
             await _send_ephemeral(interaction, content=SERVER_ONLY)
             return
+        # Fix: Interaction zuerst acknowledgen, sonst schlägt followup.send mit
+        # "Unknown Webhook" (404) fehl (handle_dev_action defert nicht von selbst).
+        await defer_interaction(interaction, ephemeral=True)
         multi_user_view = DustMultiUserSelectView(
             interaction.user.id, interaction.guild, item_label="Infinitydust"
         )
@@ -17144,6 +17147,9 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
         if interaction.guild is None:
             await _send_ephemeral(interaction, content=SERVER_ONLY)
             return
+        # Fix: Interaction zuerst acknowledgen, sonst schlägt followup.send mit
+        # "Unknown Webhook" (404) fehl (handle_dev_action defert nicht von selbst).
+        await defer_interaction(interaction, ephemeral=True)
         multi_user_view = DustMultiUserSelectView(
             interaction.user.id, interaction.guild, item_label="Karten"
         )
