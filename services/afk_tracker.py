@@ -207,6 +207,34 @@ async def restore_all_states() -> list[AfkState]:
     return [state_from_row(row) for row in rows]
 
 
+async def load_state(battle_id: str) -> AfkState | None:
+    """Lädt einen einzelnen Zustand anhand seiner ``battle_id`` (oder ``None``)."""
+    from services.db import db_context
+
+    async with db_context() as db:
+        cursor = await db.execute("SELECT * FROM afk_timers WHERE battle_id = ?", (str(battle_id),))
+        row = await cursor.fetchone()
+    return state_from_row(row) if row is not None else None
+
+
+async def touch_battle_turn(battle_id: str, actor_id: int, now: int | None = None) -> AfkState | None:
+    """Markiert einen Spielerzug in einem laufenden PvP-Kampf (Req. 13.6).
+
+    Lädt den persistierten Zustand, schaltet via :func:`on_action` auf die nächste
+    Runde (Reset der Marker, neuer aktiver Spieler = Gegner von ``actor_id``) und
+    speichert. Existiert kein Zustand (z. B. Bot-Kampf oder bereits beendet),
+    passiert nichts. Dadurch funktioniert die Aktualisierung auch nach einem
+    Neustart, ohne dass die View den Zustand im Speicher halten muss.
+    """
+    now = int(now if now is not None else time.time())
+    state = await load_state(battle_id)
+    if state is None:
+        return None
+    on_action(state, actor_id, now)
+    await persist(state)
+    return state
+
+
 async def create_challenge_state(battle_id: str, thread_id: int, challenger_id: int,
                                  acceptor_id: int, now: int | None = None) -> AfkState:
     now = int(now if now is not None else time.time())

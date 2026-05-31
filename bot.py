@@ -216,7 +216,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.8"
+__version__ = "2.3.9"
 
 
 class CardCatalog:
@@ -4730,6 +4730,11 @@ class BattleView(DurableView):
                 await self.persist_session(interaction.channel, status="cancelled")
             except Exception:
                 logging.exception("Failed to persist cancelled fight session")
+            if isinstance(interaction.channel, discord.Thread):
+                try:
+                    await afk_tracker.delete_state(f"battle:{interaction.channel.id}")
+                except Exception:
+                    logging.exception("Failed to delete battle AFK state (cancel)")
             self.stop()
         else:
             await interaction.response.send_message("Du bist nicht an diesem Kampf beteiligt!", ephemeral=True)
@@ -4759,6 +4764,14 @@ class BattleView(DurableView):
             if self.airborne_pending_landing.get(airborne_owner_id):
                 self._consume_airborne_evade_marker(airborne_owner_id)
             self.current_turn = self.player2_id if self.current_turn == self.player1_id else self.player1_id
+            # Req. 13: Betäubungs-Aussetzer zählt als Zug -> AFK-Timer weiterschalten.
+            if self.player2_id != 0 and isinstance(interaction.channel, discord.Thread):
+                try:
+                    await afk_tracker.touch_battle_turn(
+                        f"battle:{interaction.channel.id}", actor_id=skipped_player_id
+                    )
+                except Exception:
+                    logging.exception("Failed to advance battle AFK turn (stun)")
             self.reduce_cooldowns(self.current_turn)
             await self.update_attack_buttons()
             user1 = _get_member_if_available(guild, self.player1_id)
@@ -5911,6 +5924,12 @@ class BattleView(DurableView):
                     [atk for atk in self.player2_card.get("attacks", []) if isinstance(atk, dict)],
                     self.attack_cooldowns.get(self.player2_id, {}),
                 )
+            # Req. 13: Kampf beendet -> AFK-Timer entfernen.
+            if isinstance(interaction.channel, discord.Thread):
+                try:
+                    await afk_tracker.delete_state(f"battle:{interaction.channel.id}")
+                except Exception:
+                    logging.exception("Failed to delete battle AFK state (win)")
             self.stop()
             return
 
@@ -5918,6 +5937,16 @@ class BattleView(DurableView):
         previous_turn = self.current_turn
         _consume_turn_end_decay_effects(self.active_effects, previous_turn)
         self.current_turn = self.player2_id if self.current_turn == self.player1_id else self.player1_id
+
+        # Req. 13: AFK-Timer auf die neue Runde schalten (nur echtes PvP im Thread).
+        # ``previous_turn`` hat gerade gehandelt -> aktiv wird der Gegner (= self.current_turn).
+        if self.player2_id != 0 and isinstance(interaction.channel, discord.Thread):
+            try:
+                await afk_tracker.touch_battle_turn(
+                    f"battle:{interaction.channel.id}", actor_id=previous_turn
+                )
+            except Exception:
+                logging.exception("Failed to advance battle AFK turn")
 
         # COOLDOWN-SYSTEM: Reduziere Cooldowns am START des neuen Zugs
         self.reduce_cooldowns(self.current_turn)
@@ -7824,6 +7853,19 @@ async def _start_fight_battle_from_card_selection(
     battle_message = await _safe_send_channel(interaction, send_channel, embed=embed, view=battle_view)
     if battle_message is not None:
         await battle_view.persist_session(send_channel, status="active", battle_message=battle_message)
+    # Req. 13: AFK-Markierung für PvP-Kampfrunden. Der Herausforderer ist zuerst am Zug.
+    # Bleibt der aktive Spieler zu lange inaktiv, pingt der AFK-Loop ihn (ab Runde 3 auch beide).
+    if isinstance(send_channel, discord.Thread):
+        try:
+            await afk_tracker.create_battle_state(
+                battle_id=f"battle:{send_channel.id}",
+                thread_id=send_channel.id,
+                challenger_id=challenger.id,
+                acceptor_id=challenged.id,
+                active_player_id=challenger.id,
+            )
+        except Exception:
+            logging.exception("Failed to create battle AFK state")
 
 
 async def _send_mission_feedback_prompt(
