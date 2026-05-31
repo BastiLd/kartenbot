@@ -3445,11 +3445,12 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
             bot_module.get_card_buffs = original_get_card_buffs
 
         attack_buttons = [c for c in view.children if hasattr(c, "row") and c.row in (0, 1)][:4]
-        self.assertIn("Flammen Pfeil", str(attack_buttons[0].label))
-        self.assertTrue(bool(attack_buttons[0].disabled))
-        self.assertIn("Pfeil", str(attack_buttons[1].label))
-        self.assertFalse(bool(attack_buttons[1].disabled))
-        self.assertTrue(all(bool(btn.disabled) for btn in (attack_buttons[2], attack_buttons[3])))
+        # v2.3.8: Hawkeyes Standardangriff "Pfeil" ist jetzt der erste Slot (oben links).
+        # Unter special_lock bleibt nur der Standard nutzbar.
+        self.assertIn("Pfeil", str(attack_buttons[0].label))
+        self.assertNotIn("Flammen", str(attack_buttons[0].label))
+        self.assertFalse(bool(attack_buttons[0].disabled))
+        self.assertTrue(all(bool(btn.disabled) for btn in attack_buttons[1:4]))
 
     async def test_hawkeye_treffsicherheit_makes_triple_arrow_max_damage(self) -> None:
         player_card = copy.deepcopy(_find_card("Hawkeye"))
@@ -3876,11 +3877,11 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         view.special_lock_next_turn[1] = 1
         view.update_attack_buttons_mission()
         attack_buttons = [c for c in view.children if hasattr(c, "row") and c.row in (0, 1)][:4]
-        self.assertIn("Flammen Pfeil", str(attack_buttons[0].label))
-        self.assertTrue(bool(attack_buttons[0].disabled))
-        self.assertIn("Pfeil", str(attack_buttons[1].label))
-        self.assertFalse(bool(attack_buttons[1].disabled))
-        self.assertTrue(all(bool(btn.disabled) for btn in (attack_buttons[2], attack_buttons[3])))
+        # v2.3.8: Hawkeyes Standardangriff "Pfeil" ist jetzt der erste Slot (oben links).
+        self.assertIn("Pfeil", str(attack_buttons[0].label))
+        self.assertNotIn("Flammen", str(attack_buttons[0].label))
+        self.assertFalse(bool(attack_buttons[0].disabled))
+        self.assertTrue(all(bool(btn.disabled) for btn in attack_buttons[1:4]))
 
     async def test_mission_hawkeye_treffsicherheit_makes_triple_arrow_max_damage(self) -> None:
         player_card = copy.deepcopy(_find_card("Hawkeye"))

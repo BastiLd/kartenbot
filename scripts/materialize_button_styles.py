@@ -87,11 +87,6 @@ for card in karten:
     attacks = list(card.get("attacks", []))
     if not attacks:
         continue
-    if card.get("name") == "Hawkeye":
-        for attack in attacks:
-            attack.pop("is_standard_attack", None)
-        attacks[1]["is_standard_attack"] = True
-        continue
     if not any(bool(attack.get("is_standard_attack")) for attack in attacks[:4]):
         attacks[0]["is_standard_attack"] = True
 """
