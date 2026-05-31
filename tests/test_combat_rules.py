@@ -2091,7 +2091,8 @@ class DustFlowTests(unittest.IsolatedAsyncioTestCase):
         view = bot_module.DustMultiUserSelectView(77, guild)
         try:
             values = [str(option.value) for option in view.select.options]
-            self.assertEqual(values[:2], ["search", "done"])
+            # v2.3.5: Steuer-Optionen sind jetzt search, role (ganze Rolle wählen) und done.
+            self.assertEqual(values[:3], ["search", "role", "done"])
             self.assertNotIn("2", values)
             view.selected_user_ids = [1]
             filtered_values = [str(option.value) for option in view._build_options()]

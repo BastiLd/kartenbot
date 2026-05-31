@@ -16,7 +16,7 @@ class CooldownLabelTests(unittest.TestCase):
 
     def test_available_with_cooldown_shows_suffix(self):
         atk = {"name": "Gamma-Eruption", "cooldown_turns": 3}
-        self.assertEqual(_format_attack_label(atk, is_on_cooldown=False), "Gamma-Eruption (3CD)")
+        self.assertEqual(_format_attack_label(atk, is_on_cooldown=False), "Gamma-Eruption {3CD}")
 
     def test_on_cooldown_no_suffix(self):
         atk = {"name": "Gamma-Eruption", "cooldown_turns": 3}

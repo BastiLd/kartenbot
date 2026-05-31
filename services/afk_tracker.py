@@ -43,7 +43,7 @@ PING_THRESHOLDS_R3PLUS: list[tuple[int, str, int]] = [
 
 @dataclass
 class AfkState:
-    kind: Literal["challenge", "battle"]
+    kind: Literal["challenge", "battle", "mission"]
     battle_id: str
     thread_id: int
     challenger_id: int
@@ -246,6 +246,31 @@ async def create_battle_state(battle_id: str, thread_id: int, challenger_id: int
     return state
 
 
+async def create_mission_state(battle_id: str, thread_id: int, user_id: int,
+                               now: int | None = None) -> AfkState:
+    """AFK-Timer für eine Solo-Mission (gegen den Bot) im Thread (Req. 13, erweitert).
+
+    Es gibt nur einen Teilnehmer (den Spieler), daher sind challenger/acceptor/aktiv
+    alle gleich. Gepingt wird nach Inaktivität ab Rundenbeginn (Standard: 4h in
+    Runde 1/2). Bei Aktivität wird der Timer neu angelegt (UPSERT, ``round_started_at``
+    zurückgesetzt)."""
+    now = int(now if now is not None else time.time())
+    state = AfkState(
+        kind="mission",
+        battle_id=str(battle_id),
+        thread_id=int(thread_id or 0),
+        challenger_id=int(user_id),
+        acceptor_id=int(user_id),
+        active_player_id=int(user_id),
+        round_number=1,
+        round_started_at=now,
+        last_action_at=now,
+        pings_sent_mask=0,
+    )
+    await persist(state)
+    return state
+
+
 async def _send_ping(bot, state: AfkState, ping: Ping) -> None:
     channel = None
     try:
@@ -257,7 +282,9 @@ async def _send_ping(bot, state: AfkState, ping: Ping) -> None:
         return
     if channel is None:
         return
-    mentions = " ".join(f"<@{uid}>" for uid in ping.recipients)
+    # Doppelte Empfänger zusammenfassen (z. B. Solo-Mission: challenger == acceptor).
+    unique_recipients = list(dict.fromkeys(ping.recipients))
+    mentions = " ".join(f"<@{uid}>" for uid in unique_recipients)
     try:
         await channel.send(f"{mentions} ⏰ Erinnerung: Du bist am Zug.")
     except Exception:

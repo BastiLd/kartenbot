@@ -15,13 +15,14 @@ logger = logging.getLogger(__name__)
 
 
 def _format_attack_label(attack: dict, is_on_cooldown: bool) -> str:
-    """Hängt das Cooldown-Suffix ``(<n>CD)`` an verfügbare Fähigkeiten an (Req. 14).
+    """Hängt das Cooldown-Suffix ``{<n>CD}`` an verfügbare Fähigkeiten an (Req. 14).
 
     Regeln:
         * Fähigkeit liegt gerade auf Cooldown -> nur der Name (bleibt ausgegraut,
           kein Rest-Counter, Req. 14.3).
-        * Fähigkeit verfügbar und konfigurierter Cooldown > 0 -> ``"{name} ({n}CD)"``
-          (Req. 14.1/14.4).
+        * Fähigkeit verfügbar und konfigurierter Cooldown > 0 -> ``"{name} {{n}CD}"``
+          (Req. 14.1/14.4). v2.3.5: geschweifte Klammern statt runder, damit der
+          Cooldown direkt nach dem Schaden klar erkennbar ist.
         * Cooldown = 0 oder nicht gesetzt -> nur der Name (Req. 14.5).
     """
     name = str((attack or {}).get("name") or "")
@@ -32,7 +33,7 @@ def _format_attack_label(attack: dict, is_on_cooldown: bool) -> str:
     except (TypeError, ValueError):
         cd = 0
     if cd > 0:
-        return f"{name} ({cd}CD)"
+        return f"{name} {{{cd}CD}}"
     return name
 
 

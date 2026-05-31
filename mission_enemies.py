@@ -341,7 +341,8 @@ OPERATION_GRUENER_TERROR_ENCOUNTERS: list[dict[str, Any]] = [
                 "info": "15 Schaden und sperrt Spezialangriffe nächste Runde.",
                 "effects": [{"type": "special_lock", "target": "enemy", "turns": 1, "chance": 1.0}],
             },
-            {"name": "Hitzesuchende Rakete", "damage": [30, 30], "cooldown_turns": 6, "info": "30 Schaden."},
+            # v2.3.5 (2026-05-31): Welle-3-Abschwächung, Schaden 30->24-30 (Balance-Notiz).
+            {"name": "Hitzesuchende Rakete", "damage": [24, 30], "cooldown_turns": 6, "info": "24-30 Schaden."},
             {
                 "name": "Täuschkörper",
                 "damage": [0, 0],
@@ -362,9 +363,10 @@ OPERATION_GRUENER_TERROR_ENCOUNTERS: list[dict[str, Any]] = [
             {"name": "Goblin-Handschuh", "damage": [14, 18], "is_standard_attack": True, "info": "Standardangriff."},
             {
                 "name": "Gleiter-Ramme",
-                "damage": [20, 20],
+                # v2.3.5 (2026-05-31): Schaden 20->14 (Balance-Notiz Spieler).
+                "damage": [14, 14],
                 "cooldown_turns": 4,
-                "info": "20 Schaden und nächster Spieler-Spezialangriff verursacht 6 Rückstoß.",
+                "info": "14 Schaden und nächster Spieler-Spezialangriff verursacht 6 Rückstoß.",
                 "effects": [{"type": "counter_flat", "target": "enemy", "damage": 6, "uses": 1, "chance": 1.0}],
             },
             {
@@ -501,10 +503,10 @@ OPERATION_GOLDENER_KAEFIG_ENCOUNTERS: list[dict[str, Any]] = [
                 "name": "Bestechungs-Versuch",
                 "damage": [0, 0],
                 "cooldown_turns": 5,
-                # v2.3.0 (Req. 19.3/19.4): 30 HP wenn Spieler in der Vorrunde 0 Schaden
-                # gemacht hat, sonst 35 HP. Heilung wird im Boss-Turn in bot.py berechnet.
-                "heal": [35, 35],
-                "info": "Heilt 30 HP, wenn der Spieler im Zug davor 0 Schaden gemacht hat. Sonst 35 HP.",
+                # v2.3.5 (2026-05-31, Balance-Notiz): 20 HP wenn Spieler in der Vorrunde 0 Schaden
+                # gemacht hat, sonst 15 HP (vorher 30/35). Heilung wird im Boss-Turn in bot.py berechnet.
+                "heal": [15, 15],
+                "info": "Heilt 20 HP, wenn der Spieler im Zug davor 0 Schaden gemacht hat. Sonst 15 HP.",
             },
             {
                 "name": "Zermalmender Griff",
@@ -595,9 +597,10 @@ OPERATION_HEXENFEUER_ENCOUNTERS: list[dict[str, Any]] = [
             },
             {
                 "name": "Höllenfeuer-Stoß",
-                "damage": [30, 30],
+                # v2.3.5 (2026-05-31): Welle-3-Abschwächung, Schaden 30->24 (Balance-Notiz).
+                "damage": [24, 24],
                 "cooldown_turns": 5,
-                "info": "30 Schaden und zerstört den nächsten Defensivversuch.",
+                "info": "24 Schaden und zerstört den nächsten Defensivversuch.",
                 "effects": [{"type": "special_lock", "target": "enemy", "turns": 1, "chance": 1.0}],
             },
         ],

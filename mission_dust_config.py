@@ -1,8 +1,8 @@
 # ============================================================
 # mission_dust_config.py
 # ------------------------------------------------------------
-# Hier stellst du ein, WIE VIEL Infinitydust (Staub) man bei
-# einer Mission pro WELLE bekommt.
+# Hier stellst du ein, WANN und WIE VIEL Infinitydust (Staub)
+# man bei einer Mission bekommt.
 #
 # WICHTIG: Es geht um die WELLE, NICHT um einzelne Lakeien.
 #   Welle 1 = erster Lakei-Kampf
@@ -15,31 +15,43 @@
 #                False = es gibt KEINEN Staub fuer diese Welle
 #   "amount"  -> wie viel Staub (ganze Zahl, z. B. 1, 2, 3 ...)
 #
-# Der Staub wird AUFADDIERT und erst beim ERFOLGREICHEN
-# Abschluss der ganzen Mission ausgezahlt. Bricht man ab oder
-# verliert, gibt es nichts.
+# AUSZAHLUNG:
+#   * Staub aus Welle 1-3 wird AUFADDIERT und in der Pause NACH
+#     Welle 3 sofort ausgezahlt (zusammen mit der Unit-Belohnung).
+#     Wer Welle 3 schafft, bekommt diesen Staub also sicher -
+#     auch wenn er danach am Boss verliert.
+#   * Staub aus Welle 4 (Boss) wird erst beim Mission-Erfolg
+#     ausgezahlt.
 #
-# Beispiel: willst du, dass nur der Boss Staub gibt (3 Stueck),
-# setze bei Welle 1-3 "enabled": False und bei Welle 4
-# "enabled": True, "amount": 3.
+# STANDARD (v2.3.5):
+#   Welle 1+2: kein Staub.
+#   Welle 3  : 1 Staub  -> "alle 3 Wellen geschafft = 1 Staub + 1 Unit".
+#   Welle 4  : kein Basis-Staub. Beim Boss gibt es nur dann Staub,
+#              wenn die Belohnungs-Karte schon im Besitz war
+#              (Duplikat -> 1 Staub, siehe check_and_add_karte).
 # ============================================================
 
 WAVE_DUST_REWARDS = {
-    # Welle 1 (erster Lakei)
-    1: {"enabled": True, "amount": 1},
-    # Welle 2 (zweiter Lakei)
-    2: {"enabled": True, "amount": 1},
-    # Welle 3 (dritter Lakei)
+    # Welle 1 (erster Lakei) - kein Staub
+    1: {"enabled": False, "amount": 0},
+    # Welle 2 (zweiter Lakei) - kein Staub
+    2: {"enabled": False, "amount": 0},
+    # Welle 3 (dritter Lakei) - 1 Staub fuer "alle 3 Wellen geschafft"
     3: {"enabled": True, "amount": 1},
-    # Welle 4 (BOSS)
-    4: {"enabled": True, "amount": 1},
+    # Welle 4 (BOSS) - kein Basis-Staub (nur Duplikat-Karte gibt Staub)
+    4: {"enabled": False, "amount": 0},
 }
 
 # ------------------------------------------------------------
-# Bonus-Staub, wenn man in einer Mission eine Karte als
-# Belohnung bekommen wuerde, die man SCHON BESITZT.
+# Bonus-Staub-Akkumulator fuer eine bereits besessene Reward-Karte.
+#
+# HINWEIS: Der Staub fuer eine doppelte Boss-/Reward-Karte wird
+# bereits direkt in check_and_add_karte() vergeben (+1 Staub).
+# Damit es KEINE Doppel-Zaehlung gibt, ist dieser Akkumulator-Bonus
+# standardmaessig AUS. Nicht aktivieren, solange check_and_add_karte
+# den Duplikat-Staub vergibt.
 #   enabled -> True/False (an/aus)
-#   amount  -> wie viel Bonus-Staub
+#   amount  -> wie viel zusaetzlicher Bonus-Staub
 # ------------------------------------------------------------
-DAILY_DUPLICATE_BONUS_ENABLED = True
-DAILY_DUPLICATE_BONUS_AMOUNT = 1
+DAILY_DUPLICATE_BONUS_ENABLED = False
+DAILY_DUPLICATE_BONUS_AMOUNT = 0

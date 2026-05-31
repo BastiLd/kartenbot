@@ -216,7 +216,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.4"
+__version__ = "2.3.5"
 
 
 class CardCatalog:
@@ -2293,7 +2293,7 @@ def _build_attack_info_lines(card: dict, *, max_attacks: int = 4, include_passiv
         # Req. 14.1/14.4: In der Fähigkeiten-Vorschau das Cooldown-Suffix „(<n>CD)"
         # an verfügbare Fähigkeiten mit konfiguriertem Cooldown anhängen.
         cd_suffix = _format_attack_label(attack, is_on_cooldown=False)
-        if isinstance(attack, dict) and cd_suffix.endswith("CD)"):
+        if isinstance(attack, dict) and cd_suffix.endswith("CD}"):
             suffix = cd_suffix[len(str(attack.get("name") or "")):].strip()
             if suffix:
                 attack_summary = f"{attack_summary} {suffix}"
@@ -7272,9 +7272,10 @@ class DustMultiUserSelectView(RestrictedView):
     def _build_options(self) -> list[SelectOption]:
         options: list[SelectOption] = [
             SelectOption(label="🔍 Nach Name suchen", value="search"),
+            SelectOption(label="👥 Ganze Rolle wählen", value="role"),
             SelectOption(label="✅ Fertig", value="done"),
         ]
-        for member in self._available_members()[:23]:
+        for member in self._available_members()[:22]:
             options.append(
                 SelectOption(
                     label=safe_user_option_label(member, prefix=f"{_member_status_circle(member)} "),
@@ -7320,6 +7321,41 @@ class DustMultiUserSelectView(RestrictedView):
             ephemeral=True,
         )
 
+    async def _handle_role_selection(self, interaction: discord.Interaction) -> None:
+        """Entweder-Oder: gewählte Rolle ersetzt die Auswahl mit allen ihren Mitgliedern."""
+        role_view = GiveOpRoleSelectView(self.requester_id)
+        await interaction.response.send_message(
+            "Wähle eine Rolle – alle Mitglieder erhalten dann die Auswahl.",
+            view=role_view,
+            ephemeral=True,
+        )
+        await role_view.wait()
+        if role_view.value is None:
+            return
+        role = self.guild.get_role(int(role_view.value))
+        if role is None:
+            await interaction.followup.send("❌ Rolle nicht gefunden.", ephemeral=True)
+            return
+        member_ids = [m.id for m in role.members if not m.bot]
+        if not member_ids:
+            await interaction.followup.send(
+                f"❌ Die Rolle **{role.name}** hat keine (Nicht-Bot-)Mitglieder.",
+                ephemeral=True,
+            )
+            return
+        self.selected_user_ids = member_ids
+        self.value = list(self.selected_user_ids)
+        self.stop()
+        if self._message is not None:
+            try:
+                await self._message.edit(
+                    content=f"👥 Rolle gewählt: **{role.name}** ({len(member_ids)} Mitglieder).",
+                    embed=None,
+                    view=None,
+                )
+            except discord.HTTPException:
+                pass
+
     async def handle_search_selection(self, raw_value: str, interaction: discord.Interaction) -> None:
         await self._append_user(interaction, raw_value, edit_origin_with_response=False)
 
@@ -7338,6 +7374,9 @@ class DustMultiUserSelectView(RestrictedView):
                 exclude_user_ids=set(self.selected_user_ids),
             )
             await interaction.response.send_modal(modal)
+            return
+        if selected == "role":
+            await self._handle_role_selection(interaction)
             return
         if selected == "done":
             if not self.selected_user_ids:
@@ -8738,7 +8777,8 @@ class StoryPlayerView(RestrictedView):
         await interaction.response.edit_message(embed=self.render_step_embed(), view=self)
 
 # Select Menu Views für das Verstärken-System
-FUSE_DUST_COST = 10
+# v2.3.5: Günstigste Aufwertung kostet 5 Dust (deckungsgleich mit FUSE_MULTIPLIER_DUST_PER_STEP).
+FUSE_DUST_COST = 5
 FUSE_HEALTH_BONUS = 10
 FUSE_DAMAGE_MAX_BONUS = f"{STANDARD_DAMAGE_UPGRADE_STEP} Standard / {SPECIAL_DAMAGE_UPGRADE_STEP} Spezial"
 FUSE_HP_CAP = 200
@@ -10730,11 +10770,26 @@ async def _build_owned_card_detail(
         if buff_type == "damage" and 1 <= attack_number <= 4:
             damage_buff_map[int(attack_number)] = damage_buff_map.get(int(attack_number), 0) + int(buff_amount or 0)
 
+    # v2.3.5: Leben/Stats ganz oben anzeigen (inkl. Aufwertungen aus /verbessern).
+    total_health, _damage_map = battle_state.summarize_card_buffs(user_buffs)
+    base_hp = int(karte.get("hp", 100) or 100)
+    stat_lines = [f"❤️ Leben: **{base_hp + total_health} HP**"]
+    rarity = str(karte.get("seltenheit") or "").strip()
+    if rarity:
+        stat_lines.append(f"✨ Seltenheit: **{rarity}**")
+    embed.add_field(name="Werte", value="\n".join(stat_lines), inline=False)
+
     if attacks:
         lines = []
         for idx, atk in enumerate(attacks, start=1):
             buff = damage_buff_map.get(idx, 0)
             _button_label, _button_style, attack_summary = _attack_display_parts(atk, max_only_bonus=buff)
+            # v2.3.5: Cooldown nach dem Schaden im Format {nCD} anhängen.
+            cd_suffix = _format_attack_label(atk, is_on_cooldown=False)
+            if isinstance(atk, dict) and cd_suffix.endswith("CD}"):
+                suffix = cd_suffix[len(str(atk.get("name") or "")):].strip()
+                if suffix:
+                    attack_summary = f"{attack_summary} {suffix}"
             info_text = str(atk.get("info") or "").strip()
             if info_text:
                 lines.append(f"• {attack_summary}\n  ↳ {info_text}")
@@ -11865,6 +11920,18 @@ class MissionBattleView(DurableView):
                 view_kind=self.durable_view_kind,
                 payload=self.durable_payload(),
             )
+        # v2.3.5: AFK-Markierung auch in Missions-Threads. Bei jeder aktiven Persistierung
+        # (Wellenstart + nach jedem Spielerzug) wird der Timer neu gesetzt; bleibt der Spieler
+        # zu lange inaktiv, pingt der AFK-Loop ihn im Thread an.
+        if status == "active" and isinstance(channel, discord.Thread):
+            try:
+                await afk_tracker.create_mission_state(
+                    battle_id=f"mission:{channel_id}:{self.user_id}",
+                    thread_id=channel_id,
+                    user_id=self.user_id,
+                )
+            except Exception:
+                logging.exception("Failed to upsert mission AFK state")
         if was_new_session and status == "active":
             await _log_event_safe(
                 "mission_wave_started",
@@ -11905,6 +11972,36 @@ class MissionBattleView(DurableView):
                 payload={"side": "mission_bot"},
             )
 
+    def _enemy_cooldown_lines(self) -> list[str]:
+        """Zeigt im eigenen Zug, welche Spezialfähigkeiten des Gegners bereit/auf Cooldown sind."""
+        lines: list[str] = []
+        attacks = self.bot_card.get("attacks", []) or []
+        for i, atk in enumerate(attacks[:4]):
+            if not isinstance(atk, dict):
+                continue
+            try:
+                cd = int(atk.get("cooldown_turns") or 0)
+            except (TypeError, ValueError):
+                cd = 0
+            if cd <= 0:
+                continue  # Standardangriffe haben keinen Cooldown – nicht auflisten
+            name = str(atk.get("name") or f"Angriff {i+1}")
+            remaining = int(self.bot_attack_cooldowns.get(i, 0) or 0)
+            if remaining > 0:
+                lines.append(f"• {name}: 🔒 noch {remaining} {'Zug' if remaining == 1 else 'Züge'}")
+            else:
+                lines.append(f"• {name}: ✅ bereit")
+        return lines
+
+    def _add_enemy_cooldown_field(self, embed: discord.Embed) -> None:
+        lines = self._enemy_cooldown_lines()
+        if not lines:
+            return
+        value = "\n".join(lines)
+        if len(value) > 1024:
+            value = value[:1021] + "..."
+        embed.add_field(name="🛡️ Gegner-Cooldowns", value=value, inline=False)
+
     def create_current_embed(self, *, description: str | None = None) -> discord.Embed:
         embed = discord.Embed(
             title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
@@ -11919,6 +12016,7 @@ class MissionBattleView(DurableView):
         if self.bot_card.get("bild"):
             embed.set_thumbnail(url=str(self.bot_card["bild"]))
         _add_attack_info_field(embed, self.player_card)
+        self._add_enemy_cooldown_field(embed)
         return embed
 
     def create_bot_spotlight_embed(self) -> discord.Embed:
@@ -11990,6 +12088,14 @@ class MissionBattleView(DurableView):
         cancel_actor: discord.abc.User | None = None,
         detail_text: str | None = None,
     ) -> None:
+        # v2.3.5: AFK-Timer dieser Mission entfernen (Welle endet / Übergang / Abbruch).
+        # Bei einem Welle-Übergang legt die persist_session der nächsten Welle ihn neu an.
+        try:
+            _afk_channel_id = getattr(interaction.channel, "id", None) or getattr(self, "_durable_channel_id", None)
+            if _afk_channel_id:
+                await afk_tracker.delete_state(f"mission:{int(_afk_channel_id)}:{self.user_id}")
+        except Exception:
+            logging.exception("Failed to delete mission AFK state")
         if message is not None:
             try:
                 summary_embed = self.create_current_embed(description=detail_text or ("Welle gewonnen." if won else "Welle verloren."))
@@ -12124,6 +12230,21 @@ class MissionBattleView(DurableView):
                     await add_units(self.user_id, unit_reward)
                     next_state["unit_awarded"] = True
                     next_state["mission_data"]["unit_awarded"] = True
+            # v2.3.5 (2026-05-31): Den akkumulierten Wellen-Staub (Welle 1-3) sofort in der
+            # Pause auszahlen – "alle 3 Wellen geschafft = 1 Staub + 1 Unit" gilt damit auch,
+            # wenn man danach am Boss verliert. Danach reward_infinitydust nullen, damit der
+            # Mission-Erfolg-Akkumulator (Boss) ihn nicht erneut auszahlt.
+            interlude_dust = 0
+            if not bool(next_state.get("wave_dust_awarded")):
+                pending_dust = int(self.mission_data.get("reward_infinitydust", 0) or 0)
+                if pending_dust > 0:
+                    try:
+                        await add_infinitydust(self.user_id, pending_dust)
+                        interlude_dust = pending_dust
+                    except Exception:
+                        logging.exception("Wellen-Dust-Auszahlung in der Pause fehlgeschlagen")
+                next_state["wave_dust_awarded"] = True
+                next_state["mission_data"]["reward_infinitydust"] = 0
             next_state.pop("player_hp", None)
             next_state.pop("player_max_hp", None)
             next_state["full_heal"] = True
@@ -12132,12 +12253,13 @@ class MissionBattleView(DurableView):
                 description=str(self.mission_data.get("interlude_text") or "Bereite dich auf den nächsten Kampf vor."),
                 color=0x2F80ED,
             )
+            reward_parts: list[str] = []
             if self.mission_data.get("unit_reward_after_wave"):
-                interlude_embed.add_field(
-                    name="Belohnung",
-                    value=f"+{int(self.mission_data.get('unit_reward_after_wave') or 0)} Unit",
-                    inline=True,
-                )
+                reward_parts.append(f"+{int(self.mission_data.get('unit_reward_after_wave') or 0)} Unit")
+            if interlude_dust > 0:
+                reward_parts.append(f"+{interlude_dust} Infinitydust")
+            if reward_parts:
+                interlude_embed.add_field(name="Belohnung", value="\n".join(reward_parts), inline=True)
                 _apply_item_media(interlude_embed, "unit", image=False, thumbnail=True)
             interlude_embed.add_field(name="Heilung", value=game_ui_texts.INTERLUDE_HEAL_FIELD, inline=True)
             pause_view = MissionPauseView(self.user_id, self.selected_card_name, mission_state=next_state)
@@ -12847,7 +12969,7 @@ class MissionBattleView(DurableView):
                 if i == landing_slot:
                     btn.style = discord.ButtonStyle.danger
                     btn.label = f"{landing_name} ({dmg_text}) ✈️"
-                    btn.disabled = False
+                    btn.disabled = bool(is_bot_turn)
                     continue
                 blocked_attack = current_attacks[i]
                 blocked_name = str(blocked_attack.get("name") or f"Angriff {i+1}")
@@ -12887,7 +13009,7 @@ class MissionBattleView(DurableView):
                     else:
                         button.style = display_style
                         button.label = display_label
-                        button.disabled = False
+                        button.disabled = bool(is_bot_turn)
                     continue
                 attack_name = str(attack.get("name") or f"Angriff {i+1}")
                 if (self.is_attack_on_cooldown_bot(i) if is_bot_turn else self.is_attack_on_cooldown_user(i)):
@@ -12987,6 +13109,15 @@ class MissionBattleView(DurableView):
 
         if interaction.user.id != self.current_turn:
             await interaction.response.send_message("Du bist nicht an der Reihe!", ephemeral=True)
+            return
+        # v2.3.5 Fix: In Missionen bleibt self.current_turn immer der Spieler – der Gegnerzug
+        # wird über _mission_actor_turn getrackt. Ohne diese Prüfung konnte man während der
+        # Bot-Spotlight-Phase (Bot-Karte + Bot-Attacken sichtbar) einen Button klicken und
+        # damit fälschlich die EIGENE Attacke auslösen. Jetzt sind Aktionen nur im eigenen Zug erlaubt.
+        if str(getattr(self, "_mission_actor_turn", "player")) != "player":
+            await interaction.response.send_message(
+                "⏳ Der Gegner ist gerade am Zug – warte einen Moment.", ephemeral=True
+            )
             return
         await _safe_defer_interaction(interaction)
 
@@ -13789,19 +13920,9 @@ class MissionBattleView(DurableView):
             self.reduce_cooldowns_user()
             self._mission_actor_turn = "player"
             self.update_attack_buttons_mission()
-            embed = discord.Embed(
-                title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
+            embed = self.create_current_embed(
                 description="🛑 Bot war betäubt und setzt den Zug aus! Du bist wieder an der Reihe!",
             )
-            player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
-            bot_label = f"🟦 Bot Karte{self._status_icons(0)}"
-            embed.add_field(name=player_label, value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
-            embed.add_field(name=bot_label, value=f"{self.bot_card['name']}\nHP: {self.bot_hp}", inline=True)
-            if self.player_card.get("bild"):
-                embed.set_image(url=str(self.player_card["bild"]))
-            if self.bot_card.get("bild"):
-                embed.set_thumbnail(url=str(self.bot_card["bild"]))
-            _add_attack_info_field(embed, self.player_card)
             if message is not None:
                 await interaction.followup.edit_message(message.id, embed=embed, view=self)
             else:
@@ -14173,9 +14294,9 @@ class MissionBattleView(DurableView):
                 str(self.bot_card.get("name") or "").strip().lower() == "kingpin"
                 and str(bot_attack_name or "").strip() == "Bestechungs-Versuch"
             ):
-                # Req. 19.3/19.4: 30 HP wenn Spieler in der Vorrunde 0 Schaden gemacht hat,
-                # sonst 35 HP.
-                heal_data = [30, 30] if int(self._last_player_damage_dealt or 0) <= 0 else [35, 35]
+                # v2.3.5 (2026-05-31, Balance-Notiz): deutlich abgeschwächt – 20 HP wenn der
+                # Spieler in der Vorrunde 0 Schaden gemacht hat, sonst 15 HP (vorher 30/35).
+                heal_data = [20, 20] if int(self._last_player_damage_dealt or 0) <= 0 else [15, 15]
             # Req. 17.6/17.7: MODOK „Berechnete Heilung" heilt 30 statt 15, wenn der Spieler
             # in der vorherigen Runde eine Cooldown-Fähigkeit eingesetzt hat.
             boosted_heal = attack.get("heal_if_player_used_cd_last_round")
@@ -14444,6 +14565,23 @@ class MissionBattleView(DurableView):
                 is_reload_action=is_bot_reload_action,
             )
 
+            # v2.3.5 (Req. 15): Spezialfähigkeit des Gegners/Bosses als eigene, fett markierte
+            # Zeile ganz oben hervorheben, wenn eine Nicht-Standard-Attacke mit Effekt/Heilung
+            # ausgelöst wurde – damit klar ist, WAS gerade passiert ist.
+            if (
+                isinstance(attack, dict)
+                and not is_bot_reload_action
+                and not bool(attack.get("is_standard_attack"))
+                and (bool(attack.get("effects")) or attack.get("heal") is not None)
+            ):
+                special_line = render_boss_special_activation(
+                    str(self.bot_card.get("name") or ""),
+                    str(bot_attack_name or ""),
+                    str(attack.get("info") or "").strip(),
+                )
+                if special_line:
+                    bot_effect_events.insert(0, special_line)
+
             if self.battle_log_message:
                 log_embed = self.battle_log_message.embeds[0] if self.battle_log_message.embeds else create_battle_log_embed()
                 log_embed = update_battle_log(
@@ -14558,21 +14696,11 @@ class MissionBattleView(DurableView):
                 return
 
             # Update UI für nächsten Spieler-Zug
-            embed = discord.Embed(title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
-                                  description=f"Bot hat **{bot_attack_name}** verwendet! Dein HP: {self.player_hp}\nDu bist wieder an der Reihe!")
-            player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
-            bot_label = f"🟦 Bot Karte{self._status_icons(0)}"
-            embed.add_field(name=player_label, value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
-            embed.add_field(name=bot_label, value=f"{self.bot_card['name']}\nHP: {self.bot_hp}", inline=True)
-            if self.player_card.get("bild"):
-                embed.set_image(url=str(self.player_card["bild"]))
-            if self.bot_card.get("bild"):
-                embed.set_thumbnail(url=str(self.bot_card["bild"]))
-            _add_attack_info_field(embed, self.player_card)
-
-            # Update attack buttons für neuen Spieler-Zug
             self._mission_actor_turn = "player"
             self.update_attack_buttons_mission()
+            embed = self.create_current_embed(
+                description=f"Bot hat **{bot_attack_name}** verwendet! Dein HP: {self.player_hp}\nDu bist wieder an der Reihe!",
+            )
 
             if message is not None:
                 await interaction.followup.edit_message(message.id, embed=embed, view=self)
@@ -14609,17 +14737,9 @@ class MissionBattleView(DurableView):
                 )
                 return
 
-            embed = discord.Embed(title=f"⚔️ Welle {self.wave_num}/{self.total_waves}",
-                                  description=f"🤖 Bot hat keine Attacken verfügbar! Du bist wieder an der Reihe!")
-            player_label = f"🟥 Deine Karte{self._status_icons(self.user_id)}"
-            bot_label = f"🟦 Bot Karte{self._status_icons(0)}"
-            embed.add_field(name=player_label, value=f"{self.player_card['name']}\nHP: {self.player_hp}", inline=True)
-            embed.add_field(name=bot_label, value=f"{self.bot_card['name']}\nHP: {self.bot_hp}", inline=True)
-            if self.player_card.get("bild"):
-                embed.set_image(url=str(self.player_card["bild"]))
-            if self.bot_card.get("bild"):
-                embed.set_thumbnail(url=str(self.bot_card["bild"]))
-            _add_attack_info_field(embed, self.player_card)
+            embed = self.create_current_embed(
+                description="🤖 Bot hat keine Attacken verfügbar! Du bist wieder an der Reihe!",
+            )
 
             if message is not None:
                 await interaction.followup.edit_message(message.id, embed=embed, view=self)
@@ -16238,6 +16358,34 @@ class GiveCardConfirmView(RestrictedView):
         await interaction.response.edit_message(content="❌ Vergabe abgebrochen.", view=None)
 
 
+class GiveConfirmView(RestrictedView):
+    """Generische Ja/Nein-Bestätigung mit anpassbarem Bestätigungs-Label."""
+
+    def __init__(self, requester_id: int, *, confirm_label: str = "✅ Jetzt vergeben"):
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        self.value: bool | None = None
+        self.confirm_button.label = confirm_label
+
+    @ui.button(label="✅ Jetzt vergeben", style=discord.ButtonStyle.success)
+    async def confirm_button(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        self.value = True
+        self.stop()
+        await interaction.response.edit_message(content="✅ Bestätigt – verteile...", view=None)
+
+    @ui.button(label="❌ Abbrechen", style=discord.ButtonStyle.danger)
+    async def cancel_button(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
+            return
+        self.value = False
+        self.stop()
+        await interaction.response.edit_message(content="❌ Abgebrochen.", view=None)
+
+
 class ConfirmDeleteUserView(RestrictedView):
     """Bestätigungs-Dialog für das Löschen aller Bot-Daten eines Nutzers."""
 
@@ -16904,27 +17052,88 @@ async def handle_dev_action(interaction: discord.Interaction, requester_id: int,
         await send_db_backup(interaction, visibility_key="db_backup")
         return
     if action == "give_dust":
-        user_id, user_name = await _select_user(interaction, "Wähle Nutzer für Dust:")
-        if not user_id:
+        # Wie grant_card: Multi-User (oder ganze Rolle) -> eine Menge -> Bestätigung -> verteilen
+        if interaction.guild is None:
+            await _send_ephemeral(interaction, content=SERVER_ONLY)
             return
+        multi_user_view = DustMultiUserSelectView(
+            interaction.user.id, interaction.guild, item_label="Infinitydust"
+        )
+        multi_user_message = await interaction.followup.send(
+            content=multi_user_view._content(),
+            embed=multi_user_view._summary_embed(),
+            view=multi_user_view,
+            ephemeral=True,
+            wait=True,
+        )
+        multi_user_view.bind_message(multi_user_message)
+        await multi_user_view.wait()
+        if not multi_user_view.value:
+            await interaction.followup.send("⏰ Keine Nutzer gewählt. Abgebrochen.", ephemeral=True)
+            return
+        target_user_ids = [int(uid) for uid in multi_user_view.value]
+
         amount = await _select_number(interaction, "Menge wählen", [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000])
         if not amount:
             return
-        await add_infinitydust(user_id, int(amount))
-        logging.info("Give dust: actor=%s target=%s amount=%s", interaction.user.id, user_id, amount)
-        await _log_event_safe(
-            "admin_dust_action",
-            guild_id=interaction.guild_id,
-            channel_id=interaction.channel_id,
-            thread_id=_thread_id_for_channel(interaction.channel),
-            actor_user_id=interaction.user.id,
-            target_user_id=user_id,
-            command_name="entwicklerpanel",
-            payload={"action": "give", "requested_amount": int(amount), "applied_amount": int(amount), "mode": "single"},
+        amount = int(amount)
+
+        confirm_view = GiveConfirmView(interaction.user.id, confirm_label="✅ Dust jetzt verteilen")
+        target_lines: list[str] = []
+        for uid in target_user_ids[:25]:
+            member = interaction.guild.get_member(uid)
+            target_lines.append(member.mention if member else f"<@{uid}>")
+        if len(target_user_ids) > 25:
+            target_lines.append(f"... und {len(target_user_ids) - 25} weitere")
+        confirm_embed = discord.Embed(
+            title="📝 Bestätigung: Infinitydust verteilen",
+            description=(
+                f"**Empfänger ({len(target_user_ids)}):**\n" + "\n".join(target_lines)
+            ),
+            color=0xF1C40F,
         )
+        confirm_embed.add_field(
+            name="Menge",
+            value=f"**{amount}x Infinitydust** pro Nutzer",
+            inline=False,
+        )
+        confirm_embed.set_footer(text="Mit ✅ jetzt verteilen, ❌ abbrechen.")
+        await interaction.followup.send(embed=confirm_embed, view=confirm_view, ephemeral=True)
+        await confirm_view.wait()
+        if confirm_view.value is not True:
+            if confirm_view.value is None:
+                await interaction.followup.send("⏰ Zeit abgelaufen. Vergabe abgebrochen.", ephemeral=True)
+            return
+
+        for uid in target_user_ids:
+            await add_infinitydust(uid, amount)
+            await _log_event_safe(
+                "admin_dust_action",
+                guild_id=interaction.guild_id,
+                channel_id=interaction.channel_id,
+                thread_id=_thread_id_for_channel(interaction.channel),
+                actor_user_id=interaction.user.id,
+                target_user_id=uid,
+                command_name="entwicklerpanel",
+                payload={"action": "give", "requested_amount": amount, "applied_amount": amount, "mode": "multi"},
+            )
+        logging.info(
+            "Give dust: actor=%s targets=%s amount=%s",
+            interaction.user.id, len(target_user_ids), amount,
+        )
+
+        result_lines: list[str] = []
+        for uid in target_user_ids[:25]:
+            member = interaction.guild.get_member(uid)
+            result_lines.append(member.mention if member else f"<@{uid}>")
+        if len(target_user_ids) > 25:
+            result_lines.append(f"... und {len(target_user_ids) - 25} weitere")
         embed = discord.Embed(
             title="Infinitydust vergeben",
-            description=f"{user_name} erhält **{amount}x Infinitydust**.",
+            description=(
+                f"{interaction.user.mention} hat **{amount}x Infinitydust** an "
+                f"**{len(target_user_ids)} Nutzer** verteilt.\n\n" + "\n".join(result_lines)
+            ),
             color=0x2ECC71,
         )
         _apply_item_media(embed, "infinitydust", thumbnail=True)
