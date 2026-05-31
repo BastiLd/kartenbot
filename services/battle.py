@@ -603,6 +603,7 @@ def create_battle_embed(
     current_attack_infos: list[str] | None = None,
     recent_log_lines: list[str] | None = None,
     highlight_tone: str | None = None,
+    enemy_cooldown_lines: list[str] | None = None,
 ):
     user1_name = _display_name(user1)
     user2_name = _display_name(user2)
@@ -718,6 +719,12 @@ def create_battle_embed(
         if len(info_value) > 1024:
             info_value = info_value[:1021] + "..."
         embed.add_field(name="Fähigkeiten", value=info_value, inline=False)
+
+    if enemy_cooldown_lines:
+        cd_value = "\n".join(enemy_cooldown_lines[:6])
+        if len(cd_value) > 1024:
+            cd_value = cd_value[:1021] + "..."
+        embed.add_field(name="🛡️ Gegner-Cooldowns", value=cd_value, inline=False)
 
     if recent_log_lines:
         cleaned = [str(line).strip() for line in recent_log_lines if str(line).strip()]

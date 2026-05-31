@@ -216,7 +216,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.6"
+__version__ = "2.3.7"
 
 
 class CardCatalog:
@@ -2271,6 +2271,16 @@ def _attack_display_parts(attack: dict, *, max_only_bonus: int = 0) -> tuple[str
     return label, style, summary
 
 
+def _attack_label_with_cd(display_label: str, attack: dict) -> str:
+    """Hängt das Cooldown-Suffix ``{nCD}`` an ein Button-Label an (v2.3.7),
+    damit der Cooldown direkt auf dem Angriffs-Button sichtbar ist."""
+    try:
+        cd = int(attack.get("cooldown_turns") or 0) if isinstance(attack, dict) else 0
+    except (TypeError, ValueError):
+        cd = 0
+    return f"{display_label} {{{cd}CD}}" if cd > 0 else display_label
+
+
 def _format_passive_preview_line(passive: dict) -> str | None:
     if not isinstance(passive, dict):
         return None
@@ -4274,6 +4284,32 @@ class BattleView(DurableView):
         current_card = self.player1_card if self.current_turn == self.player1_id else self.player2_card
         return _build_attack_info_lines(current_card)
 
+    def _enemy_cooldown_lines(self) -> list[str]:
+        """Cooldown-Status der Spezialfähigkeiten des Gegners (der Karte, die NICHT am Zug ist),
+        damit man im eigenen Zug sieht, was beim Gegner bereit ist / noch X Züge braucht (v2.3.7)."""
+        if self.current_turn == self.player1_id:
+            enemy_card, enemy_id = self.player2_card, self.player2_id
+        else:
+            enemy_card, enemy_id = self.player1_card, self.player1_id
+        cooldowns = self.attack_cooldowns.get(enemy_id, {}) or {}
+        lines: list[str] = []
+        for i, atk in enumerate((enemy_card.get("attacks", []) or [])[:4]):
+            if not isinstance(atk, dict):
+                continue
+            try:
+                cd = int(atk.get("cooldown_turns") or 0)
+            except (TypeError, ValueError):
+                cd = 0
+            if cd <= 0:
+                continue  # Standardangriffe haben keinen Cooldown
+            name = str(atk.get("name") or f"Angriff {i+1}")
+            remaining = int(cooldowns.get(i, 0) or 0)
+            if remaining > 0:
+                lines.append(f"• {name}: 🔒 noch {remaining} {'Zug' if remaining == 1 else 'Züge'}")
+            else:
+                lines.append(f"• {name}: ✅ bereit")
+        return lines
+
     async def _safe_edit_battle_log(self, embed) -> None:
         if not self.battle_log_message:
             return
@@ -4609,7 +4645,7 @@ class BattleView(DurableView):
                             button.label = str(attack.get("reload_name") or "Nachladen")
                         else:
                             button.style = display_style
-                            button.label = display_label
+                            button.label = _attack_label_with_cd(display_label, attack)
                         button.disabled = False
                     continue
                 attack_name = str(attack.get("name") or f"Angriff {i+1}")
@@ -4645,7 +4681,7 @@ class BattleView(DurableView):
                     button.disabled = False
                 else:
                     button.style = display_style
-                    button.label = display_label
+                    button.label = _attack_label_with_cd(display_label, attack)
                     button.disabled = False
 
         # Deaktiviere restliche Buttons, falls die aktuelle Karte weniger als 4 Attacken hat
@@ -4739,6 +4775,7 @@ class BattleView(DurableView):
                 current_attack_infos=self._current_attack_infos(),
                 recent_log_lines=self._recent_log_lines,
                 highlight_tone=self._last_highlight_tone,
+                enemy_cooldown_lines=self._enemy_cooldown_lines(),
             )
             battle_embed.description = (battle_embed.description or "") + "\n\n🛑 Der Gegner war betäubt und hat seinen Zug ausgesetzt."
             if message is not None:
@@ -5903,6 +5940,7 @@ class BattleView(DurableView):
             current_attack_infos=self._current_attack_infos(),
             recent_log_lines=self._recent_log_lines,
             highlight_tone=self._last_highlight_tone,
+            enemy_cooldown_lines=self._enemy_cooldown_lines(),
         )
 
         # Aktualisiere Kampf-UI (Kampf-Log wurde bereits oben behandelt)
@@ -5968,6 +6006,7 @@ class BattleView(DurableView):
                 current_attack_infos=self._current_attack_infos(),
                 recent_log_lines=self._recent_log_lines,
                 highlight_tone=self._last_highlight_tone,
+                enemy_cooldown_lines=self._enemy_cooldown_lines(),
             )
             battle_embed.description = (battle_embed.description or "") + "\n\n🛑 Bot war betäubt und hat seinen Zug ausgesetzt."
             await message.edit(embed=battle_embed, view=self)
@@ -6724,6 +6763,7 @@ class BattleView(DurableView):
             current_attack_infos=self._current_attack_infos(),
             recent_log_lines=self._recent_log_lines,
             highlight_tone=self._last_highlight_tone,
+            enemy_cooldown_lines=self._enemy_cooldown_lines(),
         )
 
         # Aktualisiere Kampf-UI
@@ -7779,6 +7819,7 @@ async def _start_fight_battle_from_card_selection(
         current_attack_infos=_build_attack_info_lines(challenger_card),
         recent_log_lines=battle_view._recent_log_lines,
         highlight_tone=battle_view._last_highlight_tone,
+        enemy_cooldown_lines=battle_view._enemy_cooldown_lines(),
     )
     battle_message = await _safe_send_channel(interaction, send_channel, embed=embed, view=battle_view)
     if battle_message is not None:
@@ -13008,7 +13049,7 @@ class MissionBattleView(DurableView):
                         button.disabled = False
                     else:
                         button.style = display_style
-                        button.label = display_label
+                        button.label = _attack_label_with_cd(display_label, attack)
                         button.disabled = bool(is_bot_turn)
                     continue
                 attack_name = str(attack.get("name") or f"Angriff {i+1}")
@@ -13041,7 +13082,7 @@ class MissionBattleView(DurableView):
                     button.disabled = False
                 else:
                     button.style = display_style
-                    button.label = display_label
+                    button.label = _attack_label_with_cd(display_label, attack)
                     button.disabled = bool(is_bot_turn)
             else:
                 button.label = f"Angriff {i+1}"
