@@ -1,6 +1,6 @@
 # Deutscher Discord Sammelkarten-Bot
 
-**Version: v2.3.3**
+**Version: v2.3.4**
 
 Ein lokaler Discord-Bot für Sammelkartenkämpfe, Sammlung, Rewards und Admin-Tools. Der Bot nutzt Slash-Commands, Discord-Views und eine SQLite-Datenbank.
 

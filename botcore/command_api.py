@@ -31,11 +31,13 @@ def build_command_api(global_ns: dict[str, Any]) -> CommandApi:
     # - botcommands/admin_commands.py
     required_names = {
         # player_commands.py
+        "ALPHA_FEATURE_DISABLED_TEXT",
         "ALPHA_PHASE_ENABLED",
         "AnfangView",
         "DustAmountView",
         "FUSE_DUST_COST",
         "FUSE_HEALTH_BONUS",
+        "FuseCardSelectView",
         "InviteUserSelectView",
         "SPECIAL_DAMAGE_UPGRADE_MAX_TIMES",
         "SPECIAL_DAMAGE_UPGRADE_STEP",
@@ -47,6 +49,7 @@ def build_command_api(global_ns: dict[str, Any]) -> CommandApi:
         "_card_by_name_local",
         "_card_name_ansi_block",
         "_card_rarity_color",
+        "_filter_owned_cards_for_current_mode",
         "_group_option_label",
         "_group_owned_cards_for_current_mode",
         "_send_ephemeral",
