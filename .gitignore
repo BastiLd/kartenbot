@@ -25,3 +25,7 @@ kampf log *.txt
 *.rar
 *.zip
 Neuer Ordner/
+
+# Grosse Binaer-/Arbeitsdateien (nicht im Repo tracken)
+MISSIONEN.pdf
+*.xlsx
