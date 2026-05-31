@@ -216,7 +216,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.9"
+__version__ = "2.3.10"
 
 
 class CardCatalog:
@@ -9415,138 +9415,35 @@ class BuffTypeSelect(ui.Select):
             await edit_interaction_message(interaction, embed=view.build_embed(), view=view)
             return
 
-        buff_type, attack_num = buff_choice.split("_")
-        attack_number = int(attack_num)
-
+        # v2.3.10: Nach der Stat-Auswahl NICHT mehr sofort 1× anwenden, sondern zur
+        # Multiplikator-Auswahl (1×–6×) weiterleiten. So kann man in EINEM Schritt
+        # mehrfach verstärken (z. B. 2× = 10 Dust → +2 Schritte) statt pro Klick nur +1.
         karte_data = await get_karte_by_name(self.selected_card)
         if not karte_data:
             await send_interaction_response(interaction, content="❌ Karte nicht gefunden!", ephemeral=True)
             return
         user_buffs = await get_card_buffs(interaction.user.id, self.selected_card)
-
-        applied_buff_amount = 0
-        buff_text = ""
-        emoji = "⚔️"
-
-        if buff_type == "damage":
-            attacks = karte_data.get("attacks", [])
-            if attack_number <= 0 or attack_number > len(attacks):
-                await send_interaction_response(interaction, content="❌ Ungültige Attacke.", ephemeral=True)
-                return
-            selected_attack = attacks[attack_number - 1]
-            if not _attack_is_damage_upgradeable(selected_attack):
-                await send_interaction_response(
-                    "❌ Nur reine Schadens-Attacken ohne Zusatzeffekte können aktuell verbessert werden.",
-                    ephemeral=True,
-                )
-                return
-
-            _base_min, max_base_damage = _damage_range_with_max_bonus(
-                selected_attack.get("damage", [0, 0]),
-                max_only_bonus=0,
-                flat_bonus=0,
-            )
-            existing_buffs = 0
-            for buff_type_check, attack_num_check, buff_amount_check in user_buffs:
-                if buff_type_check == "damage" and attack_num_check == attack_number:
-                    existing_buffs += int(buff_amount_check or 0)
-
-            upgrade_step = _attack_upgrade_step(selected_attack)
-            upgrade_cap = _attack_upgrade_max_bonus(selected_attack)
-            current_max_damage = int(max_base_damage) + int(existing_buffs)
-            if existing_buffs >= upgrade_cap:
-                await send_interaction_response(
-                    "❌ Dieses Upgrade hat bereits sein Maximum erreicht.",
-                    ephemeral=True,
-                )
-                return
-
-            next_max_damage = current_max_damage + upgrade_step
-            if next_max_damage > MAX_ATTACK_DAMAGE_PER_HIT:
-                await send_interaction_response(
-                    (
-                        f"❌ **Maximal {MAX_ATTACK_DAMAGE_PER_HIT} Schaden pro Angriff erlaubt!**\n\n"
-                        f"Aktuell: **{current_max_damage}**\n"
-                        f"Nächste Verbesserung wäre: **{next_max_damage}**"
-                    ),
-                    ephemeral=True,
-                )
-                return
-
-            applied_buff_amount = upgrade_step
-            attack_name = str(selected_attack.get("name") or f"Attacke {attack_number}")
-            buff_text = f"**{attack_name} Max-Schaden +{applied_buff_amount}**"
-            emoji = "⚔️"
-        else:
-            base_hp = int(karte_data.get("hp", 100) or 100)
-            existing_health = 0
-            for buff_type_check, attack_num_check, buff_amount_check in user_buffs:
-                if buff_type_check == "health" and int(attack_num_check or 0) == 0:
-                    existing_health += int(buff_amount_check or 0)
-            current_hp = base_hp + existing_health
-            allowed_buff = min(FUSE_HEALTH_BONUS, max(0, FUSE_HP_CAP - current_hp))
-            if allowed_buff <= 0:
-                await interaction.response.send_message(
-                    f"❌ **HP-Cap erreicht!** Diese Karte hat bereits **{current_hp} HP**.",
-                    ephemeral=True,
-                )
-                return
-            applied_buff_amount = allowed_buff
-            buff_text = f"**Leben +{applied_buff_amount}**"
-            emoji = "❤️"
-
-        success = await spend_infinitydust(interaction.user.id, self.dust_amount)
-        if not success:
-            await interaction.response.send_message("❌ Nicht genug Infinitydust!", ephemeral=True)
-            return
-
-        try:
-            await add_card_buff(
-                interaction.user.id,
-                self.selected_card,
-                buff_type,
-                attack_number,
-                applied_buff_amount,
-            )
-        except Exception:
-            logging.exception("Failed to apply card buff for %s", self.selected_card)
-            await add_infinitydust(interaction.user.id, self.dust_amount)
-            await send_interaction_response(
-                interaction,
-                content="❌ Die Verstärkung ist fehlgeschlagen. Dein Infinitydust wurde zurückerstattet.",
-                ephemeral=True,
-            )
-            return
-        await _log_event_safe(
-            "upgrade_applied",
-            guild_id=interaction.guild_id,
-            channel_id=interaction.channel_id,
-            thread_id=_thread_id_for_channel(interaction.channel),
-            actor_user_id=interaction.user.id,
-            hero_name=self.selected_card,
-            attack_name=(str(selected_attack.get("name") or "") if buff_type == "damage" else ""),
-            payload={
-                "upgrade_type": buff_type,
-                "upgrade_attack_number": int(attack_number),
-                "upgrade_attack_name": (str(selected_attack.get("name") or "") if buff_type == "damage" else ""),
-                "upgrade_amount": int(applied_buff_amount),
-                "dust_cost": int(self.dust_amount),
-            },
+        user_dust = await get_infinitydust(interaction.user.id)
+        requester_id = self.view.requester_id if self.view is not None else interaction.user.id
+        next_view = FuseMultiplierView(
+            requester_id,
+            selected_card=self.selected_card,
+            karte_data=karte_data,
+            user_buffs=user_buffs,
+            stat_choice=buff_choice,
+            dust_balance=user_dust,
         )
-
-        embed = discord.Embed(
-            title="✅ Verstärkung erfolgreich!",
-            description=(
-                f"🃏 **{self.selected_card}**\n"
-                f"{emoji} {buff_text}\n\n"
-                f"💎 **{self.dust_amount} Infinitydust** verbraucht"
-            ),
-            color=0x00FF00,
-        )
-        _apply_item_media(embed, "infinitydust", thumbnail=True)
         if self.view is not None:
             self.view.stop()
-        await edit_interaction_message(interaction, embed=embed, view=None)
+        embed = discord.Embed(
+            title="💎 Karten-Verstärkung",
+            description=(
+                f"Du hast **{user_dust} Infinitydust**\n\n"
+                "Wähle einen Multiplikator (1× = 5 Dust, 2× = 10 Dust, …, 6× = 30 Dust)."
+            ),
+            color=0x9D4EDD,
+        )
+        await edit_interaction_message(interaction, embed=embed, view=next_view)
 
 
 class FuseStatSelectView(FuseFlowView):

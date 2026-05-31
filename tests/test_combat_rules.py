@@ -426,7 +426,12 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
             actual_damage_options = {value for value in option_values if value.startswith("damage_")}
             self.assertEqual(actual_damage_options, expected_damage_options, f"Invalid buff options for {card.get('name')}")
 
-    async def test_buff_select_refunds_dust_when_upgrade_write_fails(self) -> None:
+    async def test_buff_select_routes_to_multiplier_view_without_applying(self) -> None:
+        # v2.3.10: Nach der Stat-Auswahl wird NICHT mehr sofort 1× angewendet,
+        # sondern die Multiplikator-Auswahl geöffnet. Beim bloßen Auswählen der
+        # Stat darf kein Dust gebucht/refundiert und kein Buff geschrieben werden.
+        # (Die Apply-/Refund-Logik liegt jetzt in _apply_fuse_multi_upgrade_legacy
+        #  und wird durch test_apply_rollback_on_add_card_buff_failure abgedeckt.)
         card = {"name": "Iron-Man", "hp": 70, "attacks": [{"name": "Repulsor", "damage": [10, 20]}]}
         select = bot_module.BuffTypeSelect(10, "Iron-Man", card, [])
         select._values = ["health_0"]
@@ -439,31 +444,51 @@ class BattleUtilityTests(unittest.IsolatedAsyncioTestCase):
             response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock()),
         )
 
+        captured: dict = {}
+
+        async def _capture_edit(_inter, **kwargs):
+            captured["embed"] = kwargs.get("embed")
+            captured["view"] = kwargs.get("view")
+            return None
+
         with patch("bot.get_karte_by_name", new=AsyncMock(return_value=card)), patch(
             "bot.get_card_buffs",
             new=AsyncMock(return_value=[]),
         ), patch(
+            "bot.get_infinitydust",
+            new=AsyncMock(return_value=50),
+        ), patch(
             "bot.spend_infinitydust",
             new=AsyncMock(return_value=True),
-        ), patch(
+        ) as spend_mock, patch(
             "bot.add_card_buff",
-            new=AsyncMock(side_effect=RuntimeError("write failed")),
-        ), patch(
+            new=AsyncMock(),
+        ) as add_buff_mock, patch(
             "bot.add_infinitydust",
             new=AsyncMock(),
         ) as refund_mock, patch(
             "bot._log_event_safe",
             new=AsyncMock(),
-        ) as log_mock:
+        ) as log_mock, patch(
+            "bot.edit_interaction_message",
+            new=AsyncMock(side_effect=_capture_edit),
+        ):
             await select.callback(interaction)
 
-        refund_mock.assert_awaited_once_with(77, 10)
+        # Reine Navigation: kein Spend, kein Buff-Write, kein Refund, kein Log.
+        spend_mock.assert_not_awaited()
+        add_buff_mock.assert_not_awaited()
+        refund_mock.assert_not_awaited()
         log_mock.assert_not_awaited()
-        interaction.response.send_message.assert_awaited_once_with(
-            content="❌ Die Verstärkung ist fehlgeschlagen. Dein Infinitydust wurde zurückerstattet.",
-            ephemeral=True,
-        )
-        interaction.response.edit_message.assert_not_awaited()
+        # Stattdessen: Multiplikator-Auswahl (1×–6×) wird geöffnet.
+        view = captured.get("view")
+        self.assertIsInstance(view, bot_module.FuseMultiplierView)
+        try:
+            self.assertEqual(view.stat_choice, "health_0")
+            self.assertEqual(view.selected_card, "Iron-Man")
+        finally:
+            if view is not None:
+                view.stop()
 
     def test_buff_select_prepends_change_card_option(self) -> None:
         card = {"name": "Iron-Man", "hp": 70, "attacks": [{"name": "Repulsor", "damage": [10, 20]}]}
