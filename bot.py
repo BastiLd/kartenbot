@@ -3407,7 +3407,69 @@ class BattleMechanicsMixin:
 
 
 
-class BattleView(BattleMechanicsMixin, DurableView):
+class BaseBattleView(BattleMechanicsMixin, DurableView):
+    """Gemeinsame Basis für PvP- (`BattleView`) und PvE- (`MissionBattleView`) Kämpfe.
+
+    Hält den identischen Laufzeit-State, der in beiden Views byte-gleich aufgebaut wurde:
+    HP-/Max-HP-/Karten-Namens-Dicts und die Effekt-/Modifier-Maps aus
+    ``battle_state.build_battle_runtime_maps``. Die genuin unterschiedliche Logik
+    (``execute_attack``, Boss-Mechaniken, Serialisierung, Button-custom_ids,
+    Cooldown-Aliase) bleibt bewusst in den Subklassen.
+
+    Beide IDs sind generisch: PvP nutzt ``(player1_id, player2_id)``, PvE ``(user_id, 0)``.
+    """
+
+    def _init_hp_and_card_maps(
+        self,
+        id_a: int,
+        id_b: int,
+        card_a: "CardData",
+        card_b: "CardData",
+        *,
+        name_a_fallback: str,
+        name_b_fallback: str,
+    ) -> None:
+        base_hp_a = int(card_a.get("hp", 100) or 100)
+        base_hp_b = int(card_b.get("hp", 100) or 100)
+        self._hp_by_player = {id_a: base_hp_a, id_b: base_hp_b}
+        self._max_hp_by_player = {id_a: base_hp_a, id_b: base_hp_b}
+        self._card_names_by_player = {
+            id_a: str(card_a.get("name") or name_a_fallback),
+            id_b: str(card_b.get("name") or name_b_fallback),
+        }
+
+    def _init_battle_runtime_maps(self, id_a: int, id_b: int) -> dict:
+        """Legt alle Effekt-/Modifier-Maps an und gibt die rohen runtime_maps zurück.
+
+        Der Cooldown-Alias bleibt subklassen-spezifisch (PvP: ``attack_cooldowns``,
+        PvE: ``_cooldowns_by_player`` + ``user_/bot_attack_cooldowns``) und wird vom
+        Aufrufer aus ``runtime_maps["cooldowns_by_player"]`` gesetzt.
+        """
+        runtime_maps = battle_state.build_battle_runtime_maps((id_a, id_b))
+        self.active_effects = runtime_maps["active_effects"]
+        self.confused_next_turn = runtime_maps["confused_next_turn"]
+        self.manual_reload_needed = runtime_maps["manual_reload_needed"]
+        self.stunned_next_turn = runtime_maps["stunned_next_turn"]
+        self.special_lock_next_turn = runtime_maps["special_lock_next_turn"]
+        self.blind_next_attack = runtime_maps["blind_next_attack"]
+        self.pending_flat_bonus = runtime_maps["pending_flat_bonus"]
+        self.pending_flat_bonus_uses = runtime_maps["pending_flat_bonus_uses"]
+        self.pending_multiplier = runtime_maps["pending_multiplier"]
+        self.pending_multiplier_uses = runtime_maps["pending_multiplier_uses"]
+        self.force_max_next = runtime_maps["force_max_next"]
+        self.guaranteed_hit_next = runtime_maps["guaranteed_hit_next"]
+        self.incoming_modifiers = runtime_maps["incoming_modifiers"]
+        self.outgoing_attack_modifiers = runtime_maps["outgoing_attack_modifiers"]
+        self.absorbed_damage = runtime_maps["absorbed_damage"]
+        self.delayed_defense_queue = runtime_maps["delayed_defense_queue"]
+        self.airborne_pending_landing = runtime_maps["airborne_pending_landing"]
+        self.last_special_attack = runtime_maps["last_special_attack"]
+        self._last_damage_roll_meta: dict | None = None
+        self._optional_attack_confirmations: dict[int, dict[str, object]] = {}
+        return runtime_maps
+
+
+class BattleView(BaseBattleView):
     durable_view_kind = VIEW_KIND_BATTLE
 
     def __init__(
@@ -3429,22 +3491,16 @@ class BattleView(BattleMechanicsMixin, DurableView):
         self.session_id: int | None = None
         self.session_kind = "fight_pvp" if player2_id != 0 else "fight_bot"
 
-        base_hp1 = player1_card.get("hp", 100)
-        base_hp2 = player2_card.get("hp", 100)
-        self._hp_by_player = {
-            self.player1_id: int(base_hp1),
-            self.player2_id: int(base_hp2),
-        }
-        self._max_hp_by_player = {
-            self.player1_id: int(base_hp1),
-            self.player2_id: int(base_hp2),
-        }
-        self._card_names_by_player = {
-            self.player1_id: str(player1_card.get("name") or "Spieler"),
-            self.player2_id: str(player2_card.get("name") or ("Bot" if player2_id == 0 else "Gegner")),
-        }
+        self._init_hp_and_card_maps(
+            player1_id,
+            player2_id,
+            player1_card,
+            player2_card,
+            name_a_fallback="Spieler",
+            name_b_fallback=("Bot" if player2_id == 0 else "Gegner"),
+        )
         self.hp_view = hp_view
-        runtime_maps = battle_state.build_battle_runtime_maps((player1_id, player2_id))
+        runtime_maps = self._init_battle_runtime_maps(player1_id, player2_id)
 
         self.attack_cooldowns = runtime_maps["cooldowns_by_player"]
         self.battle_log_message: discord.Message | None = None
@@ -3461,28 +3517,8 @@ class BattleView(BattleMechanicsMixin, DurableView):
         self.round_counter = 0
         self._last_log_edit_ts = 0.0
         self.ui_needs_resend = False
-
-        self.active_effects = runtime_maps["active_effects"]
-        self.confused_next_turn = runtime_maps["confused_next_turn"]
-        self.manual_reload_needed = runtime_maps["manual_reload_needed"]
-        self.stunned_next_turn = runtime_maps["stunned_next_turn"]
-        self.special_lock_next_turn = runtime_maps["special_lock_next_turn"]
-        self.blind_next_attack = runtime_maps["blind_next_attack"]
-        self.pending_flat_bonus = runtime_maps["pending_flat_bonus"]
-        self.pending_flat_bonus_uses = runtime_maps["pending_flat_bonus_uses"]
-        self.pending_multiplier = runtime_maps["pending_multiplier"]
-        self.pending_multiplier_uses = runtime_maps["pending_multiplier_uses"]
-        self.force_max_next = runtime_maps["force_max_next"]
-        self.guaranteed_hit_next = runtime_maps["guaranteed_hit_next"]
-        self.incoming_modifiers = runtime_maps["incoming_modifiers"]
-        self.outgoing_attack_modifiers = runtime_maps["outgoing_attack_modifiers"]
-        self.absorbed_damage = runtime_maps["absorbed_damage"]
-        self.delayed_defense_queue = runtime_maps["delayed_defense_queue"]
-        self.airborne_pending_landing = runtime_maps["airborne_pending_landing"]
-        self.last_special_attack = runtime_maps["last_special_attack"]
-        self._last_damage_roll_meta: dict | None = None
-        self._optional_attack_confirmations: dict[int, dict[str, object]] = {}
-
+        # Effekt-/Modifier-Maps + _last_damage_roll_meta/_optional_attack_confirmations
+        # werden bereits oben von _init_battle_runtime_maps() gesetzt.
 
     def durable_log_text(self) -> str:
         return self._full_battle_log_text()
@@ -11609,7 +11645,7 @@ class MissionEncounterPreviewView(DurableView):
 
 
 # View für Mission-Kämpfe (interaktiv)
-class MissionBattleView(BattleMechanicsMixin, DurableView):
+class MissionBattleView(BaseBattleView):
     durable_view_kind = VIEW_KIND_MISSION_BATTLE
 
     def __init__(
@@ -11636,14 +11672,10 @@ class MissionBattleView(BattleMechanicsMixin, DurableView):
         self.result = None
         self.session_id: int | None = None
         self.session_kind = "mission"
-        base_player_hp = int(player_card.get("hp", 100) or 100)
-        base_bot_hp = int(bot_card.get("hp", 100) or 100)
-        self._hp_by_player = {self.user_id: base_player_hp, 0: base_bot_hp}
-        self._max_hp_by_player = {self.user_id: base_player_hp, 0: base_bot_hp}
-        self._card_names_by_player = {
-            self.user_id: str(player_card.get("name") or "Spieler"),
-            0: str(bot_card.get("name") or "Bot"),
-        }
+        self._init_hp_and_card_maps(
+            self.user_id, 0, player_card, bot_card,
+            name_a_fallback="Spieler", name_b_fallback="Bot",
+        )
         self.current_turn = user_id  # Spieler beginnt
         self.attacks = player_card.get("attacks", [
             {"name": "Punch", "damage": 20},
@@ -11660,30 +11692,11 @@ class MissionBattleView(BattleMechanicsMixin, DurableView):
         self.health_bonus = 0
         # Map: attack_number (1..4) -> total damage bonus
         self.damage_bonuses = {}
-        runtime_maps = battle_state.build_battle_runtime_maps((self.user_id, 0))
-        self.active_effects = runtime_maps["active_effects"]
-        self.confused_next_turn = runtime_maps["confused_next_turn"]
+        runtime_maps = self._init_battle_runtime_maps(self.user_id, 0)
+        # Cooldown-Alias ist PvE-spezifisch (getrennte Spieler-/Bot-Sicht).
         self._cooldowns_by_player = runtime_maps["cooldowns_by_player"]
         self.user_attack_cooldowns = self._cooldowns_by_player[self.user_id]
         self.bot_attack_cooldowns = self._cooldowns_by_player[0]
-        self.manual_reload_needed = runtime_maps["manual_reload_needed"]
-        self.stunned_next_turn = runtime_maps["stunned_next_turn"]
-        self.special_lock_next_turn = runtime_maps["special_lock_next_turn"]
-        self.blind_next_attack = runtime_maps["blind_next_attack"]
-        self.pending_flat_bonus = runtime_maps["pending_flat_bonus"]
-        self.pending_flat_bonus_uses = runtime_maps["pending_flat_bonus_uses"]
-        self.pending_multiplier = runtime_maps["pending_multiplier"]
-        self.pending_multiplier_uses = runtime_maps["pending_multiplier_uses"]
-        self.force_max_next = runtime_maps["force_max_next"]
-        self.guaranteed_hit_next = runtime_maps["guaranteed_hit_next"]
-        self.incoming_modifiers = runtime_maps["incoming_modifiers"]
-        self.outgoing_attack_modifiers = runtime_maps["outgoing_attack_modifiers"]
-        self.absorbed_damage = runtime_maps["absorbed_damage"]
-        self.delayed_defense_queue = runtime_maps["delayed_defense_queue"]
-        self.airborne_pending_landing = runtime_maps["airborne_pending_landing"]
-        self.last_special_attack = runtime_maps["last_special_attack"]
-        self._last_damage_roll_meta: dict | None = None
-        self._optional_attack_confirmations: dict[int, dict[str, object]] = {}
         self.maestro_execute_pending = bool(self.mission_data.get("maestro_execute_pending", False))
         self._last_player_damage_dealt = int(self.mission_data.get("last_player_damage_dealt", 0) or 0)
         self._mission_actor_turn = "player"
