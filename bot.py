@@ -217,7 +217,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.11"
+__version__ = "2.3.12"
 
 
 class CardCatalog:
@@ -12536,6 +12536,13 @@ class MissionBattleView(DurableView):
         return battle_state.status_icons(self.active_effects, target_id)
 
     async def _safe_edit_battle_log(self, embed) -> None:
+        # v2.3.12: Log-Text immer zwischenspeichern (auch wenn die Nachricht fehlt oder
+        # ein Edit fehlschlägt), damit "Kampf-Log per DM" nach Missions-Ende funktioniert.
+        # Vorher blieb _battle_log_text_cache leer -> "Für diesen Kampf ist kein Log verfügbar".
+        try:
+            self._battle_log_text_cache = str(getattr(embed, "description", "") or "")
+        except Exception:
+            pass
         if not self.battle_log_message:
             return
         try:
@@ -13943,6 +13950,9 @@ class MissionBattleView(DurableView):
             self.stunned_next_turn[0] = False
             if self.airborne_pending_landing.get(self.user_id):
                 self._consume_airborne_evade_marker(self.user_id)
+            # v2.3.12: Auch im Betäubungs-Aussetzer zählt der Bot-Zug -> Bot-Cooldowns senken,
+            # damit Specials nicht einfrieren.
+            self.reduce_cooldowns_bot()
             self.reduce_cooldowns_user()
             self._mission_actor_turn = "player"
             self.update_attack_buttons_mission()
@@ -14678,24 +14688,23 @@ class MissionBattleView(DurableView):
                         bot_effect_events,
                         f"Gammastrahl-Abklingzeit: {dynamic_cooldown_turns} (Effektdauer {bot_burning_duration_for_dynamic_cooldown} + {bonus_for_dynamic_cd}).",
                     )
-                    self.reduce_cooldowns_bot()
                 elif best_index >= 0 and (not starts_after_landing) and custom_cooldown_turns > 0:
                     current_cd = self.bot_attack_cooldowns.get(best_index, 0)
                     self.bot_attack_cooldowns[best_index] = max(current_cd, custom_cooldown_turns)
-                    self.reduce_cooldowns_bot()
                 elif best_index >= 0 and self.mission_is_strong_attack(damage, dmg_buff_bot):
                     self.start_attack_cooldown_bot(best_index, 2)
-                    # Reduziere Cooldowns für den Bot direkt nach seinem Zug (entspricht /kampf)
-                    self.reduce_cooldowns_bot()
             else:
                 landing_cd_index = forced_bot_landing_attack.get("cooldown_attack_index")
                 landing_cd_turns = int(forced_bot_landing_attack.get("cooldown_turns", 0) or 0)
                 if isinstance(landing_cd_index, int) and landing_cd_index >= 0 and landing_cd_turns > 0:
                     current_cd = self.bot_attack_cooldowns.get(landing_cd_index, 0)
                     self.bot_attack_cooldowns[landing_cd_index] = max(current_cd, landing_cd_turns)
-                    # Reduziere Cooldowns für den Bot direkt nach seinem Zug (entspricht /kampf)
-                    self.reduce_cooldowns_bot()
 
+            # v2.3.12: Bot-Cooldowns IMMER genau einmal pro Bot-Zug senken – auch bei der
+            # Standardattacke. Vorher wurde reduce_cooldowns_bot() nur in den Spezial-Zweigen
+            # aufgerufen, sodass Specials auf ihrem Cooldown einfroren, sobald der Bot nur noch
+            # die Standardattacke nutzte (Bug: Maestro dauerhaft auf 2/2/5).
+            self.reduce_cooldowns_bot()
             # Reduce Cooldowns for User nach Bot-Zug
             self.reduce_cooldowns_user()
 
@@ -14737,6 +14746,8 @@ class MissionBattleView(DurableView):
             # Bot hat keine Attacken verfügbar (alle auf Cooldown) - überspringe Bot-Zug
             if self.airborne_pending_landing.get(self.user_id):
                 self._consume_airborne_evade_marker(self.user_id)
+            # v2.3.12: auch im Skip-Fall Bot-Cooldowns senken, damit gesperrte Specials wieder auftauen.
+            self.reduce_cooldowns_bot()
             self.reduce_cooldowns_user()
             self._mission_actor_turn = "player"
             self.update_attack_buttons_mission()
