@@ -18,6 +18,10 @@ async def connect_db():
         _db = await aiosqlite.connect(DB_PATH)
         _db.row_factory = aiosqlite.Row
         await _db.execute("PRAGMA foreign_keys = ON")
+        # WAL + synchronous=NORMAL: schützt vor DB-Korruption/Datenverlust, wenn der
+        # Bot mitten in einem Schreibvorgang abstürzt, und erlaubt gleichzeitiges Lesen.
+        await _db.execute("PRAGMA journal_mode = WAL")
+        await _db.execute("PRAGMA synchronous = NORMAL")
     return _db
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from karten import COMMON, RARE
@@ -85,21 +86,27 @@ def _apply_simple_context_weights_config() -> None:
     lines = [line.strip() for line in str(SIMPLE_CONTEXT_WEIGHTS_TEXT or "").splitlines() if line.strip()]
     for line in lines:
         if ":" not in line:
+            logging.warning("reward_spawn_config: ignoriere Zeile ohne ':' -> %r", line)
             continue
         ctx_raw, values_raw = line.split(":", 1)
         ctx = str(ctx_raw or "").strip().lower()
         if not ctx:
+            logging.warning("reward_spawn_config: ignoriere Zeile ohne Kontextname -> %r", line)
             continue
         parsed: dict[str, float] = {}
         for chunk in values_raw.split(","):
             part = str(chunk or "").strip()
+            if not part:
+                continue
             if "=" not in part:
+                logging.warning("reward_spawn_config: ignoriere Wert ohne '=' (%r) in Zeile %r", part, line)
                 continue
             rarity_raw, weight_raw = part.split("=", 1)
             rarity = _alias_rarity_key(rarity_raw)
             try:
                 weight = float(str(weight_raw or "").strip())
             except Exception:
+                logging.warning("reward_spawn_config: ungültiges Gewicht %r in Zeile %r", weight_raw, line)
                 continue
             parsed[rarity] = weight
         if parsed:

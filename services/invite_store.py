@@ -251,50 +251,57 @@ async def finalize_invite_pending_if_ready(pending_id: int, *, alpha_enabled: bo
         prior = int(stat_row[0] or 0) if stat_row else 0
 
         completed_at = int(time.time())
-        u = await db.execute(
-            """
-            UPDATE invite_pending SET status = 'completed', completed_at = ?
-            WHERE id = ? AND status = 'pending'
-            AND inviter_ok = 1 AND invitee_ok = 1
-            AND (need_admin = 0 OR admin_ok = 1)
-            """,
-            (completed_at, int(pending_id)),
-        )
-        if u.rowcount != 1:
-            await db.rollback()
-            return None
+        # Alle Schreibvorgänge müssen gemeinsam gelten: schlägt einer fehl, wird der
+        # gesamte Block zurückgerollt, damit nicht z. B. der "completed"-Status gesetzt
+        # ist, die Statistik aber nicht hochgezählt wurde (inkonsistenter Zustand).
+        try:
+            u = await db.execute(
+                """
+                UPDATE invite_pending SET status = 'completed', completed_at = ?
+                WHERE id = ? AND status = 'pending'
+                AND inviter_ok = 1 AND invitee_ok = 1
+                AND (need_admin = 0 OR admin_ok = 1)
+                """,
+                (completed_at, int(pending_id)),
+            )
+            if u.rowcount != 1:
+                await db.rollback()
+                return None
 
-        await db.execute(
-            """
-            UPDATE invite_history
-            SET status = 'completed', completed_at = ?
-            WHERE pending_id = ? AND status = 'pending'
-            """,
-            (completed_at, int(pending_id)),
-        )
-
-        await db.execute(
-            """
-            INSERT INTO invite_stats (user_id, completed_invites)
-            VALUES (?, 1)
-            ON CONFLICT(user_id) DO UPDATE SET
-                completed_invites = completed_invites + 1
-            """,
-            (inviter_id,),
-        )
-        if not invitee_is_admin:
             await db.execute(
                 """
-                INSERT OR REPLACE INTO user_daily (user_id, last_daily, used_invite)
-                VALUES (
-                    ?,
-                    COALESCE((SELECT last_daily FROM user_daily WHERE user_id = ?), 0),
-                    1
-                )
+                UPDATE invite_history
+                SET status = 'completed', completed_at = ?
+                WHERE pending_id = ? AND status = 'pending'
                 """,
-                (invitee_id, invitee_id),
+                (completed_at, int(pending_id)),
             )
-        await db.commit()
+
+            await db.execute(
+                """
+                INSERT INTO invite_stats (user_id, completed_invites)
+                VALUES (?, 1)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    completed_invites = completed_invites + 1
+                """,
+                (inviter_id,),
+            )
+            if not invitee_is_admin:
+                await db.execute(
+                    """
+                    INSERT OR REPLACE INTO user_daily (user_id, last_daily, used_invite)
+                    VALUES (
+                        ?,
+                        COALESCE((SELECT last_daily FROM user_daily WHERE user_id = ?), 0),
+                        1
+                    )
+                    """,
+                    (invitee_id, invitee_id),
+                )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
 
     if prior == 0:
         card = configured_first_invite_reward_card()

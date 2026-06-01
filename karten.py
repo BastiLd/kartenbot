@@ -9,9 +9,9 @@ STANDARD_DAMAGE_UPGRADE_STEP = 4  # So viel Schaden bekommt ein Standardangriff 
 STANDARD_DAMAGE_UPGRADE_MAX_TIMES = 2  # So oft darf ein Standardangriff maximal verbessert werden.
 SPECIAL_DAMAGE_UPGRADE_STEP = 3  # So viel Schaden bekommt eine Spezialfähigkeit pro Upgrade dazu.
 SPECIAL_DAMAGE_UPGRADE_MAX_TIMES = 5  # So oft darf eine Spezialfähigkeit maximal verbessert werden.
-DOT_TYPE_DEFAULTS = {'bleeding': {'icon': '🩸', 'label': 'Blutung', 'max_damage': 999},
- 'burning': {'icon': '🔥', 'label': 'Brand', 'max_damage': 999},
- 'poison': {'icon': '☠️', 'label': 'Gift', 'max_damage': 999}}
+DOT_TYPE_DEFAULTS = {'bleeding': {'icon': '🩸', 'label': 'Blutung', 'max_damage': 60},
+ 'burning': {'icon': '🔥', 'label': 'Brand', 'max_damage': 60},
+ 'poison': {'icon': '☠️', 'label': 'Gift', 'max_damage': 60}}
 
 
 # ============================================================
@@ -371,7 +371,7 @@ karten = [
                   'name': 'Elektroschock-Falle'},
                  {'button_style': 'red',
                   'cooldown_turns': 6,
-                  'damage': [42, 52],
+                  'damage': [38, 48],
                   'info': 'Sehr starker Schuss mit 15 Rückstoßschaden.',
                   'name': 'Das dicke Ding',
                   'self_damage': 15},
@@ -467,7 +467,7 @@ karten = [
                   'button_style': 'red',
                   'cooldown_turns': 4,
                   'damage': [22, 28],
-                  'info': 'Verursacht 20-30 Schaden. Unter 50% eigener HP gibt es +10 extra.',
+                  'info': 'Verursacht 22-28 Schaden. Unter 50% eigener HP gibt es +10 extra.',
                   'name': 'Berserkerwut'},
                  {'button_style': 'red',
                   'cooldown_turns': 5,
@@ -899,13 +899,13 @@ karten = [
                   'name': 'Mjölnir-Wurf'},
                  {'button_style': 'red',
                   'cooldown_turns': 4,
-                  'damage': [14, 14],
+                  'damage': [12, 16],
                   'effects': [{'amount': 12,
                                'chance': 1.0,
                                'target': 'enemy',
                                'turns': 1,
                                'type': 'enemy_special_self_damage'}],
-                  'info': 'Verursacht 14 Schaden. Die nächste gegnerische Spezialfähigkeit verursacht zusätzlich 12 '
+                  'info': 'Verursacht 12-16 Schaden. Die nächste gegnerische Spezialfähigkeit verursacht zusätzlich 12 '
                           'Selbstschaden.',
                   'name': 'Ruf des Donners'},
                  {'button_style': 'green',
@@ -1003,9 +1003,9 @@ karten = [
      'beschreibung': 'Feuer, Brand und explosive Hitze.',
      'bild': 'https://i.imgur.com/AcEU973.png',
      'attacks': [{'button_style': 'red',
-                  'damage': [12, 12],
+                  'damage': [10, 14],
                   'effects': [{'chance': 1.0, 'damage': 6, 'duration': [1, 1], 'target': 'enemy', 'type': 'burning'}],
-                  'info': 'Verursacht 12 Schaden plus 6 Brandschaden in der nächsten Runde.',
+                  'info': 'Verursacht 10-14 Schaden plus 6 Brandschaden in der nächsten Runde.',
                   'is_standard_attack': True,
                   'name': 'Feuerball'},
                  {'button_style': 'blue',
@@ -1210,9 +1210,9 @@ karten = [
                   'cooldown_overrides_by_final_damage': [{'threshold': 55, 'turns': 7}],
                   'cooldown_turns': 6,
                   'damage': [35, 50],
-                  'effects': [{'chance': 1.0, 'target': 'enemy', 'threshold': 20, 'type': 'finisher_below_hp'}],
-                  'info': 'Finisher. Bringt der Treffer den Gegner unter 20 HP, wird er sofort besiegt.',
-                  'name': 'Hex-Fluch'}]}
+                  'effects': [{'chance': 1.0, 'target': 'enemy', 'threshold': 15, 'type': 'finisher_below_hp'}],
+                  'info': 'Finisher. Bringt der Treffer den Gegner unter 15 HP, wird er sofort besiegt.',
+                  'name': 'Letzter Witz'}]}
     ,
 
     # ===== Carnage (Selten) =====

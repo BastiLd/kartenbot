@@ -17,16 +17,13 @@ def _berlin_midnight_epoch() -> int:
 
 
 async def add_infinitydust(user_id: int, amount: int = 1) -> None:
+    # Atomarer Upsert, damit parallele Gutschriften sich nicht gegenseitig überschreiben.
     async with db_context() as db:
-        cursor = await db.execute("SELECT amount FROM user_infinitydust WHERE user_id = ?", (user_id,))
-        row = await cursor.fetchone()
-
-        if row:
-            current_dust = row[0] or 0
-            new_dust = current_dust + amount
-            await db.execute("UPDATE user_infinitydust SET amount = ? WHERE user_id = ?", (new_dust, user_id))
-        else:
-            await db.execute("INSERT INTO user_infinitydust (user_id, amount) VALUES (?, ?)", (user_id, amount))
+        await db.execute(
+            "INSERT INTO user_infinitydust (user_id, amount) VALUES (?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET amount = amount + excluded.amount",
+            (user_id, int(amount)),
+        )
         await db.commit()
 
 
@@ -60,27 +57,28 @@ async def spend_units(user_id: int, amount: int) -> bool:
     if amount <= 0:
         return True
     async with db_context() as db:
-        cursor = await db.execute("SELECT amount FROM user_units WHERE user_id = ?", (user_id,))
-        row = await cursor.fetchone()
-        current_units = int(row[0] or 0) if row else 0
-        if current_units < int(amount):
+        # Atomar: nur abbuchen, wenn genug da ist. rowcount=0 -> nicht genug Guthaben.
+        cursor = await db.execute(
+            "UPDATE user_units SET amount = amount - ? WHERE user_id = ? AND amount >= ?",
+            (int(amount), user_id, int(amount)),
+        )
+        if cursor.rowcount != 1:
+            await db.commit()
             return False
-
-        await db.execute("UPDATE user_units SET amount = ? WHERE user_id = ?", (current_units - int(amount), user_id))
         await db.commit()
         return True
 
 
 async def spend_infinitydust(user_id, amount):
     async with db_context() as db:
-        cursor = await db.execute("SELECT amount FROM user_infinitydust WHERE user_id = ?", (user_id,))
-        row = await cursor.fetchone()
-        current_dust = row[0] if row and row[0] else 0
-        if current_dust < amount:
+        # Atomar: nur abbuchen, wenn genug da ist. rowcount=0 -> nicht genug Guthaben.
+        cursor = await db.execute(
+            "UPDATE user_infinitydust SET amount = amount - ? WHERE user_id = ? AND amount >= ?",
+            (int(amount), user_id, int(amount)),
+        )
+        if cursor.rowcount != 1:
+            await db.commit()
             return False
-
-        new_amount = current_dust - amount
-        await db.execute("UPDATE user_infinitydust SET amount = ? WHERE user_id = ?", (new_amount, user_id))
         await db.commit()
         return True
 

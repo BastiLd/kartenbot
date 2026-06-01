@@ -101,6 +101,24 @@ from services.coercion import (
     _random_int_from_range,
     _range_pair,
 )
+from services.effect_handler import (
+    NEGATIVE_STATUS_EFFECT_TYPES,
+    TURN_END_DECAY_EFFECT_TYPES,
+    _active_effect_entries,
+    _append_active_effect,
+    _append_dot_effect,
+    _apply_dot_ticks_for_applier,
+    _dot_icon,
+    _dot_label,
+    _effect_amount,
+    _effect_amount_label,
+    _effect_int,
+    _find_active_effect,
+    _is_dot_effect_type,
+    _label_key,
+    _remove_active_effect,
+    _resolve_dot_damage,
+)
 from services.card_validation import summarize_validation_issues, validate_cards
 from services.battle_types import CardData
 from services.analytics import log_event as log_analytics_event
@@ -217,7 +235,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.12"
+__version__ = "2.3.13"
 
 
 class CardCatalog:
@@ -572,189 +590,9 @@ def _member_role_ids(member: discord.Member | None) -> set[int]:
     return {role.id for role in member.roles}
 
 
-def _effect_int(effect: dict[str, object], key: str, default: int = 0) -> int:
-    return _maybe_int(effect.get(key, default)) or default
-
-
-def _effect_amount(effect: dict[str, object], key: str, default: int = 0) -> int:
-    return _random_int_from_range(effect.get(key, default), default=default)
-
-
-def _effect_amount_label(value: object, default: int = 0) -> str:
-    min_value, max_value = _range_pair(value, default_min=default, default_max=default)
-    if min_value == max_value:
-        return str(min_value)
-    return f"{min_value}-{max_value}"
-
-
-def _is_dot_effect_type(effect_type: object) -> bool:
-    return str(effect_type or "").strip().lower() in DOT_TYPE_DEFAULTS
-
-
-def _dot_label(effect_type: object) -> str:
-    key = str(effect_type or "").strip().lower()
-    return str(DOT_TYPE_DEFAULTS.get(key, {}).get("label") or "Effekt")
-
-
-def _dot_icon(effect_type: object) -> str:
-    key = str(effect_type or "").strip().lower()
-    return str(DOT_TYPE_DEFAULTS.get(key, {}).get("icon") or "")
-
-
-def _resolve_dot_damage(effect_type: object, raw_damage: object) -> int:
-    key = str(effect_type or "").strip().lower()
-    configured_cap = int(DOT_TYPE_DEFAULTS.get(key, {}).get("max_damage") or 0)
-    damage = max(0, _random_int_from_range(raw_damage, default=0))
-    if configured_cap > 0:
-        damage = min(damage, configured_cap)
-    return max(0, damage)
-
-
-def _append_dot_effect(
-    active_effects: dict[int, list[dict[str, object]]],
-    *,
-    target_id: int,
-    attacker_id: int,
-    effect_type: object,
-    duration: object,
-    damage: object,
-    damage_multiplier: float = 1.0,
-) -> tuple[int, int]:
-    resolved_type = str(effect_type or "").strip().lower()
-    resolved_duration = max(1, _random_int_from_range(duration, default=1))
-    resolved_damage = _resolve_dot_damage(resolved_type, damage)
-    multiplier = max(0.0, float(damage_multiplier or 1.0))
-    if abs(multiplier - 1.0) > 1e-9:
-        resolved_damage = max(0, int(round(resolved_damage * multiplier)))
-    active_effects[target_id].append(
-        {
-            "type": resolved_type,
-            "duration": resolved_duration,
-            "damage": resolved_damage,
-            "applier": attacker_id,
-        }
-    )
-    return resolved_duration, resolved_damage
-
-
-def _apply_dot_ticks_for_applier(
-    active_effects: dict[int, list[dict[str, object]]],
-    *,
-    target_id: int,
-    applier_id: int,
-    damage_callback: Callable[[int], object],
-) -> tuple[int, list[str]]:
-    remove: list[dict[str, object]] = []
-    total_damage = 0
-    events: list[str] = []
-    for effect in active_effects[target_id]:
-        effect_type = str(effect.get("type") or "").strip().lower()
-        if effect.get("applier") != applier_id or not _is_dot_effect_type(effect_type):
-            continue
-        damage = _effect_int(effect, "damage")
-        if damage > 0:
-            damage_callback(damage)
-            total_damage += damage
-            events.append(f"{_dot_label(effect_type)}: {damage} Schaden.")
-        remaining_duration = _effect_int(effect, "duration") - 1
-        effect["duration"] = remaining_duration
-        if remaining_duration <= 0:
-            remove.append(effect)
-    for effect in remove:
-        active_effects[target_id].remove(effect)
-    return total_damage, events
-
-
-NEGATIVE_STATUS_EFFECT_TYPES = frozenset(
-    {
-        "blind",
-        "bleeding",
-        "burning",
-        "confusion",
-        "disable_enemy_evade_and_block",
-        "disable_enemy_heal_if_bleeding",
-        "enemy_attack_self_damage",
-        "enemy_force_min_damage",
-        "enemy_next_special_self_damage",
-        "enemy_special_self_damage",
-        "heal_curse",
-        "incoming_damage_bonus",
-        "incoming_damage_multiplier",
-        "poison",
-        "special_lock",
-        "standard_lock",
-        "stun",
-    }
-)
-TURN_END_DECAY_EFFECT_TYPES = frozenset(
-    {
-        "burn_multiplier",
-        "disable_enemy_evade_and_block",
-        "disable_enemy_heal_if_bleeding",
-        "enemy_attack_self_damage",
-        "enemy_force_min_damage",
-        "enemy_next_special_self_damage",
-        "enemy_special_self_damage",
-        "heal_curse",
-        "incoming_damage_bonus",
-        "next_attack_flat_penalty",
-        "standard_lock",
-        "status_immunity",
-        "interrupt_enemy_standard_or_heal_self",
-    }
-)
-
-
-def _active_effect_entries(
-    active_effects: dict[int, list[dict[str, object]]],
-    player_id: int,
-    effect_type: str,
-) -> list[dict[str, object]]:
-    effect_key = str(effect_type or "").strip().lower()
-    return [
-        effect
-        for effect in active_effects.get(player_id, [])
-        if str(effect.get("type") or "").strip().lower() == effect_key
-    ]
-
-
-def _find_active_effect(
-    active_effects: dict[int, list[dict[str, object]]],
-    player_id: int,
-    effect_type: str,
-) -> dict[str, object] | None:
-    entries = _active_effect_entries(active_effects, player_id, effect_type)
-    return entries[0] if entries else None
-
-
-def _append_active_effect(
-    active_effects: dict[int, list[dict[str, object]]],
-    player_id: int,
-    effect_type: str,
-    applier_id: int,
-    **fields: object,
-) -> dict[str, object]:
-    entry: dict[str, object] = {"type": str(effect_type or "").strip().lower(), "applier": applier_id}
-    entry.update(fields)
-    active_effects.setdefault(player_id, []).append(entry)
-    return entry
-
-
-def _remove_active_effect(
-    active_effects: dict[int, list[dict[str, object]]],
-    player_id: int,
-    effect: dict[str, object] | None,
-) -> None:
-    if effect is None:
-        return
-    try:
-        active_effects.get(player_id, []).remove(effect)
-    except ValueError:
-        pass
-
-
-def _label_key(value: object) -> str:
-    return str(value or "").strip().casefold()
+# Status-/DoT-Effekt-Helfer wurden nach services/effect_handler.py ausgelagert
+# (Audit D5) und oben re-importiert, damit alle bestehenden Aufrufe – inkl.
+# bot_module.<name> aus services/combat_runner.py – unverändert funktionieren.
 
 
 def _damage_boost_restriction(effect: dict[str, object] | None) -> tuple[list[str], bool]:
@@ -3242,7 +3080,334 @@ class HPView(RestrictedView):
                 break
 
 # View für Kampf-Buttons (unter der Karte)
-class BattleView(DurableView):
+class BattleMechanicsMixin:
+    """Identische Kampf-Mechanik-Methoden von BattleView und MissionBattleView.
+
+    Aus bot.py ausgelagert (Audit D4). Beide Views erben diesen Mixin; die Rümpfe
+    waren zuvor in beiden Klassen byte-identisch. Verhaltensgleich.
+    """
+
+    def durable_payload(self) -> dict[str, Any]:
+        return {"session_id": self.session_id} if self.session_id else {}
+
+    def set_confusion(self, player_id: int, applier_id: int) -> None:
+        battle_state.set_confusion(self.active_effects, self.confused_next_turn, player_id, applier_id)
+
+    def consume_confusion_if_any(self, player_id: int) -> None:
+        battle_state.consume_confusion_if_any(self.active_effects, self.confused_next_turn, player_id)
+
+    def is_reload_needed(self, player_id: int, attack_index: int) -> bool:
+        return battle_state.is_reload_needed(self.manual_reload_needed, player_id, attack_index)
+
+    def set_reload_needed(self, player_id: int, attack_index: int, needed: bool) -> None:
+        battle_state.set_reload_needed(self.manual_reload_needed, player_id, attack_index, needed)
+
+    def _find_effect(self, player_id: int, effect_type: str):
+        return battle_state.find_effect(self.active_effects, player_id, effect_type)
+
+    def has_stealth(self, player_id: int) -> bool:
+        return battle_state.has_effect(self.active_effects, player_id, "stealth")
+
+    def has_airborne(self, player_id: int) -> bool:
+        return battle_state.has_effect(self.active_effects, player_id, "airborne")
+
+    def consume_stealth(self, player_id: int) -> bool:
+        return battle_state.consume_effect(self.active_effects, player_id, "stealth")
+
+    def grant_stealth(self, player_id: int) -> None:
+        battle_state.grant_unique_effect(self.active_effects, player_id, "stealth", player_id, duration=1)
+
+    def _append_effect_event(self, events: list[str], text: str) -> None:
+        battle_state.append_effect_event(events, text)
+
+    def _append_multi_hit_roll_event(self, effect_events: list[str]) -> None:
+        meta = self._last_damage_roll_meta or {}
+        if meta.get("kind") != "multi_hit":
+            return
+        details = meta.get("details")
+        if not isinstance(details, dict):
+            return
+        hits = int(details.get("hits", 0) or 0)
+        landed = int(details.get("landed_hits", 0) or 0)
+        per_hit = details.get("per_hit_damages", [])
+        per_hit_numbers: list[int] = []
+        if isinstance(per_hit, list):
+            for value in per_hit:
+                try:
+                    per_hit_numbers.append(int(value))
+                except Exception:
+                    continue
+        per_hit_text = ", ".join(str(v) for v in per_hit_numbers) if per_hit_numbers else "-"
+        total_damage = int(details.get("total_damage", 0) or 0)
+        self._append_effect_event(
+            effect_events,
+            f"Treffer: {landed}/{hits} | Schaden pro Treffer: {per_hit_text} | Gesamt: {total_damage}.",
+        )
+
+    def _grant_airborne(self, player_id: int) -> None:
+        battle_state.grant_unique_effect(self.active_effects, player_id, "airborne", player_id, duration=1)
+
+    def _clear_airborne(self, player_id: int) -> None:
+        battle_state.consume_effect(self.active_effects, player_id, "airborne")
+
+    def queue_delayed_defense(
+        self,
+        player_id: int,
+        defense: str,
+        counter: int = 0,
+        source: str | None = None,
+    ) -> None:
+        battle_state.queue_delayed_defense(
+            self.delayed_defense_queue,
+            player_id,
+            defense,
+            counter=counter,
+            source=source,
+        )
+
+    def activate_delayed_defense_after_attack(
+        self,
+        player_id: int,
+        effect_events: list[str],
+        *,
+        attack_landed: bool,
+    ) -> None:
+        battle_state.activate_delayed_defense_after_attack(
+            self.delayed_defense_queue,
+            self.active_effects,
+            self.incoming_modifiers,
+            player_id,
+            effect_events,
+            attack_landed=attack_landed,
+        )
+
+    def start_airborne_two_phase(
+        self,
+        player_id: int,
+        landing_damage,
+        effect_events: list[str],
+        *,
+        landing_attack: dict[str, object] | None = None,
+        source_attack_index: int | None = None,
+        cooldown_turns: int = 0,
+    ) -> None:
+        battle_state.start_airborne_two_phase(
+            self.active_effects,
+            self.airborne_pending_landing,
+            self.incoming_modifiers,
+            player_id,
+            landing_damage,
+            effect_events,
+            landing_attack=landing_attack,
+            source_attack_index=source_attack_index,
+            cooldown_turns=cooldown_turns,
+        )
+
+    def resolve_forced_landing_if_due(self, player_id: int, effect_events: list[str]) -> dict | None:
+        return battle_state.resolve_forced_landing_if_due(
+            self.active_effects,
+            self.airborne_pending_landing,
+            player_id,
+            effect_events,
+        )
+
+    def _max_hp_for(self, player_id: int) -> int:
+        return battle_state.max_hp_for(self._max_hp_by_player, player_id)
+
+    def _hp_for(self, player_id: int) -> int:
+        return battle_state.hp_for(self._hp_by_player, player_id)
+
+    def _set_hp_for(self, player_id: int, value: int) -> None:
+        battle_state.set_hp_for(self._hp_by_player, player_id, value)
+
+    def heal_player(self, player_id: int, amount: int) -> int:
+        return battle_state.heal_player(self._hp_by_player, self._max_hp_by_player, player_id, amount)
+
+    def _apply_non_heal_damage(self, player_id: int, amount: int) -> int:
+        return battle_state.apply_non_heal_damage(self._hp_by_player, player_id, amount)
+
+    def _card_name_for(self, player_id: int) -> str:
+        fallback = "Bot" if player_id == 0 else "Spieler"
+        return battle_state.card_name_for(self._card_names_by_player, player_id, fallback=fallback)
+
+    def _apply_non_heal_damage_with_event(
+        self,
+        events: list[str],
+        player_id: int,
+        amount: int,
+        *,
+        source: str,
+        self_damage: bool,
+    ) -> int:
+        return battle_state.apply_non_heal_damage_with_event(
+            self._hp_by_player,
+            self._card_names_by_player,
+            events,
+            player_id,
+            amount,
+            source=source,
+            self_damage=self_damage,
+        )
+
+    def _guard_non_heal_damage_result(self, defender_id: int, defender_hp_before: int, context: str) -> None:
+        battle_state.guard_non_heal_damage_result(self._hp_by_player, defender_id, defender_hp_before, context)
+
+    def queue_incoming_modifier(
+        self,
+        player_id: int,
+        *,
+        percent: float = 0.0,
+        flat: int = 0,
+        reflect: float = 0.0,
+        store_ratio: float = 0.0,
+        max_store: int | None = None,
+        cap: int | str | None = None,
+        evade: bool = False,
+        counter: int = 0,
+        turns: int = 1,
+        source: str | None = None,
+    ) -> None:
+        battle_state.queue_incoming_modifier(
+            self.incoming_modifiers,
+            player_id,
+            percent=percent,
+            flat=flat,
+            reflect=reflect,
+            store_ratio=store_ratio,
+            max_store=max_store,
+            cap=cap,
+            evade=evade,
+            counter=counter,
+            turns=turns,
+            source=source,
+        )
+
+    def _consume_airborne_evade_marker(self, player_id: int) -> bool:
+        modifiers = self.incoming_modifiers.get(player_id) or []
+        for idx, mod in enumerate(modifiers):
+            if not isinstance(mod, dict):
+                continue
+            if not bool(mod.get("evade")):
+                continue
+            if str(mod.get("source") or "").strip().lower() != "airborne":
+                continue
+            try:
+                modifiers.pop(idx)
+            except Exception:
+                logging.exception("Unexpected error")
+                return False
+            return True
+        return False
+
+    def queue_outgoing_attack_modifier(
+        self,
+        player_id: int,
+        *,
+        percent: float = 0.0,
+        flat: int = 0,
+        turns: int = 1,
+        source: str | None = None,
+    ) -> None:
+        battle_state.queue_outgoing_attack_modifier(
+            self.outgoing_attack_modifiers,
+            player_id,
+            percent=percent,
+            flat=flat,
+            turns=turns,
+            source=source,
+        )
+
+    def consume_guaranteed_hit(self, player_id: int) -> bool:
+        return battle_state.consume_guaranteed_hit(self.guaranteed_hit_next, player_id)
+
+    def roll_attack_damage(
+        self,
+        attack: dict,
+        base_damage,
+        damage_buff: int,
+        attack_multiplier: float,
+        force_max_damage: bool,
+        guaranteed_hit: bool,
+    ) -> tuple[int, bool, int, int]:
+        cap = MAX_ATTACK_DAMAGE_PER_HIT
+        multi_hit = attack.get("multi_hit")
+        if isinstance(multi_hit, dict):
+            actual_damage, min_damage, max_damage, details = _resolve_multi_hit_damage_details(
+                multi_hit,
+                buff_amount=damage_buff,
+                attack_multiplier=attack_multiplier,
+                force_max=force_max_damage,
+                guaranteed_hit=guaranteed_hit,
+            )
+            actual_damage = min(cap, max(0, int(actual_damage)))
+            min_damage = min(cap, max(0, int(min_damage)))
+            max_damage = min(cap, max(min_damage, int(max_damage)))
+            if isinstance(details, dict):
+                details["total_damage"] = actual_damage
+            self._last_damage_roll_meta = {"kind": "multi_hit", "details": details}
+            is_critical = bool(force_max_damage and actual_damage >= max_damage and max_damage > 0)
+            return actual_damage, is_critical, min_damage, max_damage
+
+        self._last_damage_roll_meta = {"kind": "single_hit"}
+        actual_damage, is_critical, min_damage, max_damage = calculate_damage(base_damage, damage_buff)
+        if attack_multiplier != 1.0:
+            actual_damage = int(round(actual_damage * attack_multiplier))
+            max_damage = int(round(max_damage * attack_multiplier))
+            min_damage = int(round(min_damage * attack_multiplier))
+        if force_max_damage:
+            actual_damage = max_damage
+            is_critical = max_damage > 0
+        min_damage = min(cap, max(0, int(min_damage)))
+        max_damage = min(cap, max(min_damage, int(max_damage)))
+        actual_damage = min(cap, max(0, int(actual_damage)))
+        return actual_damage, is_critical, min_damage, max_damage
+
+    def _resolve_incoming_modifiers_with_details(
+        self,
+        defender_id: int,
+        raw_damage: int,
+        ignore_evade: bool = False,
+        ignore_all_defense: bool = False,
+        incoming_min_damage: int | None = None,
+    ) -> tuple[int, int, bool, int, dict[str, object] | None]:
+        return battle_state.resolve_incoming_modifiers(
+            self.incoming_modifiers,
+            self.absorbed_damage,
+            defender_id,
+            raw_damage,
+            ignore_evade=ignore_evade,
+            ignore_all_defense=ignore_all_defense,
+            incoming_min_damage=incoming_min_damage,
+        )
+
+    def resolve_incoming_modifiers(
+        self,
+        defender_id: int,
+        raw_damage: int,
+        ignore_evade: bool = False,
+        ignore_all_defense: bool = False,
+        incoming_min_damage: int | None = None,
+    ) -> tuple[int, int, bool, int]:
+        final_damage, reflected_damage, dodged, counter_damage, _modifier_details = self._resolve_incoming_modifiers_with_details(
+            defender_id,
+            raw_damage,
+            ignore_evade=ignore_evade,
+            ignore_all_defense=ignore_all_defense,
+            incoming_min_damage=incoming_min_damage,
+        )
+        return final_damage, reflected_damage, dodged, counter_damage
+
+    def apply_regen_tick(self, player_id: int) -> int:
+        return battle_state.apply_regen_tick(
+            self.active_effects,
+            self._hp_by_player,
+            self._max_hp_by_player,
+            player_id,
+        )
+
+
+
+class BattleView(BattleMechanicsMixin, DurableView):
     durable_view_kind = VIEW_KIND_BATTLE
 
     def __init__(
@@ -3318,8 +3483,6 @@ class BattleView(DurableView):
         self._last_damage_roll_meta: dict | None = None
         self._optional_attack_confirmations: dict[int, dict[str, object]] = {}
 
-    def durable_payload(self) -> dict[str, Any]:
-        return {"session_id": self.session_id} if self.session_id else {}
 
     def durable_log_text(self) -> str:
         return self._full_battle_log_text()
@@ -3356,35 +3519,15 @@ class BattleView(DurableView):
     def player2_max_hp(self, value: int) -> None:
         self._max_hp_by_player[self.player2_id] = max(0, int(value))
 
-    def set_confusion(self, player_id: int, applier_id: int) -> None:
-        battle_state.set_confusion(self.active_effects, self.confused_next_turn, player_id, applier_id)
 
-    def consume_confusion_if_any(self, player_id: int) -> None:
-        battle_state.consume_confusion_if_any(self.active_effects, self.confused_next_turn, player_id)
 
-    def is_reload_needed(self, player_id: int, attack_index: int) -> bool:
-        return battle_state.is_reload_needed(self.manual_reload_needed, player_id, attack_index)
 
-    def set_reload_needed(self, player_id: int, attack_index: int, needed: bool) -> None:
-        battle_state.set_reload_needed(self.manual_reload_needed, player_id, attack_index, needed)
 
-    def _find_effect(self, player_id: int, effect_type: str):
-        return battle_state.find_effect(self.active_effects, player_id, effect_type)
 
-    def has_stealth(self, player_id: int) -> bool:
-        return battle_state.has_effect(self.active_effects, player_id, "stealth")
 
-    def has_airborne(self, player_id: int) -> bool:
-        return battle_state.has_effect(self.active_effects, player_id, "airborne")
 
-    def consume_stealth(self, player_id: int) -> bool:
-        return battle_state.consume_effect(self.active_effects, player_id, "stealth")
 
-    def grant_stealth(self, player_id: int) -> None:
-        battle_state.grant_unique_effect(self.active_effects, player_id, "stealth", player_id, duration=1)
 
-    def _append_effect_event(self, events: list[str], text: str) -> None:
-        battle_state.append_effect_event(events, text)
 
     def _effect_tag_for_event(self, text: str) -> str | None:
         normalized = str(text or "").strip().lower()
@@ -3977,202 +4120,23 @@ class BattleView(DurableView):
             # Fallback, damit immer zumindest die Info im Kanal ankommt.
             await sendable_channel.send(self._feedback_prompt_text(guild))
 
-    def _append_multi_hit_roll_event(self, effect_events: list[str]) -> None:
-        meta = self._last_damage_roll_meta or {}
-        if meta.get("kind") != "multi_hit":
-            return
-        details = meta.get("details")
-        if not isinstance(details, dict):
-            return
-        hits = int(details.get("hits", 0) or 0)
-        landed = int(details.get("landed_hits", 0) or 0)
-        per_hit = details.get("per_hit_damages", [])
-        per_hit_numbers: list[int] = []
-        if isinstance(per_hit, list):
-            for value in per_hit:
-                try:
-                    per_hit_numbers.append(int(value))
-                except Exception:
-                    continue
-        per_hit_text = ", ".join(str(v) for v in per_hit_numbers) if per_hit_numbers else "-"
-        total_damage = int(details.get("total_damage", 0) or 0)
-        self._append_effect_event(
-            effect_events,
-            f"Treffer: {landed}/{hits} | Schaden pro Treffer: {per_hit_text} | Gesamt: {total_damage}.",
-        )
 
-    def _grant_airborne(self, player_id: int) -> None:
-        battle_state.grant_unique_effect(self.active_effects, player_id, "airborne", player_id, duration=1)
 
-    def _clear_airborne(self, player_id: int) -> None:
-        battle_state.consume_effect(self.active_effects, player_id, "airborne")
 
-    def queue_delayed_defense(
-        self,
-        player_id: int,
-        defense: str,
-        counter: int = 0,
-        source: str | None = None,
-    ) -> None:
-        battle_state.queue_delayed_defense(
-            self.delayed_defense_queue,
-            player_id,
-            defense,
-            counter=counter,
-            source=source,
-        )
 
-    def activate_delayed_defense_after_attack(
-        self,
-        player_id: int,
-        effect_events: list[str],
-        *,
-        attack_landed: bool,
-    ) -> None:
-        battle_state.activate_delayed_defense_after_attack(
-            self.delayed_defense_queue,
-            self.active_effects,
-            self.incoming_modifiers,
-            player_id,
-            effect_events,
-            attack_landed=attack_landed,
-        )
 
-    def start_airborne_two_phase(
-        self,
-        player_id: int,
-        landing_damage,
-        effect_events: list[str],
-        *,
-        landing_attack: dict[str, object] | None = None,
-        source_attack_index: int | None = None,
-        cooldown_turns: int = 0,
-    ) -> None:
-        battle_state.start_airborne_two_phase(
-            self.active_effects,
-            self.airborne_pending_landing,
-            self.incoming_modifiers,
-            player_id,
-            landing_damage,
-            effect_events,
-            landing_attack=landing_attack,
-            source_attack_index=source_attack_index,
-            cooldown_turns=cooldown_turns,
-        )
 
-    def resolve_forced_landing_if_due(self, player_id: int, effect_events: list[str]) -> dict | None:
-        return battle_state.resolve_forced_landing_if_due(
-            self.active_effects,
-            self.airborne_pending_landing,
-            player_id,
-            effect_events,
-        )
 
-    def _max_hp_for(self, player_id: int) -> int:
-        return battle_state.max_hp_for(self._max_hp_by_player, player_id)
 
-    def _hp_for(self, player_id: int) -> int:
-        return battle_state.hp_for(self._hp_by_player, player_id)
 
-    def _set_hp_for(self, player_id: int, value: int) -> None:
-        battle_state.set_hp_for(self._hp_by_player, player_id, value)
 
-    def heal_player(self, player_id: int, amount: int) -> int:
-        return battle_state.heal_player(self._hp_by_player, self._max_hp_by_player, player_id, amount)
 
-    def _apply_non_heal_damage(self, player_id: int, amount: int) -> int:
-        return battle_state.apply_non_heal_damage(self._hp_by_player, player_id, amount)
 
-    def _card_name_for(self, player_id: int) -> str:
-        fallback = "Bot" if player_id == 0 else "Spieler"
-        return battle_state.card_name_for(self._card_names_by_player, player_id, fallback=fallback)
 
-    def _apply_non_heal_damage_with_event(
-        self,
-        events: list[str],
-        player_id: int,
-        amount: int,
-        *,
-        source: str,
-        self_damage: bool,
-    ) -> int:
-        return battle_state.apply_non_heal_damage_with_event(
-            self._hp_by_player,
-            self._card_names_by_player,
-            events,
-            player_id,
-            amount,
-            source=source,
-            self_damage=self_damage,
-        )
 
-    def _guard_non_heal_damage_result(self, defender_id: int, defender_hp_before: int, context: str) -> None:
-        battle_state.guard_non_heal_damage_result(self._hp_by_player, defender_id, defender_hp_before, context)
 
-    def queue_incoming_modifier(
-        self,
-        player_id: int,
-        *,
-        percent: float = 0.0,
-        flat: int = 0,
-        reflect: float = 0.0,
-        store_ratio: float = 0.0,
-        max_store: int | None = None,
-        cap: int | str | None = None,
-        evade: bool = False,
-        counter: int = 0,
-        turns: int = 1,
-        source: str | None = None,
-    ) -> None:
-        battle_state.queue_incoming_modifier(
-            self.incoming_modifiers,
-            player_id,
-            percent=percent,
-            flat=flat,
-            reflect=reflect,
-            store_ratio=store_ratio,
-            max_store=max_store,
-            cap=cap,
-            evade=evade,
-            counter=counter,
-            turns=turns,
-            source=source,
-        )
 
-    def _consume_airborne_evade_marker(self, player_id: int) -> bool:
-        modifiers = self.incoming_modifiers.get(player_id) or []
-        for idx, mod in enumerate(modifiers):
-            if not isinstance(mod, dict):
-                continue
-            if not bool(mod.get("evade")):
-                continue
-            if str(mod.get("source") or "").strip().lower() != "airborne":
-                continue
-            try:
-                modifiers.pop(idx)
-            except Exception:
-                logging.exception("Unexpected error")
-                return False
-            return True
-        return False
 
-    def queue_outgoing_attack_modifier(
-        self,
-        player_id: int,
-        *,
-        percent: float = 0.0,
-        flat: int = 0,
-        turns: int = 1,
-        source: str | None = None,
-    ) -> None:
-        battle_state.queue_outgoing_attack_modifier(
-            self.outgoing_attack_modifiers,
-            player_id,
-            percent=percent,
-            flat=flat,
-            turns=turns,
-            source=source,
-        )
 
     def apply_outgoing_attack_modifiers(self, attacker_id: int, raw_damage: int) -> tuple[int, int, dict[str, object] | None]:
         reduced_damage, overflow_self_damage, modifier_details = battle_state.apply_outgoing_attack_modifiers(
@@ -4182,85 +4146,9 @@ class BattleView(DurableView):
         )
         return reduced_damage, overflow_self_damage, modifier_details
 
-    def consume_guaranteed_hit(self, player_id: int) -> bool:
-        return battle_state.consume_guaranteed_hit(self.guaranteed_hit_next, player_id)
 
-    def roll_attack_damage(
-        self,
-        attack: dict,
-        base_damage,
-        damage_buff: int,
-        attack_multiplier: float,
-        force_max_damage: bool,
-        guaranteed_hit: bool,
-    ) -> tuple[int, bool, int, int]:
-        cap = MAX_ATTACK_DAMAGE_PER_HIT
-        multi_hit = attack.get("multi_hit")
-        if isinstance(multi_hit, dict):
-            actual_damage, min_damage, max_damage, details = _resolve_multi_hit_damage_details(
-                multi_hit,
-                buff_amount=damage_buff,
-                attack_multiplier=attack_multiplier,
-                force_max=force_max_damage,
-                guaranteed_hit=guaranteed_hit,
-            )
-            actual_damage = min(cap, max(0, int(actual_damage)))
-            min_damage = min(cap, max(0, int(min_damage)))
-            max_damage = min(cap, max(min_damage, int(max_damage)))
-            if isinstance(details, dict):
-                details["total_damage"] = actual_damage
-            self._last_damage_roll_meta = {"kind": "multi_hit", "details": details}
-            is_critical = bool(force_max_damage and actual_damage >= max_damage and max_damage > 0)
-            return actual_damage, is_critical, min_damage, max_damage
 
-        self._last_damage_roll_meta = {"kind": "single_hit"}
-        actual_damage, is_critical, min_damage, max_damage = calculate_damage(base_damage, damage_buff)
-        if attack_multiplier != 1.0:
-            actual_damage = int(round(actual_damage * attack_multiplier))
-            max_damage = int(round(max_damage * attack_multiplier))
-            min_damage = int(round(min_damage * attack_multiplier))
-        if force_max_damage:
-            actual_damage = max_damage
-            is_critical = max_damage > 0
-        min_damage = min(cap, max(0, int(min_damage)))
-        max_damage = min(cap, max(min_damage, int(max_damage)))
-        actual_damage = min(cap, max(0, int(actual_damage)))
-        return actual_damage, is_critical, min_damage, max_damage
 
-    def _resolve_incoming_modifiers_with_details(
-        self,
-        defender_id: int,
-        raw_damage: int,
-        ignore_evade: bool = False,
-        ignore_all_defense: bool = False,
-        incoming_min_damage: int | None = None,
-    ) -> tuple[int, int, bool, int, dict[str, object] | None]:
-        return battle_state.resolve_incoming_modifiers(
-            self.incoming_modifiers,
-            self.absorbed_damage,
-            defender_id,
-            raw_damage,
-            ignore_evade=ignore_evade,
-            ignore_all_defense=ignore_all_defense,
-            incoming_min_damage=incoming_min_damage,
-        )
-
-    def resolve_incoming_modifiers(
-        self,
-        defender_id: int,
-        raw_damage: int,
-        ignore_evade: bool = False,
-        ignore_all_defense: bool = False,
-        incoming_min_damage: int | None = None,
-    ) -> tuple[int, int, bool, int]:
-        final_damage, reflected_damage, dodged, counter_damage, _modifier_details = self._resolve_incoming_modifiers_with_details(
-            defender_id,
-            raw_damage,
-            ignore_evade=ignore_evade,
-            ignore_all_defense=ignore_all_defense,
-            incoming_min_damage=incoming_min_damage,
-        )
-        return final_damage, reflected_damage, dodged, counter_damage
 
     def _append_incoming_resolution_events(
         self,
@@ -4315,13 +4203,6 @@ class BattleView(DurableView):
             gained = int(absorbed_after) - int(absorbed_before)
             self._append_effect_event(effect_events, f"Absorption{source_suffix} durch {defender}: {gained} Schaden gespeichert.")
 
-    def apply_regen_tick(self, player_id: int) -> int:
-        return battle_state.apply_regen_tick(
-            self.active_effects,
-            self._hp_by_player,
-            self._max_hp_by_player,
-            player_id,
-        )
 
     def _status_icons(self, player_id: int) -> str:
         return battle_state.status_icons(self.active_effects, player_id)
@@ -11728,7 +11609,7 @@ class MissionEncounterPreviewView(DurableView):
 
 
 # View für Mission-Kämpfe (interaktiv)
-class MissionBattleView(DurableView):
+class MissionBattleView(BattleMechanicsMixin, DurableView):
     durable_view_kind = VIEW_KIND_MISSION_BATTLE
 
     def __init__(
@@ -11810,8 +11691,6 @@ class MissionBattleView(DurableView):
         # Setze Button-Labels (evtl. nach init_with_buffs erneut aufrufen)
         self.update_attack_buttons_mission()
 
-    def durable_payload(self) -> dict[str, Any]:
-        return {"session_id": self.session_id} if self.session_id else {}
 
     def durable_log_text(self) -> str:
         if not self.battle_log_message or not self.battle_log_message.embeds:
@@ -12582,232 +12461,33 @@ class MissionBattleView(DurableView):
     def start_attack_cooldown_bot(self, attack_index: int, turns: int = 1) -> None:
         battle_state.start_attack_cooldown(self.bot_attack_cooldowns, attack_index, turns=turns)
 
-    def is_reload_needed(self, player_id: int, attack_index: int) -> bool:
-        return battle_state.is_reload_needed(self.manual_reload_needed, player_id, attack_index)
 
-    def set_reload_needed(self, player_id: int, attack_index: int, needed: bool) -> None:
-        battle_state.set_reload_needed(self.manual_reload_needed, player_id, attack_index, needed)
 
-    def set_confusion(self, player_id: int, applier_id: int) -> None:
-        battle_state.set_confusion(self.active_effects, self.confused_next_turn, player_id, applier_id)
 
-    def consume_confusion_if_any(self, player_id: int) -> None:
-        battle_state.consume_confusion_if_any(self.active_effects, self.confused_next_turn, player_id)
 
-    def _find_effect(self, player_id: int, effect_type: str):
-        return battle_state.find_effect(self.active_effects, player_id, effect_type)
 
-    def has_stealth(self, player_id: int) -> bool:
-        return battle_state.has_effect(self.active_effects, player_id, "stealth")
 
-    def has_airborne(self, player_id: int) -> bool:
-        return battle_state.has_effect(self.active_effects, player_id, "airborne")
 
-    def consume_stealth(self, player_id: int) -> bool:
-        return battle_state.consume_effect(self.active_effects, player_id, "stealth")
 
-    def grant_stealth(self, player_id: int) -> None:
-        battle_state.grant_unique_effect(self.active_effects, player_id, "stealth", player_id, duration=1)
 
-    def _append_effect_event(self, events: list[str], text: str) -> None:
-        battle_state.append_effect_event(events, text)
 
-    def _append_multi_hit_roll_event(self, effect_events: list[str]) -> None:
-        meta = self._last_damage_roll_meta or {}
-        if meta.get("kind") != "multi_hit":
-            return
-        details = meta.get("details")
-        if not isinstance(details, dict):
-            return
-        hits = int(details.get("hits", 0) or 0)
-        landed = int(details.get("landed_hits", 0) or 0)
-        per_hit = details.get("per_hit_damages", [])
-        per_hit_numbers: list[int] = []
-        if isinstance(per_hit, list):
-            for value in per_hit:
-                try:
-                    per_hit_numbers.append(int(value))
-                except Exception:
-                    continue
-        per_hit_text = ", ".join(str(v) for v in per_hit_numbers) if per_hit_numbers else "-"
-        total_damage = int(details.get("total_damage", 0) or 0)
-        self._append_effect_event(
-            effect_events,
-            f"Treffer: {landed}/{hits} | Schaden pro Treffer: {per_hit_text} | Gesamt: {total_damage}.",
-        )
 
-    def _grant_airborne(self, player_id: int) -> None:
-        battle_state.grant_unique_effect(self.active_effects, player_id, "airborne", player_id, duration=1)
 
-    def _clear_airborne(self, player_id: int) -> None:
-        battle_state.consume_effect(self.active_effects, player_id, "airborne")
 
-    def queue_delayed_defense(
-        self,
-        player_id: int,
-        defense: str,
-        counter: int = 0,
-        source: str | None = None,
-    ) -> None:
-        battle_state.queue_delayed_defense(
-            self.delayed_defense_queue,
-            player_id,
-            defense,
-            counter=counter,
-            source=source,
-        )
 
-    def activate_delayed_defense_after_attack(
-        self,
-        player_id: int,
-        effect_events: list[str],
-        *,
-        attack_landed: bool,
-    ) -> None:
-        battle_state.activate_delayed_defense_after_attack(
-            self.delayed_defense_queue,
-            self.active_effects,
-            self.incoming_modifiers,
-            player_id,
-            effect_events,
-            attack_landed=attack_landed,
-        )
 
-    def start_airborne_two_phase(
-        self,
-        player_id: int,
-        landing_damage,
-        effect_events: list[str],
-        *,
-        landing_attack: dict[str, object] | None = None,
-        source_attack_index: int | None = None,
-        cooldown_turns: int = 0,
-    ) -> None:
-        battle_state.start_airborne_two_phase(
-            self.active_effects,
-            self.airborne_pending_landing,
-            self.incoming_modifiers,
-            player_id,
-            landing_damage,
-            effect_events,
-            landing_attack=landing_attack,
-            source_attack_index=source_attack_index,
-            cooldown_turns=cooldown_turns,
-        )
 
-    def resolve_forced_landing_if_due(self, player_id: int, effect_events: list[str]) -> dict | None:
-        return battle_state.resolve_forced_landing_if_due(
-            self.active_effects,
-            self.airborne_pending_landing,
-            player_id,
-            effect_events,
-        )
 
-    def _max_hp_for(self, player_id: int) -> int:
-        return battle_state.max_hp_for(self._max_hp_by_player, player_id)
 
-    def _hp_for(self, player_id: int) -> int:
-        return battle_state.hp_for(self._hp_by_player, player_id)
 
-    def _set_hp_for(self, player_id: int, value: int) -> None:
-        battle_state.set_hp_for(self._hp_by_player, player_id, value)
 
-    def heal_player(self, player_id: int, amount: int) -> int:
-        return battle_state.heal_player(self._hp_by_player, self._max_hp_by_player, player_id, amount)
 
-    def _apply_non_heal_damage(self, player_id: int, amount: int) -> int:
-        return battle_state.apply_non_heal_damage(self._hp_by_player, player_id, amount)
 
-    def _card_name_for(self, player_id: int) -> str:
-        fallback = "Bot" if player_id == 0 else "Spieler"
-        return battle_state.card_name_for(self._card_names_by_player, player_id, fallback=fallback)
 
-    def _apply_non_heal_damage_with_event(
-        self,
-        events: list[str],
-        player_id: int,
-        amount: int,
-        *,
-        source: str,
-        self_damage: bool,
-    ) -> int:
-        return battle_state.apply_non_heal_damage_with_event(
-            self._hp_by_player,
-            self._card_names_by_player,
-            events,
-            player_id,
-            amount,
-            source=source,
-            self_damage=self_damage,
-        )
 
-    def _guard_non_heal_damage_result(self, defender_id: int, defender_hp_before: int, context: str) -> None:
-        battle_state.guard_non_heal_damage_result(self._hp_by_player, defender_id, defender_hp_before, context)
 
-    def queue_incoming_modifier(
-        self,
-        player_id: int,
-        *,
-        percent: float = 0.0,
-        flat: int = 0,
-        reflect: float = 0.0,
-        store_ratio: float = 0.0,
-        max_store: int | None = None,
-        cap: int | str | None = None,
-        evade: bool = False,
-        counter: int = 0,
-        turns: int = 1,
-        source: str | None = None,
-    ) -> None:
-        battle_state.queue_incoming_modifier(
-            self.incoming_modifiers,
-            player_id,
-            percent=percent,
-            flat=flat,
-            reflect=reflect,
-            store_ratio=store_ratio,
-            max_store=max_store,
-            cap=cap,
-            evade=evade,
-            counter=counter,
-            turns=turns,
-            source=source,
-        )
 
-    def _consume_airborne_evade_marker(self, player_id: int) -> bool:
-        modifiers = self.incoming_modifiers.get(player_id) or []
-        for idx, mod in enumerate(modifiers):
-            if not isinstance(mod, dict):
-                continue
-            if not bool(mod.get("evade")):
-                continue
-            if str(mod.get("source") or "").strip().lower() != "airborne":
-                continue
-            try:
-                modifiers.pop(idx)
-            except Exception:
-                logging.exception("Unexpected error")
-                return False
-            return True
-        return False
 
-    def queue_outgoing_attack_modifier(
-        self,
-        player_id: int,
-        *,
-        percent: float = 0.0,
-        flat: int = 0,
-        turns: int = 1,
-        source: str | None = None,
-    ) -> None:
-        battle_state.queue_outgoing_attack_modifier(
-            self.outgoing_attack_modifiers,
-            player_id,
-            percent=percent,
-            flat=flat,
-            turns=turns,
-            source=source,
-        )
 
     def _apply_outgoing_attack_modifiers_with_details(
         self,
@@ -12828,85 +12508,9 @@ class MissionBattleView(DurableView):
         )
         return reduced_damage, overflow_self_damage
 
-    def consume_guaranteed_hit(self, player_id: int) -> bool:
-        return battle_state.consume_guaranteed_hit(self.guaranteed_hit_next, player_id)
 
-    def roll_attack_damage(
-        self,
-        attack: dict,
-        base_damage,
-        damage_buff: int,
-        attack_multiplier: float,
-        force_max_damage: bool,
-        guaranteed_hit: bool,
-    ) -> tuple[int, bool, int, int]:
-        cap = MAX_ATTACK_DAMAGE_PER_HIT
-        multi_hit = attack.get("multi_hit")
-        if isinstance(multi_hit, dict):
-            actual_damage, min_damage, max_damage, details = _resolve_multi_hit_damage_details(
-                multi_hit,
-                buff_amount=damage_buff,
-                attack_multiplier=attack_multiplier,
-                force_max=force_max_damage,
-                guaranteed_hit=guaranteed_hit,
-            )
-            actual_damage = min(cap, max(0, int(actual_damage)))
-            min_damage = min(cap, max(0, int(min_damage)))
-            max_damage = min(cap, max(min_damage, int(max_damage)))
-            if isinstance(details, dict):
-                details["total_damage"] = actual_damage
-            self._last_damage_roll_meta = {"kind": "multi_hit", "details": details}
-            is_critical = bool(force_max_damage and actual_damage >= max_damage and max_damage > 0)
-            return actual_damage, is_critical, min_damage, max_damage
 
-        self._last_damage_roll_meta = {"kind": "single_hit"}
-        actual_damage, is_critical, min_damage, max_damage = calculate_damage(base_damage, damage_buff)
-        if attack_multiplier != 1.0:
-            actual_damage = int(round(actual_damage * attack_multiplier))
-            max_damage = int(round(max_damage * attack_multiplier))
-            min_damage = int(round(min_damage * attack_multiplier))
-        if force_max_damage:
-            actual_damage = max_damage
-            is_critical = max_damage > 0
-        min_damage = min(cap, max(0, int(min_damage)))
-        max_damage = min(cap, max(min_damage, int(max_damage)))
-        actual_damage = min(cap, max(0, int(actual_damage)))
-        return actual_damage, is_critical, min_damage, max_damage
 
-    def _resolve_incoming_modifiers_with_details(
-        self,
-        defender_id: int,
-        raw_damage: int,
-        ignore_evade: bool = False,
-        ignore_all_defense: bool = False,
-        incoming_min_damage: int | None = None,
-    ) -> tuple[int, int, bool, int, dict[str, object] | None]:
-        return battle_state.resolve_incoming_modifiers(
-            self.incoming_modifiers,
-            self.absorbed_damage,
-            defender_id,
-            raw_damage,
-            ignore_evade=ignore_evade,
-            ignore_all_defense=ignore_all_defense,
-            incoming_min_damage=incoming_min_damage,
-        )
-
-    def resolve_incoming_modifiers(
-        self,
-        defender_id: int,
-        raw_damage: int,
-        ignore_evade: bool = False,
-        ignore_all_defense: bool = False,
-        incoming_min_damage: int | None = None,
-    ) -> tuple[int, int, bool, int]:
-        final_damage, reflected_damage, dodged, counter_damage, _modifier_details = self._resolve_incoming_modifiers_with_details(
-            defender_id,
-            raw_damage,
-            ignore_evade=ignore_evade,
-            ignore_all_defense=ignore_all_defense,
-            incoming_min_damage=incoming_min_damage,
-        )
-        return final_damage, reflected_damage, dodged, counter_damage
 
     def _append_incoming_resolution_events(
         self,
@@ -12960,13 +12564,6 @@ class MissionBattleView(DurableView):
             gained = int(absorbed_after) - int(absorbed_before)
             self._append_effect_event(effect_events, f"Absorption{source_suffix} durch {defender}: {gained} Schaden gespeichert.")
 
-    def apply_regen_tick(self, player_id: int) -> int:
-        return battle_state.apply_regen_tick(
-            self.active_effects,
-            self._hp_by_player,
-            self._max_hp_by_player,
-            player_id,
-        )
 
     def reduce_cooldowns_user(self) -> None:
         battle_state.reduce_cooldowns(self.user_attack_cooldowns)
@@ -14788,12 +14385,28 @@ class MissionBattleView(DurableView):
 # Owner/Dev Panel
 # =========================
 
-async def _send_ephemeral(interaction: discord.Interaction, *, content: str | None = None, embed=None, view=None, file=None):
-    if not await is_channel_allowed_ids(
+async def _interaction_channel_allowed(interaction: discord.Interaction) -> bool:
+    """Ist der Kanal/Thread der Interaktion für den Bot freigegeben?"""
+    return await is_channel_allowed_ids(
         interaction.guild_id,
         interaction.channel_id,
         getattr(interaction.channel, "parent_id", None),
-    ):
+    )
+
+
+async def _channel_obj_allowed(channel: object) -> bool:
+    """Wie ``_interaction_channel_allowed``, aber für ein Kanal-/Thread-Objekt."""
+    guild_obj = getattr(channel, "guild", None)
+    guild_id = guild_obj.id if isinstance(guild_obj, discord.Guild) else None
+    return await is_channel_allowed_ids(
+        guild_id,
+        getattr(channel, "id", None),
+        getattr(channel, "parent_id", None),
+    )
+
+
+async def _send_ephemeral(interaction: discord.Interaction, *, content: str | None = None, embed=None, view=None, file=None):
+    if not await _interaction_channel_allowed(interaction):
         return None
     kwargs: dict[str, object] = {"ephemeral": True}
     if content is not None:
@@ -14841,11 +14454,8 @@ async def _send_channel_message(
     sendable_channel = _coerce_sendable_channel(channel)
     if sendable_channel is None:
         return None
-    guild_obj = getattr(channel, "guild", None)
-    guild_id = guild_obj.id if isinstance(guild_obj, discord.Guild) else None
     channel_id = getattr(channel, "id", None)
-    parent_id = getattr(channel, "parent_id", None)
-    if not await is_channel_allowed_ids(guild_id, channel_id, parent_id):
+    if not await _channel_obj_allowed(channel):
         return None
     for attempt in range(3):
         try:
@@ -14877,11 +14487,7 @@ async def _safe_send_channel(
 ) -> discord.Message | None:
     if _coerce_sendable_channel(channel) is None:
         return None
-    guild_obj = getattr(channel, "guild", None)
-    guild_id = guild_obj.id if isinstance(guild_obj, discord.Guild) else None
-    channel_id = getattr(channel, "id", None)
-    parent_id = getattr(channel, "parent_id", None)
-    if not await is_channel_allowed_ids(guild_id, channel_id, parent_id):
+    if not await _channel_obj_allowed(channel):
         return None
     sent_message = await _send_channel_message(
         channel,
@@ -15481,11 +15087,7 @@ async def _send_panel_message(
     view=None,
     file=None,
 ):
-    if not await is_channel_allowed_ids(
-        interaction.guild_id,
-        interaction.channel_id,
-        getattr(interaction.channel, "parent_id", None),
-    ):
+    if not await _interaction_channel_allowed(interaction):
         return None
     visibility = await get_message_visibility(interaction.guild_id, message_key)
     kwargs = {}

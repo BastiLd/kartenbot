@@ -1,4 +1,5 @@
 import json
+import logging
 import aiosqlite
 import time
 from typing import Any
@@ -12,8 +13,14 @@ def _decode_payload(raw: object) -> dict[str, Any]:
     try:
         parsed = json.loads(str(raw))
     except (TypeError, ValueError, json.JSONDecodeError):
+        # Beschädigtes Payload nicht still verschlucken – sonst verschwinden
+        # Durable-View-/Session-Daten unbemerkt. Gekürzt loggen, dann leer liefern.
+        logging.warning("runtime_store: konnte Payload nicht dekodieren: %.200r", raw)
         return {}
-    return parsed if isinstance(parsed, dict) else {}
+    if not isinstance(parsed, dict):
+        logging.warning("runtime_store: Payload ist kein dict (Typ %s)", type(parsed).__name__)
+        return {}
+    return parsed
 
 
 async def upsert_durable_view(
