@@ -9,6 +9,7 @@ import random
 import re
 import time
 import os
+import traceback
 from collections import deque
 from difflib import SequenceMatcher
 from io import BytesIO
@@ -216,7 +217,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.10"
+__version__ = "2.3.11"
 
 
 class CardCatalog:
@@ -1525,6 +1526,51 @@ class KatabumpCommandTree(app_commands.CommandTree):
                 },
             )
         return True
+
+    async def on_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        """Globaler Crash-Report für Slash-Commands (Update v0.2.2).
+
+        Erwartete Ablehnungen aus :meth:`interaction_check` (Kanal gesperrt,
+        Wartung, Katabump-Rate-Limit) sind KEIN Absturz und werden ignoriert.
+        Jeder echte Fehler wird geloggt UND automatisch per DM an den Owner
+        gemeldet (Befehl, Guild, Kanal, User, vollständiger Traceback)."""
+        if isinstance(error, app_commands.CheckFailure):
+            return
+        original = getattr(error, "original", None) or error
+        command_name = ""
+        if interaction.command is not None:
+            command_name = getattr(interaction.command, "qualified_name", interaction.command.name)
+        logging.exception(
+            "Unhandled slash-command error in /%s", command_name or "?", exc_info=original
+        )
+        try:
+            tb_text = "".join(
+                traceback.format_exception(type(original), original, original.__traceback__)
+            )
+            guild_name = interaction.guild.name if interaction.guild else "DM"
+            user = interaction.user
+            await _send_basti_log_dm(
+                tb_text or repr(original),
+                context_lines=[
+                    "🛑 Slash-Command-Absturz",
+                    f"Befehl: /{command_name or 'unbekannt'}",
+                    f"Guild: {guild_name}",
+                    f"Kanal/Thread: {_channel_mention_or_fallback(interaction.channel)}",
+                    f"User: {safe_display_name(user, fallback='Unbekannt')} ({getattr(user, 'id', 0)})",
+                    f"Exception: {original!r}",
+                ],
+                title="Command-Fehler / Traceback",
+            )
+        except Exception:
+            logging.exception("Failed to auto-report slash-command error to owner")
+        try:
+            await send_interaction_response(
+                interaction,
+                content="❌ Beim Ausführen des Befehls ist ein Fehler aufgetreten. Der Entwickler wurde automatisch benachrichtigt.",
+                ephemeral=True,
+            )
+        except Exception:
+            logging.debug("Could not notify user about slash-command error", exc_info=True)
 
 
 bot = build_bot(tree_cls=KatabumpCommandTree)
@@ -14923,7 +14969,7 @@ def _split_text_chunks(text: str, chunk_size: int = 3800) -> list[str]:
     return chunks
 
 
-async def _send_basti_log_dm(log_text: str, *, context_lines: list[str]) -> None:
+async def _send_basti_log_dm(log_text: str, *, context_lines: list[str], title: str = "Kampf-/Missionslog") -> None:
     if not log_text.strip():
         return
     user = bot.get_user(BASTI_USER_ID)
@@ -14938,8 +14984,8 @@ async def _send_basti_log_dm(log_text: str, *, context_lines: list[str]) -> None
         if intro:
             await user.send(intro[:1900])
         for idx, chunk in enumerate(_split_text_chunks(log_text), start=1):
-            title = "Kampf-/Missionslog" if idx == 1 else f"Kampf-/Missionslog ({idx})"
-            embed = discord.Embed(title=title, description=chunk, color=0x2F3136)
+            chunk_title = title if idx == 1 else f"{title} ({idx})"
+            embed = discord.Embed(title=chunk_title, description=chunk, color=0x2F3136)
             await user.send(embed=embed)
     except discord.HTTPException:
         logging.exception("Failed to DM Basti with battle log")
