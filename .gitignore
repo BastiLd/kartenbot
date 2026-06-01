@@ -19,6 +19,9 @@ backups/
 .vscode/*
 !.vscode/settings.json
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 bot.log
 gcm-diagnose.log
 kampf log *.txt

@@ -235,7 +235,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.13"
+__version__ = "2.3.14"
 
 
 class CardCatalog:
@@ -3407,6 +3407,31 @@ class BattleMechanicsMixin:
 
 
 
+# ============================================================================
+#  KAMPF-VIEWS — WEGWEISER (Stand Audit D4)
+#  ----------------------------------------------------------------------------
+#  Drei Schichten, von gemeinsam nach speziell:
+#
+#  1. BattleMechanicsMixin (in services-nähe oben im File)
+#     34 byte-identische, zustandslose Kampf-Mechanik-Methoden, die auf self-State
+#     operieren (roll_attack_damage, resolve_incoming_modifiers, apply_regen_tick,
+#     queue_*/airborne/stealth/confusion, _apply_non_heal_damage, ...).
+#
+#  2. BaseBattleView (hier)
+#     Gemeinsamer Laufzeit-State beider Kampfarten: HP-/Max-HP-/Karten-Dicts und die
+#     Effekt-/Modifier-Maps (_init_hp_and_card_maps / _init_battle_runtime_maps).
+#     IDs sind generisch: PvP (player1_id, player2_id), PvE (user_id, 0).
+#
+#  3. Subklassen — die genuin unterschiedliche Logik (bewusst NICHT zusammengeführt,
+#     execute_attack ist nur ~33% identisch und stark scope-verflochten):
+#       • BattleView         = PvP, Mensch vs. Mensch. current_turn wechselt je Zug.
+#                              Button-custom_ids "battle:*". Cooldowns: attack_cooldowns.
+#       • MissionBattleView  = PvE, Spieler vs. Boss-KI + Wellen. current_turn bleibt
+#                              der Spieler, _mission_actor_turn trennt player/bot.
+#                              Button-custom_ids "mission_battle:*". Cooldowns getrennt:
+#                              user_attack_cooldowns / bot_attack_cooldowns. Enthält die
+#                              Boss-Mechaniken (Maestro/Modok/Kingpin/Green Goblin/Agatha).
+# ============================================================================
 class BaseBattleView(BattleMechanicsMixin, DurableView):
     """Gemeinsame Basis für PvP- (`BattleView`) und PvE- (`MissionBattleView`) Kämpfe.
 
@@ -4705,6 +4730,12 @@ class BattleView(BaseBattleView):
     # Entfernt: Platzhalter-Button
 
     async def execute_attack(self, interaction: discord.Interaction, attack_index: int):
+        # PvP-Zug-Orchestrierung (Mensch vs. Mensch). Grobe Pipeline – die Einzelschritte
+        # liegen im BattleMechanicsMixin: Vorprüfung (am Zug? Kampf vorbei?) → Stun/forced
+        # landing → Cooldown-Check → Schaden würfeln (roll_attack_damage) → ausgehende
+        # Modifier → eingehende Modifier (evade/reflect/counter/absorb) → Schaden anwenden
+        # → Effekt-Auflösung → Cooldown setzen, current_turn wechseln, UI/Log aktualisieren.
+        # PvE-Pendant: MissionBattleView.execute_attack (mit Boss-Hooks).
         guild = interaction.guild
         message = _interaction_message_or_none(interaction)
         # Block actions if fight already ended (HP <= 0)
@@ -12738,6 +12769,11 @@ class MissionBattleView(BaseBattleView):
     # Entfernt: Platzhalter-Button
 
     async def execute_attack(self, interaction: discord.Interaction, attack_index: int):
+        # PvE-Zug-Orchestrierung (Spieler vs. Boss-KI). Gleiche Kernschritte wie das
+        # PvP-Pendant (BattleView.execute_attack, Mixin-Pipeline), zusätzlich aber:
+        # _mission_actor_turn-Wechsel player↔bot, Bot-KI-Zugauswahl, Wellen-Abschluss und
+        # die Boss-Hooks (_apply_agatha_action_pattern, _apply_modok_neural_feedback,
+        # Kingpin/Green-Goblin/Maestro). Darum bewusst NICHT mit PvP zusammengeführt.
         message = _interaction_message_or_none(interaction)
         # Block if fight already ended
         if self.player_hp <= 0 or self.bot_hp <= 0:
