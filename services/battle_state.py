@@ -557,7 +557,17 @@ def resolve_incoming_modifiers(
 ) -> tuple[int, int, bool, int, BattleEntry | None]:
     if raw_damage <= 0 or not incoming_modifiers.get(defender_id):
         return raw_damage, 0, False, 0, None
-    modifier = incoming_modifiers[defender_id].pop(0)
+    queue = incoming_modifiers[defender_id]
+    # Ausweichen gewinnt immer: bevorzugt den ersten Evade-Modifier in der Queue
+    # (z. B. Sternenflug), damit eine gleichzeitig aktive Schadensreduktion
+    # (z. B. Energie-Absorber) das Ausweichen nicht "aufbraucht".
+    pop_index = 0
+    if not ignore_evade and not ignore_all_defense:
+        for i, queued in enumerate(queue):
+            if queued.get("evade"):
+                pop_index = i
+                break
+    modifier = queue.pop(pop_index)
     if ignore_all_defense:
         return max(0, int(raw_damage)), 0, False, 0, modifier
     if modifier.get("evade") and not ignore_evade:

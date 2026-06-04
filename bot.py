@@ -235,7 +235,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.14"
+__version__ = "2.3.15"
 
 
 class CardCatalog:
@@ -5459,9 +5459,7 @@ class BattleView(BaseBattleView):
                     damage=effect.get("damage", 0),
                     source=attack_name,
                 )
-                pct = int(round((mult - 1.0) * 100))
-                if pct > 0:
-                    self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Nächster Angriff macht +{pct}% Schaden."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Nächster Standardangriff wird auf {_effect_amount_label(effect.get('damage', 0))} Schaden gesetzt."))
             elif eff_type == "force_max":
                 uses = int(effect.get("uses", 1) or 1)
                 self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
@@ -5480,7 +5478,7 @@ class BattleView(BaseBattleView):
                 self._append_effect_event(effect_events, "Status-Immunität aktiviert.")
             elif eff_type in {"enemy_attack_self_damage", "enemy_special_self_damage", "enemy_next_special_self_damage"}:
                 turns = max(1, int(effect.get("turns", 1) or 1))
-                amount = max(0, int(effect.get("amount", 0) or 0))
+                amount = max(0, _effect_amount(effect, "amount", 0))
                 _append_active_effect(self.active_effects, target_id, str(eff_type), self.current_turn, turns=turns, amount=amount, source=attack_name)
                 self._append_effect_event(effect_events, f"Vorbereiteter Gegeneffekt: {amount} Selbstschaden beim passenden Angriff.")
             elif eff_type == "disable_enemy_evade_and_block":
@@ -5506,7 +5504,7 @@ class BattleView(BaseBattleView):
                 chosen_idx, new_cd = _apply_random_enemy_cooldown_increase(
                     target_attacks,
                     self.attack_cooldowns[target_id],
-                    amount=int(effect.get("amount", 1) or 1),
+                    amount=(_maybe_int(effect.get("amount", 1)) or 1),
                 )
                 if chosen_idx is not None and 0 <= chosen_idx < len(target_attacks):
                     target_name = str(target_attacks[chosen_idx].get("name") or f"Angriff {chosen_idx+1}")
@@ -5520,7 +5518,7 @@ class BattleView(BaseBattleView):
                         self._append_effect_event(effect_events, f"Cooldown verlängert: {str(last_enemy_special_entry.get('attack_name') or 'letzte Spezialfähigkeit')} +{bonus}.")
             elif eff_type == "incoming_damage_bonus":
                 turns = max(1, int(effect.get("turns", 1) or 1))
-                amount = max(0, int(effect.get("amount", 0) or 0))
+                amount = max(0, _effect_amount(effect, "amount", 0))
                 _append_active_effect(self.active_effects, target_id, "incoming_damage_bonus", self.current_turn, turns=turns, amount=amount, source=attack_name)
                 self._append_effect_event(effect_events, f"Der Gegner erleidet {turns} Runde(n) lang +{amount} Schaden.")
             elif eff_type == "interrupt_enemy_standard_or_heal_self":
@@ -5569,7 +5567,7 @@ class BattleView(BaseBattleView):
                 self._append_effect_event(effect_events, "Hex-Fluch aktiv: Heilversuche verursachen Schaden.")
             elif eff_type == "next_attack_flat_penalty":
                 turns = max(1, int(effect.get("turns", 1) or 1))
-                _append_active_effect(self.active_effects, target_id, "next_attack_flat_penalty", self.current_turn, turns=turns, amount=int(effect.get("amount", 0) or 0), source=attack_name)
+                _append_active_effect(self.active_effects, target_id, "next_attack_flat_penalty", self.current_turn, turns=turns, amount=_effect_amount(effect, "amount", 0), source=attack_name)
                 self._append_effect_event(effect_events, "Der nächste eigene Angriff wird geschwächt.")
             elif eff_type == "enemy_force_min_damage":
                 turns = max(1, int(effect.get("turns", 1) or 1))
@@ -5582,7 +5580,7 @@ class BattleView(BaseBattleView):
                         target_id,
                         "reactive_evolution",
                         self.current_turn,
-                        amount=int(effect.get("amount", 0) or 0),
+                        amount=_effect_amount(effect, "amount", 0),
                         max_stacks=int(effect.get("max_stacks", 1) or 1),
                         stacks=0,
                         source=attack_name,
@@ -5699,8 +5697,10 @@ class BattleView(BaseBattleView):
                 self._append_effect_event(effect_events, _effect_source_text(attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
             elif eff_type == "special_lock":
                 turns = max(1, int(effect.get("turns", 1) or 1))
-                self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), turns)
-                self._append_effect_event(effect_events, f"Spezialfähigkeiten des Gegners sind für {turns} Runde(n) gesperrt.")
+                # +1 bei Selbst-Sperre gleicht den End-of-Turn-Decrement im selben Zug aus.
+                lock_turns = turns + 1 if target == "self" else turns
+                self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), lock_turns)
+                self._append_effect_event(effect_events, f"{self._card_name_for(target_id)}: Spezialfähigkeiten für {turns} Runde(n) gesperrt.")
             elif eff_type == "blind":
                 miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
                 self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
@@ -6484,9 +6484,7 @@ class BattleView(BaseBattleView):
                     damage=effect.get("damage", 0),
                     source=attack_name,
                 )
-                pct = int(round((mult - 1.0) * 100))
-                if pct > 0:
-                    self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Nächster Angriff macht +{pct}% Schaden."))
+                self._append_effect_event(effect_events, _effect_source_text(attack_name, f"Nächster Standardangriff wird auf {_effect_amount_label(effect.get('damage', 0))} Schaden gesetzt."))
             elif eff_type == "force_max":
                 uses = int(effect.get("uses", 1) or 1)
                 self.force_max_next[target_id] = max(self.force_max_next.get(target_id, 0), uses)
@@ -6592,8 +6590,10 @@ class BattleView(BaseBattleView):
                 self._append_effect_event(effect_events, _effect_source_text(attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
             elif eff_type == "special_lock":
                 turns = max(1, int(effect.get("turns", 1) or 1))
-                self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), turns)
-                self._append_effect_event(effect_events, f"Spezialfähigkeiten des Gegners sind für {turns} Runde(n) gesperrt.")
+                # +1 bei Selbst-Sperre gleicht den End-of-Turn-Decrement im selben Zug aus.
+                lock_turns = turns + 1 if target == "self" else turns
+                self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), lock_turns)
+                self._append_effect_event(effect_events, f"{self._card_name_for(target_id)}: Spezialfähigkeiten für {turns} Runde(n) gesperrt.")
             elif eff_type == "blind":
                 miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
                 self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
@@ -13428,8 +13428,10 @@ class MissionBattleView(BaseBattleView):
                 self._append_effect_event(effect_events, _effect_source_text(attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
             elif eff_type == "special_lock":
                 turns = max(1, int(effect.get("turns", 1) or 1))
-                self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), turns)
-                self._append_effect_event(effect_events, f"Spezialfähigkeiten des Gegners sind für {turns} Runde(n) gesperrt.")
+                # +1 bei Selbst-Sperre gleicht den End-of-Turn-Decrement im selben Zug aus.
+                lock_turns = turns + 1 if target == "self" else turns
+                self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), lock_turns)
+                self._append_effect_event(effect_events, f"{self._card_name_for(target_id)}: Spezialfähigkeiten für {turns} Runde(n) gesperrt.")
             elif eff_type == "blind":
                 miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
                 self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
@@ -14198,8 +14200,10 @@ class MissionBattleView(BaseBattleView):
                     self._append_effect_event(bot_effect_events, _effect_source_text(bot_attack_name, "Ausweichen aktiv: Der nächste gegnerische Angriff verfehlt."))
                 elif eff_type == "special_lock":
                     turns = max(1, int(effect.get("turns", 1) or 1))
-                    self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), turns)
-                    self._append_effect_event(bot_effect_events, f"Spezialfähigkeiten des Gegners sind für {turns} Runde(n) gesperrt.")
+                    # +1 bei Selbst-Sperre gleicht den End-of-Turn-Decrement im selben Zug aus.
+                    lock_turns = turns + 1 if target == "self" else turns
+                    self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), lock_turns)
+                    self._append_effect_event(bot_effect_events, f"{self._card_name_for(target_id)}: Spezialfähigkeiten für {turns} Runde(n) gesperrt.")
                 elif eff_type == "next_player_heal_negation":
                     # Req. 20.4 (Agatha „Darkhold-Fluch"): die nächste heilende Spielerfähigkeit
                     # heilt 0 HP. Konsumiert wird der Marker beim nächsten Spieler-Heal.
@@ -16335,7 +16339,10 @@ async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_na
         embed.add_field(name=f"🪙 {unit_label}", value=units_value, inline=True)
         if infinitydust <= 0:
             _apply_item_media(embed, "unit", thumbnail=True)
-    for group in grouped_cards:
+    # Discord erlaubt max. 25 Embed-Felder. Kopf-Felder (Infinitydust/Units) sind schon gesetzt,
+    # daher die Kartenliste auf die verbleibenden Slots begrenzen.
+    max_card_fields = max(0, 25 - len(embed.fields))
+    for group in grouped_cards[:max_card_fields]:
         base_name = str(group.get("base_name") or "")
         karte = await get_karte_by_name(base_name)
         if karte:
@@ -16346,7 +16353,12 @@ async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_na
                 value=f"{str(karte['beschreibung'])[:80]}...\nVarianten: {variant_text}",
                 inline=False,
             )
-    embed.set_footer(text=f"Vault-Lookup durch {safe_display_name(interaction.user, fallback='Unbekannt')}")
+    remaining_heroes = max(0, len(grouped_cards) - max_card_fields)
+    footer_actor = safe_display_name(interaction.user, fallback='Unbekannt')
+    if remaining_heroes > 0:
+        embed.set_footer(text=f"… und {remaining_heroes} weitere Helden · Vault-Lookup durch {footer_actor}")
+    else:
+        embed.set_footer(text=f"Vault-Lookup durch {footer_actor}")
     embed.color = 0xff6b6b
     logging.info("Vault look: actor=%s target=%s", interaction.user.id, user_id)
     await _send_with_visibility(interaction, visibility_key, embed=embed)

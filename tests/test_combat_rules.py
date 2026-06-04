@@ -3477,6 +3477,118 @@ class BattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(bool(attack_buttons[0].disabled))
         self.assertTrue(all(bool(btn.disabled) for btn in attack_buttons[1:4]))
 
+    async def test_giant_man_next_standard_override_does_not_crash(self) -> None:
+        # Regression: next_standard_damage_override las vorher die nicht gesetzte Variable
+        # `mult` -> UnboundLocalError. Ant-Mans "Giant-Man" muss sauber durchlaufen.
+        antman = copy.deepcopy(_find_card("Ant-Man"))
+        dummy = {
+            "name": "DummyBot",
+            "hp": 200,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Wait", "damage": [0, 0], "info": "test"}],
+        }
+        view = BattleView(antman, dummy, 1, 2, None)
+        view.current_turn = 1
+
+        message = await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=2)
+
+        override = next(
+            (e for e in view.active_effects.get(1, []) if e.get("type") == "next_standard_damage_override"),
+            None,
+        )
+        self.assertIsNotNone(override)
+        self.assertIn("Nächster Standardangriff wird auf 6-10 Schaden gesetzt.", view._full_battle_log_text())
+        self.assertEqual(view.current_turn, 2)
+
+    async def test_venom_blast_range_amount_does_not_crash(self) -> None:
+        # Regression: enemy_attack_self_damage mit amount-Range [8,12] führte zu
+        # `int([8, 12])` -> TypeError. Miles' "Venom Blast" muss sauber durchlaufen.
+        miles = copy.deepcopy(_find_card("Miles Morales"))
+        dummy = {
+            "name": "DummyBot",
+            "hp": 200,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Wait", "damage": [0, 0], "info": "test"}],
+        }
+        view = BattleView(miles, dummy, 1, 2, None)
+        view.current_turn = 1
+
+        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=1)
+
+        entry = next(
+            (e for e in view.active_effects.get(2, []) if e.get("type") == "enemy_attack_self_damage"),
+            None,
+        )
+        self.assertIsNotNone(entry)
+        assert entry is not None
+        self.assertIsInstance(entry.get("amount"), int)
+        self.assertTrue(8 <= int(entry["amount"]) <= 12)
+
+    async def test_mega_venom_blast_lock_message_names_caster(self) -> None:
+        # Regression: Mega Venom Blast sperrt (target self) Miles' EIGENE Spezialangriffe,
+        # die Meldung behauptete aber pauschal "Spezialfähigkeiten des Gegners".
+        miles = copy.deepcopy(_find_card("Miles Morales"))
+        dummy = {
+            "name": "DummyBot",
+            "hp": 200,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Wait", "damage": [0, 0], "info": "test"}],
+        }
+        view = BattleView(miles, dummy, 1, 2, None)
+        view.current_turn = 1
+
+        await self._execute_attack_without_buffs(view, acting_user_id=1, attack_index=3)
+
+        # Der Lock liegt auf dem Caster (Miles), nicht auf dem Gegner.
+        self.assertGreater(view.special_lock_next_turn.get(1, 0), 0)
+        self.assertEqual(view.special_lock_next_turn.get(2, 0), 0)
+        log = view._full_battle_log_text()
+        self.assertIn(f"{view._card_name_for(1)}: Spezialfähigkeiten für 1 Runde(n) gesperrt.", log)
+
+    def test_evade_modifier_wins_over_reduction_in_queue(self) -> None:
+        # Regression (Sternenflug): Ausweichen muss gewinnen, auch wenn ein
+        # Reduktions-/Absorptions-Modifier (Energie-Absorber) zuerst in der Queue liegt.
+        from services.battle_state import resolve_incoming_modifiers
+
+        incoming = {
+            1: [
+                {"percent": 0.5, "store_ratio": 1.0, "max_store": 20, "source": "Energie-Absorber"},
+                {"evade": True, "counter": 0, "source": "airborne"},
+            ]
+        }
+        absorbed = {1: 0}
+        final, _reflected, dodged, _counter, modifier = resolve_incoming_modifiers(incoming, absorbed, 1, 13)
+
+        self.assertTrue(dodged)
+        self.assertEqual(final, 0)
+        self.assertEqual((modifier or {}).get("source"), "airborne")
+        # Der Absorber bleibt für den nächsten Treffer erhalten und wurde nicht aufgebraucht.
+        self.assertEqual(len(incoming[1]), 1)
+        self.assertEqual(incoming[1][0].get("source"), "Energie-Absorber")
+        self.assertEqual(absorbed[1], 0)
+
+    def test_evade_priority_respected_when_evade_is_ignored(self) -> None:
+        # Bei ignore_evade (z. B. garantierter Treffer ohne Airborne) bleibt die
+        # FIFO-Reihenfolge: Der Absorber greift und der Evade bleibt erhalten.
+        from services.battle_state import resolve_incoming_modifiers
+
+        incoming = {
+            1: [
+                {"percent": 0.5, "store_ratio": 1.0, "max_store": 20, "source": "Energie-Absorber"},
+                {"evade": True, "counter": 0, "source": "airborne"},
+            ]
+        }
+        absorbed = {1: 0}
+        final, _reflected, dodged, _counter, _modifier = resolve_incoming_modifiers(
+            incoming, absorbed, 1, 13, ignore_evade=True
+        )
+
+        self.assertFalse(dodged)
+        self.assertEqual(final, 7)
+        self.assertEqual(absorbed[1], 6)
+        self.assertEqual(len(incoming[1]), 1)
+        self.assertEqual(incoming[1][0].get("source"), "airborne")
+
     async def test_hawkeye_treffsicherheit_makes_triple_arrow_max_damage(self) -> None:
         player_card = copy.deepcopy(_find_card("Hawkeye"))
         defender_card = {
