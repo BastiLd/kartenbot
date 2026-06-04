@@ -26,6 +26,8 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
+import discord
+
 logger = logging.getLogger(__name__)
 
 HOUR = 3600
@@ -299,24 +301,38 @@ async def create_mission_state(battle_id: str, thread_id: int, user_id: int,
     return state
 
 
-async def _send_ping(bot, state: AfkState, ping: Ping) -> None:
+async def _send_ping(bot, state: AfkState, ping: Ping) -> bool:
+    """Sendet einen AFK-Ping. Gibt ``True`` zurück, wenn der Kanal/Thread dauerhaft
+    weg ist (gelöscht oder kein Zugriff) und der Timer entfernt werden sollte."""
     channel = None
     try:
         channel = bot.get_channel(state.thread_id) if state.thread_id else None
         if channel is None and state.thread_id:
             channel = await bot.fetch_channel(state.thread_id)
-    except Exception:
-        logger.exception("AFK-Ping: Kanal %s nicht erreichbar", state.thread_id)
-        return
+    except (discord.NotFound, discord.Forbidden):
+        # Kanal/Thread existiert nicht mehr bzw. kein Zugriff -> Timer ist tot.
+        logger.info("AFK-Ping: Kanal %s nicht mehr verfügbar – Timer wird entfernt (battle=%s)",
+                    state.thread_id, state.battle_id)
+        return True
+    except Exception as exc:
+        # Vorübergehender Fehler (z. B. Netzwerk) – kein Traceback-Spam, nicht löschen.
+        logger.warning("AFK-Ping: Kanal %s vorübergehend nicht erreichbar (battle=%s): %s",
+                       state.thread_id, state.battle_id, exc)
+        return False
     if channel is None:
-        return
+        return False
     # Doppelte Empfänger zusammenfassen (z. B. Solo-Mission: challenger == acceptor).
     unique_recipients = list(dict.fromkeys(ping.recipients))
     mentions = " ".join(f"<@{uid}>" for uid in unique_recipients)
     try:
         await channel.send(f"{mentions} ⏰ Erinnerung: Du bist am Zug.")
-    except Exception:
-        logger.exception("AFK-Ping konnte nicht gesendet werden (battle=%s)", state.battle_id)
+    except (discord.NotFound, discord.Forbidden):
+        logger.info("AFK-Ping: Kanal %s beim Senden nicht mehr verfügbar – Timer wird entfernt (battle=%s)",
+                    state.thread_id, state.battle_id)
+        return True
+    except Exception as exc:
+        logger.warning("AFK-Ping konnte nicht gesendet werden (battle=%s): %s", state.battle_id, exc)
+    return False
 
 
 async def tick(bot, state: AfkState, now: int | None = None) -> AfkState:
@@ -327,7 +343,11 @@ async def tick(bot, state: AfkState, now: int | None = None) -> AfkState:
         bit_value = 1 << ping.bit
         if state.pings_sent_mask & bit_value:
             continue
-        await _send_ping(bot, state, ping)
+        channel_gone = await _send_ping(bot, state, ping)
+        if channel_gone:
+            # Kanal/Thread ist weg -> verwaisten Timer löschen und nicht erneut persistieren.
+            await delete_state(state.battle_id)
+            return state
         state.pings_sent_mask |= bit_value
         changed = True
     if changed:

@@ -235,7 +235,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.15"
+__version__ = "2.3.16"
 
 
 class CardCatalog:
@@ -10794,9 +10794,10 @@ async def _build_owned_card_detail(
 
 
 class VaultView(RestrictedView):
-    def __init__(self, user_id: int, user_karten):
+    def __init__(self, user_id: int, user_karten, viewer_id: int | None = None):
         super().__init__(timeout=120)
-        self.user_id = user_id
+        self.user_id = user_id  # Besitzer der Karten (dessen Werte angezeigt werden)
+        self.viewer_id = viewer_id if viewer_id is not None else user_id  # wer den Button bedienen darf
         self.user_karten = user_karten  # Liste (kartenname, anzahl)
 
         anzeigen_button = ui.Button(label="Anzeige", style=discord.ButtonStyle.primary)
@@ -10820,7 +10821,7 @@ class VaultView(RestrictedView):
             embed, view_buttons = detail_payload
             await interaction.response.send_message(embed=embed, view=view_buttons, ephemeral=True)
             return
-        variant_view = CardVariantSelectView(self.user_id, base_name, variant_rows)
+        variant_view = CardVariantSelectView(self.viewer_id, base_name, variant_rows)
         await interaction.response.send_message(
             f"Wähle den Style für **{base_name}**:",
             view=variant_view,
@@ -10840,7 +10841,7 @@ class VaultView(RestrictedView):
         await interaction.followup.send(embed=embed, view=view_buttons, ephemeral=True)
 
     async def on_anzeige(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
+        if interaction.user.id != self.viewer_id:
             await interaction.response.send_message("Das ist nicht dein Button!", ephemeral=True)
             return
 
@@ -10854,7 +10855,7 @@ class VaultView(RestrictedView):
             select = ui.Select(placeholder="Wähle eine Karte zur Anzeige...", min_values=1, max_values=1, options=options)
 
             async def handle_select(interaction: discord.Interaction):
-                if interaction.user.id != self.user_id:
+                if interaction.user.id != self.viewer_id:
                     await interaction.response.send_message("Das ist nicht dein Menü!", ephemeral=True)
                     return
                 await self._show_card_detail(interaction, str(select.values[0] or "").strip())
@@ -10877,7 +10878,7 @@ class VaultView(RestrictedView):
             )
 
             async def handle_sel(interaction: discord.Interaction):
-                if interaction.user.id != self.user_id:
+                if interaction.user.id != self.viewer_id:
                     await interaction.response.send_message("Das ist nicht dein Menü!", ephemeral=True)
                     return
                 await self._show_card_detail(interaction, str(sel.values[0] or "").strip())
@@ -10888,13 +10889,13 @@ class VaultView(RestrictedView):
             next_btn = ui.Button(label="Weiter", style=discord.ButtonStyle.secondary, disabled=page_index == len(pages) - 1)
 
             async def on_prev(interaction: discord.Interaction):
-                if interaction.user.id != self.user_id:
+                if interaction.user.id != self.viewer_id:
                     await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
                     return
                 await send_page(interaction, page_index - 1)
 
             async def on_next(interaction: discord.Interaction):
-                if interaction.user.id != self.user_id:
+                if interaction.user.id != self.viewer_id:
                     await interaction.response.send_message("Nicht dein Menü!", ephemeral=True)
                     return
                 await send_page(interaction, page_index + 1)
@@ -16361,7 +16362,9 @@ async def send_vaultlook(interaction: discord.Interaction, user_id: int, user_na
         embed.set_footer(text=f"Vault-Lookup durch {footer_actor}")
     embed.color = 0xff6b6b
     logging.info("Vault look: actor=%s target=%s", interaction.user.id, user_id)
-    await _send_with_visibility(interaction, visibility_key, embed=embed)
+    # "Anzeige"-Button: der Betrachter (actor) darf die Karten + Werte des Ziels durchblättern.
+    vault_view = VaultView(user_id, user_karten, viewer_id=interaction.user.id) if grouped_cards else None
+    await _send_with_visibility(interaction, visibility_key, embed=embed, view=vault_view)
 
 async def send_test_report(interaction: discord.Interaction, visibility_key: str | None = None):
     def flatten_commands(cmds, prefix=""):
