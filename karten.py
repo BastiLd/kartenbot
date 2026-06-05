@@ -794,7 +794,7 @@ karten = [
                  {'button_style': 'red',
                   'cooldown_turns': 4,
                   'damage': [18, 24],
-                  'effects': [{'amount': [12, 16],
+                  'effects': [{'amount': 14,
                                'chance': 1.0,
                                'target': 'enemy',
                                'turns': 1,
@@ -805,7 +805,7 @@ karten = [
                   'cooldown_turns': 5,
                   'damage': [0, 0],
                   'info': 'Shang-Chi trifft 3-5 Mal. Jeder Treffer verursacht 7-9 Schaden.',
-                  'multi_hit': {'guaranteed_min_per_hit': 7, 'hit_chance': 0.8, 'hits': 5, 'per_hit_damage': [7, 9]},
+                  'multi_hit': {'guaranteed_hits': 3, 'guaranteed_min_per_hit': 7, 'hit_chance': 0.8, 'hits': 5, 'per_hit_damage': [7, 9]},
                   'name': 'Zehn-Ringe-Wucht'}]}
     ,
 
@@ -830,7 +830,7 @@ karten = [
                   'cooldown_turns': 4,
                   'damage': [0, 0],
                   'effects': [{'chance': 1.0,
-                               'flat': [12, 16],
+                               'flat': 14,
                                'reduce_percent': 0.5,
                                'reflect_ratio': 0.0,
                                'target': 'self',

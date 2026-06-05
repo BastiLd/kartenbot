@@ -235,7 +235,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.16"
+__version__ = "2.3.17"
 
 
 class CardCatalog:
@@ -1904,7 +1904,7 @@ def _attack_total_damage_range(attack: dict, *, max_only_bonus: int = 0, flat_bo
             hit_min = 0
             hit_max = 0
         hit_chance = float(multi_hit.get("hit_chance", 0.0) or 0.0)
-        guaranteed_hits = hits if hit_chance >= 1.0 else 0
+        guaranteed_hits = hits if hit_chance >= 1.0 else max(0, min(hits, int(_maybe_int(multi_hit.get("guaranteed_hits")) or 0)))
         min_damage = guaranteed_hits * hit_min + int(flat_bonus or 0)
         max_damage = hits * hit_max + int(flat_bonus or 0) + int(max_only_bonus or 0)
         min_damage = max(0, int(min_damage))
@@ -6373,6 +6373,20 @@ class BattleView(BaseBattleView):
                 self_damage=True,
             )
 
+        trap_self_damage = _consume_attack_self_damage_effect(
+            self.active_effects,
+            0,
+            special_attack=bool(not attack.get("is_standard_attack")),
+        )
+        if trap_self_damage > 0:
+            self._apply_non_heal_damage_with_event(
+                effect_events,
+                0,
+                trap_self_damage,
+                source="Vorbereiteter Gegeneffekt",
+                self_damage=True,
+            )
+
         heal_data = attack.get("heal")
         if heal_data is not None:
             heal_chance = float(attack.get("heal_chance", 1.0) or 1.0)
@@ -6594,6 +6608,11 @@ class BattleView(BaseBattleView):
                 lock_turns = turns + 1 if target == "self" else turns
                 self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), lock_turns)
                 self._append_effect_event(effect_events, f"{self._card_name_for(target_id)}: Spezialfähigkeiten für {turns} Runde(n) gesperrt.")
+            elif eff_type in {"enemy_attack_self_damage", "enemy_special_self_damage", "enemy_next_special_self_damage"}:
+                turns = max(1, int(effect.get("turns", 1) or 1))
+                amount = max(0, _effect_amount(effect, "amount", 0))
+                _append_active_effect(self.active_effects, target_id, str(eff_type), 0, turns=turns, amount=amount, source=attack_name)
+                self._append_effect_event(effect_events, f"Vorbereiteter Gegeneffekt: {amount} Selbstschaden beim passenden Angriff.")
             elif eff_type == "blind":
                 miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
                 self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
@@ -13188,6 +13207,20 @@ class MissionBattleView(BaseBattleView):
                 self_damage=True,
             )
 
+        trap_self_damage = _consume_attack_self_damage_effect(
+            self.active_effects,
+            self.user_id,
+            special_attack=bool(not attack.get("is_standard_attack")),
+        )
+        if trap_self_damage > 0:
+            self._apply_non_heal_damage_with_event(
+                effect_events,
+                self.user_id,
+                trap_self_damage,
+                source="Vorbereiteter Gegeneffekt",
+                self_damage=True,
+            )
+
         heal_data = attack.get("heal")
         if heal_data is not None:
             heal_chance = float(attack.get("heal_chance", 1.0) or 1.0)
@@ -13433,6 +13466,11 @@ class MissionBattleView(BaseBattleView):
                 lock_turns = turns + 1 if target == "self" else turns
                 self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), lock_turns)
                 self._append_effect_event(effect_events, f"{self._card_name_for(target_id)}: Spezialfähigkeiten für {turns} Runde(n) gesperrt.")
+            elif eff_type in {"enemy_attack_self_damage", "enemy_special_self_damage", "enemy_next_special_self_damage"}:
+                turns = max(1, int(effect.get("turns", 1) or 1))
+                amount = max(0, _effect_amount(effect, "amount", 0))
+                _append_active_effect(self.active_effects, target_id, str(eff_type), self.user_id, turns=turns, amount=amount, source=attack_name)
+                self._append_effect_event(effect_events, f"Vorbereiteter Gegeneffekt: {amount} Selbstschaden beim passenden Angriff.")
             elif eff_type == "blind":
                 miss_chance = float(effect.get("miss_chance", 0.5) or 0.5)
                 self.blind_next_attack[target_id] = max(self.blind_next_attack.get(target_id, 0.0), miss_chance)
@@ -13974,6 +14012,20 @@ class MissionBattleView(BaseBattleView):
                     self_damage=True,
                 )
 
+            trap_self_damage = _consume_attack_self_damage_effect(
+                self.active_effects,
+                0,
+                special_attack=bool(not attack.get("is_standard_attack")),
+            )
+            if trap_self_damage > 0:
+                self._apply_non_heal_damage_with_event(
+                    bot_effect_events,
+                    0,
+                    trap_self_damage,
+                    source="Vorbereiteter Gegeneffekt",
+                    self_damage=True,
+                )
+
             heal_data = attack.get("heal")
             if (
                 str(self.bot_card.get("name") or "").strip().lower() == "kingpin"
@@ -14205,6 +14257,11 @@ class MissionBattleView(BaseBattleView):
                     lock_turns = turns + 1 if target == "self" else turns
                     self.special_lock_next_turn[target_id] = max(self.special_lock_next_turn.get(target_id, 0), lock_turns)
                     self._append_effect_event(bot_effect_events, f"{self._card_name_for(target_id)}: Spezialfähigkeiten für {turns} Runde(n) gesperrt.")
+                elif eff_type in {"enemy_attack_self_damage", "enemy_special_self_damage", "enemy_next_special_self_damage"}:
+                    turns = max(1, int(effect.get("turns", 1) or 1))
+                    amount = max(0, _effect_amount(effect, "amount", 0))
+                    _append_active_effect(self.active_effects, target_id, str(eff_type), 0, turns=turns, amount=amount, source=bot_attack_name)
+                    self._append_effect_event(bot_effect_events, f"Vorbereiteter Gegeneffekt: {amount} Selbstschaden beim passenden Angriff.")
                 elif eff_type == "next_player_heal_negation":
                     # Req. 20.4 (Agatha „Darkhold-Fluch"): die nächste heilende Spielerfähigkeit
                     # heilt 0 HP. Konsumiert wird der Marker beim nächsten Spieler-Heal.

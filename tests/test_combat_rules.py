@@ -4499,6 +4499,79 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("bot_hp", start_state)
 
 
+class CommunityCardMechanicFixTests(unittest.IsolatedAsyncioTestCase):
+    """Regressionen für die Community-Bugs: Venom-Blast-Selbstschaden (PvE),
+    feste 14er-Werte und garantierte 3-5 Treffer bei Zehn-Ringe-Wucht."""
+
+    def test_reflect_and_reduction_are_fixed_14(self) -> None:
+        from services.battle import apply_outgoing_attack_modifier
+        from services.battle_state import resolve_incoming_modifiers
+
+        reflect_eff = next(
+            e for e in _find_attack(_find_card("She-Hulk"), "Einspruch!").get("effects", [])
+            if e.get("type") == "reflect"
+        )
+        self.assertEqual(reflect_eff.get("flat"), 14)
+        reduction_eff = next(
+            e for e in _find_attack(_find_card("Shang-Chi"), "Fünf-Finger-Explosion").get("effects", [])
+            if e.get("type") == "enemy_next_attack_reduction_flat"
+        )
+        self.assertEqual(reduction_eff.get("amount"), 14)
+
+        # Verhalten: Reduktion 32 -> 18 (genau -14), kein Überlauf.
+        self.assertEqual(apply_outgoing_attack_modifier(32, flat=14), (18, 0))
+        # Reflexion: 50% Reduktion + fester 14er Rückschaden.
+        incoming = {1: [{"percent": 0.5, "reflect": 0.0, "reflect_flat": 14}]}
+        absorbed = {1: 0}
+        _final, reflected, _dodged, _counter, _mod = resolve_incoming_modifiers(incoming, absorbed, 1, 45)
+        self.assertEqual(reflected, 14)
+
+    def test_zehn_ringe_wucht_guarantees_three_to_five_hits(self) -> None:
+        from services.battle import resolve_multi_hit_damage
+
+        attack = _find_attack(_find_card("Shang-Chi"), "Zehn-Ringe-Wucht")
+        multi = attack["multi_hit"]
+        self.assertEqual(multi.get("guaranteed_hits"), 3)
+        for _ in range(400):
+            _dmg, _mn, _mx, details = resolve_multi_hit_damage(multi, return_details=True)
+            self.assertTrue(3 <= details["landed_hits"] <= 5, details["landed_hits"])
+        # Angezeigte Gesamtspanne: 3*7 bis 5*9 = 21-45.
+        self.assertEqual(bot_module._attack_total_damage_range(attack), (21, 45))
+
+    async def test_mission_venom_blast_applies_self_damage_on_bot_attack(self) -> None:
+        # Reported: in einer Mission bekam der Bot keinen Venom-Blast-Selbstschaden.
+        miles = copy.deepcopy(_find_card("Miles Morales"))
+        venom = _find_attack(miles, "Venom Blast")
+        venom_index = next(i for i, a in enumerate(miles["attacks"]) if a.get("name") == "Venom Blast")
+        venom["damage"] = [0, 0]  # Direktschaden ausblenden -> nur Selbstschaden messen
+        for eff in venom.get("effects", []):
+            if eff.get("type") == "enemy_attack_self_damage":
+                eff["amount"] = [10, 10]  # deterministisch
+        bot_card = {
+            "name": "DummyBot",
+            "hp": 100,
+            "bild": "https://example.com/bot.png",
+            "attacks": [{"name": "Tackle", "damage": [0, 0], "is_standard_attack": True, "info": "test"}],
+        }
+        view = MissionBattleView(miles, bot_card, 1, 1, 1)
+        view.current_turn = 1
+
+        original_get_card_buffs = bot_module.get_card_buffs
+
+        async def _fake_get_card_buffs(_user_id, _card_name):
+            return []
+
+        bot_module.get_card_buffs = _fake_get_card_buffs
+        try:
+            interaction = _DummyInteraction(1, _DummyMessage())
+            await view.execute_attack(interaction, venom_index)
+        finally:
+            bot_module.get_card_buffs = original_get_card_buffs
+
+        # Bot griff in seiner Runde an und erlitt dabei 10 vorbereiteten Selbstschaden.
+        self.assertEqual(view.bot_hp, 90)
+
+
 class AlphaPhaseRegressionTests(unittest.IsolatedAsyncioTestCase):
     def test_alpha_intro_text_hides_mission_and_story(self) -> None:
         text = bot_module.build_anfang_intro_text(alpha_enabled=True)

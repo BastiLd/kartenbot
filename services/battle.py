@@ -153,10 +153,11 @@ def resolve_multi_hit_damage(
         except Exception:
             guaranteed_min_per_hit = hit_min
 
+    guaranteed_hits = max(0, min(hits, _safe_int(multi_hit.get("guaranteed_hits", 0))))
     if force_max or guaranteed_hit:
         landed = hits
     else:
-        landed = sum(1 for _ in range(hits) if random.random() < chance)
+        landed = guaranteed_hits + sum(1 for _ in range(hits - guaranteed_hits) if random.random() < chance)
 
     total = 0
     per_hit_damages: list[int] = []
@@ -177,6 +178,8 @@ def resolve_multi_hit_damage(
         min_possible = hits * hit_min + int(buff_amount)
     elif guaranteed_hit:
         min_possible = hits * guaranteed_min_per_hit + int(buff_amount)
+    elif guaranteed_hits > 0:
+        min_possible = guaranteed_hits * hit_min + int(buff_amount)
 
     max_possible = hits * hit_max + int(buff_amount)
 
