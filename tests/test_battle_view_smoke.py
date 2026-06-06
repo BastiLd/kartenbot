@@ -7,7 +7,9 @@ Treibt echte Züge durch `execute_attack` und fixiert das beobachtbare Verhalten
 
 import random
 import unittest
+from unittest.mock import AsyncMock, MagicMock
 
+import bot
 from tests.view_harness import make_battle_view, make_interaction, run_view_coro
 
 
@@ -45,6 +47,43 @@ class BattleViewTurnTests(unittest.TestCase):
 
         self.assertEqual(view.player2_hp, before, "Kein Schaden, wenn nicht am Zug")
         self.assertEqual(view.current_turn, 111, "Zug bleibt bei Spieler 1")
+
+
+class BattleViewShieldTests(unittest.TestCase):
+    """Regression: Bot-Angriff muss das Schild des Spielers verbrauchen (Community-Bug v2.3.18).
+
+    Vorher rief nur der Spieler-Angriffspfad ``_consume_shield_damage`` auf; der
+    Bot-Angriff ignorierte das Schild komplett -> Sues "Unsichtbarer Schutz" wirkungslos.
+    """
+
+    def _bot_damage_to_player(self, with_shield: bool) -> int:
+        view = make_battle_view(p1="Sue Storm", p2="Captain America", p1_id=111, p2_id=0)
+        # Bot wählt deterministisch den Standardangriff (Index 0, garantierter Direktschaden).
+        view._choose_bot_attack_index = lambda attacks: 0
+        if with_shield:
+            bot._append_active_effect(
+                view.active_effects,
+                111,
+                "shield",
+                111,
+                hp=30,
+                max_hits=1,
+                break_counter=12,
+                source="Unsichtbarer Schutz",
+            )
+        message = MagicMock(name="message")
+        message.guild = None
+        message.edit = AsyncMock()
+        before = view.player1_hp
+        random.seed(123)
+        run_view_coro(lambda: view.execute_bot_attack(message))
+        return before - view.player1_hp
+
+    def test_bot_attack_consumes_player_shield(self) -> None:
+        dmg_without = self._bot_damage_to_player(with_shield=False)
+        dmg_with = self._bot_damage_to_player(with_shield=True)
+        self.assertGreater(dmg_without, 0, "Bot-Standardangriff sollte ohne Schild Schaden machen")
+        self.assertLess(dmg_with, dmg_without, "Sues Schild muss den Bot-Schaden absorbieren")
 
 
 class BattleViewSessionTests(unittest.TestCase):

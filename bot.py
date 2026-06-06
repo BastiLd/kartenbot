@@ -235,7 +235,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.17"
+__version__ = "2.3.18"
 
 
 class CardCatalog:
@@ -6334,10 +6334,34 @@ class BattleView(BaseBattleView):
                     is_critical = False
                 else:
                     actual_damage = max(0, int(final_damage))
+                    actual_damage, reactive_reduction = _apply_reactive_evolution_reduction(
+                        self.active_effects,
+                        self.player1_id,
+                        actual_damage,
+                    )
+                    if reactive_reduction > 0:
+                        self._append_effect_event(effect_events, f"Reaktive Evolution reduziert den Treffer um {reactive_reduction}.")
+                    shield_break_counter = 0
+                    if actual_damage > 0 and not bypass_all_defense:
+                        actual_damage, shield_break_counter = _consume_shield_damage(
+                            self.active_effects,
+                            self.player1_id,
+                            actual_damage,
+                        )
+                        if shield_break_counter > 0:
+                            self._append_effect_event(effect_events, f"Schild zerbricht und verursacht {shield_break_counter} Rückschaden.")
                     if actual_damage > 0:
                         self._apply_non_heal_damage(self.player1_id, actual_damage)
                     else:
                         is_critical = False
+                    if shield_break_counter > 0:
+                        self._apply_non_heal_damage_with_event(
+                            effect_events,
+                            0,
+                            shield_break_counter,
+                            source="Schildbruch",
+                            self_damage=False,
+                        )
                 if reflected_damage > 0:
                     self._apply_non_heal_damage_with_event(
                         effect_events,
@@ -6635,6 +6659,20 @@ class BattleView(BaseBattleView):
                 counter = effect.get("counter", 0)
                 self.queue_delayed_defense(target_id, defense_mode, counter=counter, source=attack_name)
                 self._append_effect_event(effect_events, _effect_source_text(attack_name, "Schutz vorbereitet: Wird nach dem nächsten eigenen Angriff aktiv."))
+            elif eff_type == "shield":
+                shield_hp = max(1, _effect_amount(effect, "hp", 1))
+                existing_shield = _shield_entry(self.active_effects, target_id)
+                if existing_shield is not None:
+                    _remove_active_effect(self.active_effects, target_id, existing_shield)
+                shield_fields: dict[str, object] = {"hp": shield_hp, "source": attack_name}
+                if effect.get("break_counter") is not None:
+                    shield_fields["break_counter"] = int(effect.get("break_counter", 0) or 0)
+                if effect.get("stun_immunity") is not None:
+                    shield_fields["stun_immunity"] = bool(effect.get("stun_immunity"))
+                if effect.get("max_hits") is not None:
+                    shield_fields["max_hits"] = int(effect.get("max_hits", 0) or 0)
+                _append_active_effect(self.active_effects, target_id, "shield", 0, **shield_fields)
+                self._append_effect_event(effect_events, f"Schild aktiv: {shield_hp} absorbierbarer Schaden.")
             elif eff_type == "airborne_two_phase":
                 self.start_airborne_two_phase(
                     target_id,
@@ -6887,6 +6925,7 @@ class FightCardSelectView(DurableView):
         origin_channel_id: int | None,
         thread_id: int | None,
         thread_created: bool,
+        page: int = 0,
     ):
         super().__init__(timeout=None)
         self.challenger_id = challenger_id
@@ -6899,6 +6938,28 @@ class FightCardSelectView(DurableView):
         self.selected_base_name = str(selected_base_name or "").strip() or None
         grouped_cards = group_owned_cards_by_base([(str(name), 1) for name in self.challenged_card_options], cards=karten)
         self._grouped_cards = grouped_cards
+        self.page = max(0, int(page))
+        self.select = ui.Select(
+            min_values=1,
+            max_values=1,
+            options=[SelectOption(label="Keine Karten verfügbar", value="__none__")],
+            custom_id="fight_card_select:pick",
+        )
+        self.select.callback = self.select_callback
+        self.prev_button = ui.Button(label="◀ Zurück", style=discord.ButtonStyle.secondary, custom_id="fight_card_select:prev")
+        self.next_button = ui.Button(label="Weiter ▶", style=discord.ButtonStyle.secondary, custom_id="fight_card_select:next")
+        self.prev_button.callback = self._on_prev_page
+        self.next_button.callback = self._on_next_page
+        self._render()
+
+    def _page_count(self) -> int:
+        # Im Style-Auswahlmodus (eine Basiskarte) gibt es immer nur eine Seite.
+        if self.selected_base_name:
+            return 1
+        return max(1, (len(self._grouped_cards) + 24) // 25)
+
+    def _render(self) -> None:
+        self.clear_items()
         if self.selected_base_name:
             variant_rows = exact_variant_names_with_amounts(
                 [(str(name), 1) for name in self.challenged_card_options],
@@ -6912,26 +6973,47 @@ class FightCardSelectView(DurableView):
                 )
                 for variant_name, amount in variant_rows[:25]
             ]
+            self.select.placeholder = f"Wähle den Style für {self.selected_base_name}..."
         else:
+            page_count = self._page_count()
+            self.page = min(max(0, self.page), page_count - 1)
+            start = self.page * 25
+            page_groups = self._grouped_cards[start:start + 25]
             options = [
                 SelectOption(label=_group_option_label(group)[:100], value=str(group.get("base_name") or ""))
-                for group in grouped_cards[:25]
+                for group in page_groups
             ]
+            if page_count > 1:
+                self.select.placeholder = f"Wähle deine Karte... (Seite {self.page + 1}/{page_count})"
+            else:
+                self.select.placeholder = "Wähle deine Karte für den 1v1 Kampf..."
         if not options:
             options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
-        self.select = ui.Select(
-            placeholder=(
-                f"Wähle den Style für {self.selected_base_name}..."
-                if self.selected_base_name
-                else "Wähle deine Karte für den 1v1 Kampf..."
-            ),
-            min_values=1,
-            max_values=1,
-            options=options,
-            custom_id="fight_card_select:pick",
-        )
-        self.select.callback = self.select_callback
+        self.select.options = options
         self.add_item(self.select)
+        if not self.selected_base_name and self._page_count() > 1:
+            self.prev_button.disabled = self.page <= 0
+            self.next_button.disabled = self.page >= (self._page_count() - 1)
+            self.add_item(self.prev_button)
+            self.add_item(self.next_button)
+
+    async def _on_prev_page(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.challenged_id:
+            await interaction.response.send_message("Nur der Herausgeforderte kann die Karte wählen!", ephemeral=True)
+            return
+        if self.page > 0:
+            self.page -= 1
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def _on_next_page(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.challenged_id:
+            await interaction.response.send_message("Nur der Herausgeforderte kann die Karte wählen!", ephemeral=True)
+            return
+        if self.page < (self._page_count() - 1):
+            self.page += 1
+        self._render()
+        await interaction.response.edit_message(view=self)
 
     def durable_payload(self) -> dict[str, Any]:
         return {
@@ -6943,6 +7025,7 @@ class FightCardSelectView(DurableView):
             "origin_channel_id": self.origin_channel_id,
             "thread_id": self.thread_id,
             "thread_created": self.thread_created,
+            "page": self.page,
         }
 
     async def select_callback(self, interaction: discord.Interaction):
@@ -6961,14 +7044,7 @@ class FightCardSelectView(DurableView):
                 cards=karten,
             )
             if len(variant_rows) > 1:
-                self.select.placeholder = f"Wähle den Style für {self.selected_base_name}..."
-                self.select.options = [
-                    SelectOption(
-                        label=(f"{variant_name} (x{amount})" if amount > 1 else variant_name)[:100],
-                        value=variant_name,
-                    )
-                    for variant_name, amount in variant_rows[:25]
-                ]
+                self._render()
                 await interaction.response.edit_message(
                     content=f"Wähle den Style für **{self.selected_base_name}**:",
                     view=self,
@@ -11012,7 +11088,8 @@ class GiveOpActionView(RestrictedView):
         self.user_id = user_id
         self.value: str | None = None
         options = [
-            SelectOption(label="card give", value="card_give", description="Eine Karte geben"),
+            SelectOption(label="card give (Solo)", value="card_give_solo", description="Karte(n) an EINEN Nutzer geben"),
+            SelectOption(label="card give (Multi)", value="card_give_multi", description="Karte(n) an MEHRERE Nutzer geben"),
             SelectOption(label="card remove", value="card_remove", description="Eine Karte wegnehmen"),
             SelectOption(label="card give-group", value="group_give", description="Kartengruppe geben"),
             SelectOption(label="card remove-group", value="group_remove", description="Kartengruppe wegnehmen"),
@@ -13167,10 +13244,27 @@ class MissionBattleView(BaseBattleView):
                 else:
                     actual_damage = max(0, int(final_damage))
                     actual_damage = self._consume_kingpin_information(effect_events, actual_damage)
+                    shield_break_counter = 0
+                    if actual_damage > 0 and not bypass_all_defense:
+                        actual_damage, shield_break_counter = _consume_shield_damage(
+                            self.active_effects,
+                            0,
+                            actual_damage,
+                        )
+                        if shield_break_counter > 0:
+                            self._append_effect_event(effect_events, f"Schild zerbricht und verursacht {shield_break_counter} Rückschaden.")
                     if actual_damage > 0:
                         self._apply_non_heal_damage(0, actual_damage)
                     else:
                         is_critical = False
+                    if shield_break_counter > 0:
+                        self._apply_non_heal_damage_with_event(
+                            effect_events,
+                            self.user_id,
+                            shield_break_counter,
+                            source="Schildbruch",
+                            self_damage=False,
+                        )
                 if reflected_damage > 0:
                     self._apply_non_heal_damage_with_event(
                         effect_events,
@@ -13493,6 +13587,20 @@ class MissionBattleView(BaseBattleView):
                 counter = effect.get("counter", 0)
                 self.queue_delayed_defense(target_id, defense_mode, counter=counter, source=attack_name)
                 self._append_effect_event(effect_events, _effect_source_text(attack_name, "Schutz vorbereitet: Wird nach dem nächsten eigenen Angriff aktiv."))
+            elif eff_type == "shield":
+                shield_hp = max(1, _effect_amount(effect, "hp", 1))
+                existing_shield = _shield_entry(self.active_effects, target_id)
+                if existing_shield is not None:
+                    _remove_active_effect(self.active_effects, target_id, existing_shield)
+                shield_fields: dict[str, object] = {"hp": shield_hp, "source": attack_name}
+                if effect.get("break_counter") is not None:
+                    shield_fields["break_counter"] = int(effect.get("break_counter", 0) or 0)
+                if effect.get("stun_immunity") is not None:
+                    shield_fields["stun_immunity"] = bool(effect.get("stun_immunity"))
+                if effect.get("max_hits") is not None:
+                    shield_fields["max_hits"] = int(effect.get("max_hits", 0) or 0)
+                _append_active_effect(self.active_effects, target_id, "shield", self.user_id, **shield_fields)
+                self._append_effect_event(effect_events, f"Schild aktiv: {shield_hp} absorbierbarer Schaden.")
             elif eff_type == "airborne_two_phase":
                 self.start_airborne_two_phase(
                     target_id,
@@ -13973,10 +14081,27 @@ class MissionBattleView(BaseBattleView):
                         is_critical = False
                     else:
                         actual_damage = max(0, int(final_damage))
+                        shield_break_counter = 0
+                        if actual_damage > 0 and not bypass_all_defense:
+                            actual_damage, shield_break_counter = _consume_shield_damage(
+                                self.active_effects,
+                                self.user_id,
+                                actual_damage,
+                            )
+                            if shield_break_counter > 0:
+                                self._append_effect_event(bot_effect_events, f"Schild zerbricht und verursacht {shield_break_counter} Rückschaden.")
                         if actual_damage > 0:
                             self._apply_non_heal_damage(self.user_id, actual_damage)
                         else:
                             is_critical = False
+                        if shield_break_counter > 0:
+                            self._apply_non_heal_damage_with_event(
+                                bot_effect_events,
+                                0,
+                                shield_break_counter,
+                                source="Schildbruch",
+                                self_damage=False,
+                            )
                     if reflected_damage > 0:
                         self._apply_non_heal_damage_with_event(
                             bot_effect_events,
@@ -14885,6 +15010,7 @@ async def _restore_durable_view_instance(
             origin_channel_id=int(payload.get("origin_channel_id", 0) or 0) or None,
             thread_id=int(payload.get("thread_id", 0) or 0) or None,
             thread_created=bool(payload.get("thread_created", False)),
+            page=int(payload.get("page", 0) or 0),
         )
     if view_kind == VIEW_KIND_BATTLE:
         return await _restore_fight_battle_view_from_session(int(payload.get("session_id", 0) or 0))

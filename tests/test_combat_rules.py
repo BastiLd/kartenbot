@@ -121,6 +121,18 @@ class CardSpecTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(shield_throw.get("damage"), [13, 18])
         self.assertFalse(bool(shield_throw.get("requires_reload")))
 
+    def test_sue_storm_shield_matches_word_text(self) -> None:
+        # Kartentext sagt "bis zu 30 Schaden" -> Schildwert muss feste 30 sein
+        # (vorher [25, 35], wodurch 33/34 absorbiert wurden, Community-Bug v2.3.18).
+        sue = _find_card("Sue Storm")
+        schutz = _find_attack(sue, "Unsichtbarer Schutz")
+        shield_effect = next((e for e in schutz.get("effects", []) if e.get("type") == "shield"), None)
+        self.assertIsNotNone(shield_effect)
+        assert shield_effect is not None
+        self.assertEqual(shield_effect.get("hp"), 30)
+        self.assertEqual(int(shield_effect.get("break_counter", 0) or 0), 12)
+        self.assertIn("bis zu 30", str(schutz.get("info", "")))
+
     def test_hulk_gamma_dynamic_cooldown_spec(self) -> None:
         hulk = _find_card("Hulk")
         gamma = _find_attack(hulk, "Gammastrahl")

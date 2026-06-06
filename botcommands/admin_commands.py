@@ -26,15 +26,20 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
         *,
         placeholder: str,
         item_label: str,
+        forced_mode: str | None = None,
     ) -> list[int] | None:
         if interaction.guild is None:
             return None
-        mode_view = module.SingleMultiModeView(interaction.user.id, placeholder=placeholder)
-        await interaction.followup.send("W\u00e4hle den Modus:", view=mode_view, ephemeral=True)
-        await mode_view.wait()
-        if not mode_view.value:
-            return None
-        if mode_view.value == "single":
+        if forced_mode in {"single", "multi"}:
+            mode_value = forced_mode
+        else:
+            mode_view = module.SingleMultiModeView(interaction.user.id, placeholder=placeholder)
+            await interaction.followup.send("W\u00e4hle den Modus:", view=mode_view, ephemeral=True)
+            await mode_view.wait()
+            if not mode_view.value:
+                return None
+            mode_value = mode_view.value
+        if mode_value == "single":
             user_select_view = module.AdminUserSelectView(interaction.user.id, interaction.guild)
             await interaction.followup.send("W\u00e4hle den Ziel-Nutzer:", view=user_select_view, ephemeral=True)
             await user_select_view.wait()
@@ -554,11 +559,17 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
             target_user_id = int(user_select_view.value)
             selected_user_ids = [target_user_id]
             target_name = _target_label(interaction.guild, target_user_id)
-        elif action in {"card_give", "card_remove"}:
+        elif action in {"card_give", "card_remove", "card_give_solo", "card_give_multi"}:
+            forced_mode = None
+            if action == "card_give_solo":
+                forced_mode = "single"
+            elif action == "card_give_multi":
+                forced_mode = "multi"
             selected_user_ids = await _select_target_user_ids(
                 interaction,
                 placeholder="W\u00e4hle Single oder Multi...",
                 item_label="Karten",
+                forced_mode=forced_mode,
             ) or []
             if not selected_user_ids:
                 await interaction.followup.send("\u23f0 Keine Nutzer-Auswahl. Abgebrochen.", ephemeral=True)
@@ -569,7 +580,7 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
             target_user_id = 0
             target_name = ""
 
-        if action == "card_give":
+        if action in {"card_give", "card_give_solo", "card_give_multi"}:
             # Multi-Karten-Auswahl – identisch zu /karte-geben
             multi_card_view = module.MultiCardSelectView(
                 interaction.user.id, selected_user_ids, interaction.guild

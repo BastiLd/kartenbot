@@ -860,7 +860,7 @@ karten = [
                   'damage': [0, 0],
                   'effects': [{'break_counter': 12,
                                'chance': 1.0,
-                               'hp': [25, 35],
+                               'hp': 30,
                                'max_hits': 1,
                                'target': 'self',
                                'type': 'shield'}],
