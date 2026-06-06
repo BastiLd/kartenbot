@@ -68,6 +68,42 @@ class FightCardSelectPaginationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(buttons, [], "Bei wenigen Karten keine Blätter-Buttons")
 
 
+class ChallengerCardSelectPaginationTests(unittest.IsolatedAsyncioTestCase):
+    """Herausforderer-Auswahl in /kampf (``CardSelectView``) muss ebenfalls blättern können."""
+
+    def _make_view(self, count: int) -> "bot.CardSelectView":
+        owned = [(name, 1) for name in _distinct_base_card_names(count)]
+        return bot.CardSelectView(111, owned, 1)
+
+    def test_pagination_appears_with_more_than_25_cards(self) -> None:
+        view = self._make_view(30)
+        self.assertGreater(view._page_count(), 1)
+        self.assertLessEqual(len(view.select.options), 25)
+        buttons = [c for c in view.children if isinstance(c, bot.ui.Button)]
+        next_btn = next((b for b in buttons if "Weiter" in (b.label or "")), None)
+        prev_btn = next((b for b in buttons if "Zurück" in (b.label or "")), None)
+        self.assertIsNotNone(next_btn, "Weiter-Button muss vorhanden sein")
+        self.assertIsNotNone(prev_btn, "Zurück-Button muss vorhanden sein")
+        assert next_btn is not None and prev_btn is not None
+        self.assertFalse(next_btn.disabled)
+        self.assertTrue(prev_btn.disabled)
+
+    def test_second_page_has_no_overlap(self) -> None:
+        view = self._make_view(30)
+        page0 = {o.value for o in view.select.options}
+        view.page = 1
+        view._render()
+        page1 = {o.value for o in view.select.options}
+        self.assertTrue(page1)
+        self.assertFalse(page0 & page1)
+
+    def test_no_pagination_with_few_cards(self) -> None:
+        view = self._make_view(5)
+        self.assertEqual(view._page_count(), 1)
+        buttons = [c for c in view.children if isinstance(c, bot.ui.Button)]
+        self.assertEqual(buttons, [])
+
+
 class OpVerwaltungMenuTests(unittest.IsolatedAsyncioTestCase):
     def test_menu_has_solo_and_multi_card_give(self) -> None:
         view = bot.GiveOpActionView(123)

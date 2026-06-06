@@ -235,7 +235,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.18"
+__version__ = "2.3.19"
 
 
 class CardCatalog:
@@ -6862,12 +6862,78 @@ class CardSelectView(RestrictedView):
         self.user_cards = list(karten_liste)
         self.base_groups = _group_owned_cards_for_current_mode(self.user_cards)
         self.selected_base_name: str | None = None
-        options = [SelectOption(label=_group_option_label(group)[:100], value=str(group.get("base_name") or "")) for group in self.base_groups[:25]]
+        self.page = 0
+        self.select = ui.Select(
+            placeholder=f"Wähle {anzahl} Karte(n)...",
+            min_values=1,
+            max_values=1,
+            options=[SelectOption(label="Keine Karten verfügbar", value="__none__")],
+        )
+        self.select.callback = self.select_callback
+        self.prev_button = ui.Button(label="◀ Zurück", style=discord.ButtonStyle.secondary)
+        self.next_button = ui.Button(label="Weiter ▶", style=discord.ButtonStyle.secondary)
+        self.prev_button.callback = self._on_prev_page
+        self.next_button.callback = self._on_next_page
+        self._render()
+
+    def _page_count(self) -> int:
+        # Im Style-Auswahlmodus (eine Basiskarte) gibt es immer nur eine Seite.
+        if self.selected_base_name:
+            return 1
+        return max(1, (len(self.base_groups) + 24) // 25)
+
+    def _render(self) -> None:
+        self.clear_items()
+        if self.selected_base_name:
+            variant_rows = self._variant_rows_for_selected_base()
+            options = [
+                SelectOption(
+                    label=(f"{variant_name} (x{amount})" if amount > 1 else variant_name)[:100],
+                    value=variant_name,
+                )
+                for variant_name, amount in variant_rows[:25]
+            ]
+            self.select.placeholder = f"Wähle den Style für {self.selected_base_name}..."
+        else:
+            page_count = self._page_count()
+            self.page = min(max(0, self.page), page_count - 1)
+            start = self.page * 25
+            page_groups = self.base_groups[start:start + 25]
+            options = [
+                SelectOption(label=_group_option_label(group)[:100], value=str(group.get("base_name") or ""))
+                for group in page_groups
+            ]
+            if page_count > 1:
+                self.select.placeholder = f"Seite {self.page + 1}/{page_count} – Karte wählen..."
+            else:
+                self.select.placeholder = f"Wähle {self.anzahl} Karte(n)..."
         if not options:
             options = [SelectOption(label="Keine Karten verfügbar", value="__none__")]
-        self.select = ui.Select(placeholder=f"Wähle {anzahl} Karte(n)...", min_values=1, max_values=1, options=options)
-        self.select.callback = self.select_callback
+        self.select.options = options
         self.add_item(self.select)
+        if not self.selected_base_name and self._page_count() > 1:
+            self.prev_button.disabled = self.page <= 0
+            self.next_button.disabled = self.page >= (self._page_count() - 1)
+            self.add_item(self.prev_button)
+            self.add_item(self.next_button)
+
+    async def _on_prev_page(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Nur der Herausforderer kann Karten wählen!", ephemeral=True)
+            return
+        if self.page > 0:
+            self.page -= 1
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def _on_next_page(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Nur der Herausforderer kann Karten wählen!", ephemeral=True)
+            return
+        if self.page < (self._page_count() - 1):
+            self.page += 1
+        self._render()
+        await interaction.response.edit_message(view=self)
 
     def _variant_rows_for_selected_base(self) -> list[tuple[str, int]]:
         if not self.selected_base_name:
@@ -6893,14 +6959,7 @@ class CardSelectView(RestrictedView):
                 self.stop()
                 await interaction.response.defer()
                 return
-            self.select.placeholder = f"Wähle den Style für {self.selected_base_name}..."
-            self.select.options = [
-                SelectOption(
-                    label=(f"{variant_name} (x{amount})" if amount > 1 else variant_name)[:100],
-                    value=variant_name,
-                )
-                for variant_name, amount in variant_rows[:25]
-            ]
+            self._render()
             await interaction.response.edit_message(
                 content=f"Wähle den Style für **{self.selected_base_name}**:",
                 view=self,
