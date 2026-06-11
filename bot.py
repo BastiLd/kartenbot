@@ -235,7 +235,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.19"
+__version__ = "2.3.20"
 
 
 class CardCatalog:
@@ -8553,16 +8553,27 @@ class FightFeedbackView(DurableView):
     @ui.button(label="Es gab einen Bug", style=discord.ButtonStyle.success, custom_id="fight_feedback:bug")
     async def yes_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._is_allowed(interaction):
-            await interaction.response.send_message(PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=False)
+            await send_interaction_response(interaction, content=PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=False)
             return
         if interaction.user.id in self._bug_reported_by:
-            await interaction.response.send_message("Du hast bereits gemeldet, dass es einen Bug gab.", ephemeral=False)
+            await send_interaction_response(
+                interaction, content="Du hast bereits gemeldet, dass es einen Bug gab.", ephemeral=False
+            )
             return
         self._bug_reported_by.add(interaction.user.id)
         if not BUG_REPORT_TALLY_URL or "REPLACE_ME" in BUG_REPORT_TALLY_URL:
-            await interaction.response.send_message(BUG_FORM_NOT_CONFIGURED, ephemeral=False)
+            await send_interaction_response(interaction, content=BUG_FORM_NOT_CONFIGURED, ephemeral=False)
             return
 
+        # Erst antworten (Discord-Interaktionen verfallen nach 3 Sekunden),
+        # dann erst die langsame Log-DM und Analytics schreiben.
+        actor_name = safe_display_name(interaction.user, fallback="Unbekannt")
+        await send_interaction_response(
+            interaction,
+            content=f"🐞 {actor_name} hat **Es gab einen Bug** gewählt. Bitte fülle dieses Formular aus:",
+            view=BugReportLinkView(),
+            ephemeral=False,
+        )
         await _send_basti_log_dm(
             self.battle_log_text,
             context_lines=[
@@ -8573,7 +8584,6 @@ class FightFeedbackView(DurableView):
                 f"View: {self.durable_context_label()}",
             ],
         )
-        actor_name = safe_display_name(interaction.user, fallback="Unbekannt")
         await _log_event_safe(
             "fight_feedback_bug",
             guild_id=getattr(self.guild, "id", 0),
@@ -8586,11 +8596,6 @@ class FightFeedbackView(DurableView):
                 "view_kind": self.durable_context_label(),
             },
         )
-        await interaction.response.send_message(
-            content=f"🐞 {actor_name} hat **Es gab einen Bug** gewählt. Bitte fülle dieses Formular aus:",
-            view=BugReportLinkView(),
-            ephemeral=False,
-        )
         if self.keep_open_after_bug and self._auto_close_task and not self._auto_close_task.done():
             self._auto_close_task.cancel()
         await self._maybe_post_admin_close_view()
@@ -8598,32 +8603,42 @@ class FightFeedbackView(DurableView):
     @ui.button(label="Kampf-Log per DM", style=discord.ButtonStyle.primary, custom_id="fight_feedback:log")
     async def log_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._is_allowed(interaction):
-            await interaction.response.send_message(PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=False)
+            await send_interaction_response(interaction, content=PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=False)
             return
         if interaction.user.id in self._log_sent_to:
-            await interaction.response.send_message("Ich habe dir den Kampf-Log bereits per DM geschickt.", ephemeral=False)
+            await send_interaction_response(
+                interaction, content="Ich habe dir den Kampf-Log bereits per DM geschickt.", ephemeral=False
+            )
             return
         if not self.battle_log_text:
-            await interaction.response.send_message("Für diesen Kampf ist kein Log verfügbar.", ephemeral=False)
+            await send_interaction_response(interaction, content="Für diesen Kampf ist kein Log verfügbar.", ephemeral=False)
             return
         chunks = self._split_log_for_dm(self.battle_log_text)
         if not chunks:
-            await interaction.response.send_message("Für diesen Kampf ist kein Log verfügbar.", ephemeral=False)
+            await send_interaction_response(interaction, content="Für diesen Kampf ist kein Log verfügbar.", ephemeral=False)
             return
+        # Lange Logs brauchen mehrere DM-Nachrichten und sprengen sonst das
+        # 3-Sekunden-Limit der Interaktion – daher zuerst deferren.
+        await defer_interaction(interaction)
         try:
             for idx, chunk in enumerate(chunks, start=1):
                 title = "Vollständiger Kampf-Log" if len(chunks) == 1 else f"Vollständiger Kampf-Log ({idx}/{len(chunks)})"
                 dm_embed = discord.Embed(title=title, description=chunk, color=0x2F3136)
                 await interaction.user.send(embed=dm_embed)
         except discord.Forbidden:
-            await interaction.response.send_message(DM_DISABLED, ephemeral=False)
+            await send_interaction_response(interaction, content=DM_DISABLED, ephemeral=False)
             return
         except Exception:
             logging.exception("Unexpected error")
-            await interaction.response.send_message(DM_LOG_SEND_FAILED, ephemeral=False)
+            await send_interaction_response(interaction, content=DM_LOG_SEND_FAILED, ephemeral=False)
             return
         self._log_sent_to.add(interaction.user.id)
         actor_name = safe_display_name(interaction.user, fallback="Unbekannt")
+        await send_interaction_response(
+            interaction,
+            content=f"📩 {actor_name} hat **Kampf-Log per DM** gewählt. Der vollständige Log wurde per DM gesendet.",
+            ephemeral=False,
+        )
         await _log_event_safe(
             "fight_feedback_log_dm",
             guild_id=getattr(self.guild, "id", 0),
@@ -8636,18 +8651,14 @@ class FightFeedbackView(DurableView):
                 "chunk_count": len(chunks),
             },
         )
-        await interaction.response.send_message(
-            f"📩 {actor_name} hat **Kampf-Log per DM** gewählt. Der vollständige Log wurde per DM gesendet.",
-            ephemeral=False,
-        )
 
     @ui.button(label="Es gab keinen Bug", style=discord.ButtonStyle.danger, row=2, custom_id="fight_feedback:no_bug")
     async def no_bug_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._is_allowed(interaction):
-            await interaction.response.send_message(PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=False)
+            await send_interaction_response(interaction, content=PARTICIPANTS_OR_ADMINS_ONLY, ephemeral=False)
             return
         if interaction.user.id in self._opted_out_by:
-            await interaction.response.send_message("Du hast bereits geantwortet.", ephemeral=False)
+            await send_interaction_response(interaction, content="Du hast bereits geantwortet.", ephemeral=False)
             return
         self._opted_out_by.add(interaction.user.id)
         if self.close_after_no_bug and isinstance(self.channel, discord.Thread) and not self._auto_close_blocked():
@@ -8658,6 +8669,11 @@ class FightFeedbackView(DurableView):
                 self.auto_close_started_at = int(time.time())
             self._ensure_auto_close_task()
         actor_name = safe_display_name(interaction.user, fallback="Unbekannt")
+        await send_interaction_response(
+            interaction,
+            content=f"✅ {actor_name} hat **Es gab keinen Bug** gewählt. Danke für das Feedback!",
+            ephemeral=False,
+        )
         await _log_event_safe(
             "fight_feedback_no_bug",
             guild_id=getattr(self.guild, "id", 0),
@@ -8665,10 +8681,6 @@ class FightFeedbackView(DurableView):
             thread_id=_thread_id_for_channel(self.channel),
             actor_user_id=interaction.user.id,
             payload={"action": "no_bug", "actor_name": actor_name},
-        )
-        await interaction.response.send_message(
-            f"✅ {actor_name} hat **Es gab keinen Bug** gewählt. Danke für das Feedback!",
-            ephemeral=False,
         )
 
     @ui.button(
@@ -8678,11 +8690,12 @@ class FightFeedbackView(DurableView):
     )
     async def close_thread_btn(self, interaction: discord.Interaction, button: ui.Button):
         if not isinstance(self.channel, discord.Thread):
-            await interaction.response.send_message("Dieser Button ist nur in Threads verfügbar.", ephemeral=False)
+            await send_interaction_response(interaction, content="Dieser Button ist nur in Threads verfügbar.", ephemeral=False)
             return
         if not await is_admin(interaction):
-            await interaction.response.send_message(CLOSE_PERMISSION_DENIED, ephemeral=False)
+            await send_interaction_response(interaction, content=CLOSE_PERMISSION_DENIED, ephemeral=False)
             return
+        await send_interaction_response(interaction, content=THREAD_CLOSING, ephemeral=False)
         await _log_event_safe(
             "fight_feedback_thread_closed",
             guild_id=getattr(self.guild, "id", 0),
@@ -8691,7 +8704,6 @@ class FightFeedbackView(DurableView):
             actor_user_id=interaction.user.id,
             payload={"action": "close_thread"},
         )
-        await interaction.response.send_message(THREAD_CLOSING, ephemeral=False)
         self.stop()
         try:
             await update_managed_thread_status(self.channel.id, "deleted")

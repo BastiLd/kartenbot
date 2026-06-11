@@ -2286,7 +2286,7 @@ class FightFeedbackAutoCloseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(view.close_on_idle)
         self.assertIsNotNone(view.auto_close_started_at)
         interaction.response.send_message.assert_awaited_once_with(
-            "\u2705 Unbekannt hat **Es gab keinen Bug** gewählt. Danke für das Feedback!",
+            content="\u2705 Unbekannt hat **Es gab keinen Bug** gewählt. Danke für das Feedback!",
             ephemeral=False,
         )
 
