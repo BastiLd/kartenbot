@@ -701,7 +701,8 @@ class CombatRunner:
                 bot_module._append_active_effect(self.active_effects, target_id, "status_immunity", actor_id, turns=turns, source=attack_name)
             elif eff_type in {"enemy_attack_self_damage", "enemy_special_self_damage", "enemy_next_special_self_damage"}:
                 turns = max(1, int(effect.get("turns", 1) or 1))
-                amount = max(0, int(effect.get("amount", 0) or 0))
+                # amount kann ein Bereich sein (z.B. [8, 12]); wie im Live-Code auswürfeln.
+                amount = max(0, bot_module._effect_amount(effect, "amount", 0))
                 bot_module._append_active_effect(self.active_effects, target_id, eff_type, actor_id, turns=turns, amount=amount, source=attack_name)
             elif eff_type == "disable_enemy_evade_and_block":
                 turns = max(1, int(effect.get("turns", 1) or 1))
@@ -948,10 +949,11 @@ class CombatRunner:
 
         guaranteed_hit = bool(attack.get("guaranteed_hit_if_condition") and conditional_enemy_triggered)
         force_min_damage = bot_module._force_min_damage_active(self.active_effects, actor_id)
-        attack_cancelled_by_heal_curse = False
+        # Hex-Fluch: Heilung blockieren, Angriff/Schaden laufen normal (mirror bot.py).
+        heal_blocked_by_curse = False
         heal_curse_effect = bot_module._find_active_effect(self.active_effects, actor_id, "heal_curse")
         if (not is_reload_action) and heal_curse_effect is not None and bot_module._attack_has_heal_component(attack):
-            attack_cancelled_by_heal_curse = True
+            heal_blocked_by_curse = True
             curse_damage = max(0, bot_module._effect_int(heal_curse_effect, "damage", 0))
             turns_left = max(0, bot_module._effect_int(heal_curse_effect, "turns", 1) - 1)
             heal_curse_effect["turns"] = turns_left
@@ -959,6 +961,9 @@ class CombatRunner:
                 bot_module._remove_active_effect(self.active_effects, actor_id, heal_curse_effect)
             if curse_damage > 0:
                 self._apply_non_heal_damage_with_event(effect_events, actor_id, curse_damage, source=str(heal_curse_effect.get("source") or "Hex-Fluch"), self_damage=True)
+
+        # Flammenwand: Standardangriff -> abgebrochen (+15), Fähigkeit -> Caster heilt 12.
+        attack_interrupted = (not is_reload_action) and bot_module._consume_interrupt_effect(self, actor_id, attack, effect_events)
 
         _action_type = bot_module._attack_kind_label(
             attack,
@@ -977,7 +982,7 @@ class CombatRunner:
         if is_reload_action:
             attack_hits_enemy = False
             self.set_reload_needed(actor_id, attack_index, False)
-        elif attack_cancelled_by_heal_curse:
+        elif attack_interrupted:
             attack_hits_enemy = False
         else:
             defender_has_stealth = self.has_stealth(defender_id)
@@ -1135,12 +1140,18 @@ class CombatRunner:
             self._apply_non_heal_damage_with_event(effect_events, actor_id, trap_self_damage, source="Vorbereiteter Gegeneffekt", self_damage=True)
 
         heal_data = attack.get("heal")
-        healing_disabled = bool(bot_module._find_active_effect(self.active_effects, actor_id, "disable_enemy_heal_if_bleeding")) and bot_module._sum_target_dot_damage(self.active_effects, actor_id, "bleeding") > 0
+        healing_disabled = heal_blocked_by_curse or (
+            bool(bot_module._find_active_effect(self.active_effects, actor_id, "disable_enemy_heal_if_bleeding"))
+            and bot_module._sum_target_dot_damage(self.active_effects, actor_id, "bleeding") > 0
+        )
         if heal_data is not None and not healing_disabled:
             heal_chance = bot_module._maybe_float(attack.get("heal_chance", 1.0)) or 1.0
             if random.random() <= heal_chance:
                 heal_amount = bot_module._random_int_from_range(heal_data)
                 self.heal_player(actor_id, heal_amount)
+
+        # System-Optimierung u.ä.: bedingte Selbstheilung unter X% HP.
+        bot_module._apply_conditional_self_heal(self, actor_id, attack, effect_events, healing_disabled=healing_disabled)
 
         lifesteal_ratio = bot_module._maybe_float(attack.get("lifesteal_ratio", 0.0)) or 0.0
         if lifesteal_ratio > 0 and attack_hits_enemy and actual_damage > 0 and not healing_disabled:
@@ -1171,13 +1182,13 @@ class CombatRunner:
             attack=attack,
             card_name=str(current_card.get("name") or self._card_names_by_player[actor_id]),
             attack_name=str(attack_name),
-            is_reload_action=is_reload_action or attack_cancelled_by_heal_curse,
+            is_reload_action=is_reload_action,
             is_forced_landing=is_forced_landing,
         )
         if self.special_lock_next_turn.get(actor_id, 0) > 0:
             self.special_lock_next_turn[actor_id] = max(0, self.special_lock_next_turn.get(actor_id, 0) - 1)
 
-        if (not is_forced_landing) and (not attack_cancelled_by_heal_curse):
+        if (not is_forced_landing):
             if not is_reload_action and attack.get("requires_reload"):
                 self.set_reload_needed(actor_id, attack_index, True)
             dynamic_cooldown_turns = bot_module._resolve_dynamic_cooldown_from_burning(attack, burning_duration_for_dynamic_cooldown)

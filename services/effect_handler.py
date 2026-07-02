@@ -133,7 +133,11 @@ NEGATIVE_STATUS_EFFECT_TYPES = frozenset(
 )
 TURN_END_DECAY_EFFECT_TYPES = frozenset(
     {
-        "burn_multiplier",
+        # NOTE: "burn_multiplier" is intentionally NOT decayed here. It is a
+        # uses-based buff (Supernova-Ladung) that must survive until the caster
+        # actually applies its next burn effects; turn-end decay would otherwise
+        # remove it at the end of the very turn it was cast, before it could
+        # ever trigger.
         "disable_enemy_evade_and_block",
         "disable_enemy_heal_if_bleeding",
         "enemy_attack_self_damage",

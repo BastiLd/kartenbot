@@ -1086,6 +1086,36 @@ def _consume_shield_damage(
     return max(0, incoming - absorbed), break_counter
 
 
+def _consume_shield_damage_logged(
+    view: object,
+    player_id: int,
+    incoming: int,
+    effect_events: list[str],
+) -> tuple[int, int]:
+    """Like :func:`_consume_shield_damage`, but also appends a log line showing how
+    much damage the shield prevented and how much shield HP is left (user request:
+    make shield absorption visible instead of a bare "0 Schaden")."""
+    shield = _shield_entry(view.active_effects, player_id)
+    shield_hp_before = _effect_int(shield, "hp", 0) if shield else 0
+    remaining, break_counter = _consume_shield_damage(view.active_effects, player_id, incoming)
+    if shield_hp_before > 0:
+        absorbed = max(0, int(incoming) - int(remaining))
+        if absorbed > 0:
+            shield_after = _shield_entry(view.active_effects, player_id)
+            shield_hp_left = _effect_int(shield_after, "hp", 0) if shield_after else 0
+            if shield_hp_left > 0 and break_counter <= 0:
+                view._append_effect_event(
+                    effect_events,
+                    f"🛡️ Schild absorbiert {absorbed} von {int(incoming)} Schaden ({shield_hp_left} Schild-HP übrig).",
+                )
+            else:
+                view._append_effect_event(
+                    effect_events,
+                    f"🛡️ Schild absorbiert {absorbed} von {int(incoming)} Schaden und zerbricht.",
+                )
+    return remaining, break_counter
+
+
 def _shield_has_stun_immunity(active_effects: dict[int, list[dict[str, object]]], player_id: int) -> bool:
     shield = _shield_entry(active_effects, player_id)
     return bool(shield and shield.get("stun_immunity"))
@@ -1124,12 +1154,105 @@ def _apply_reactive_evolution_reduction(
     effect = _find_active_effect(active_effects, player_id, "reactive_evolution")
     if effect is None:
         return max(0, int(damage or 0)), 0
-    current_reduction = max(0, _effect_int(effect, "stacks", 0))
-    reduced_damage = max(0, int(damage or 0) - current_reduction)
     amount = max(0, _effect_int(effect, "amount", 0))
     max_stacks = max(1, _effect_int(effect, "max_stacks", 1))
-    effect["stacks"] = min(max_stacks * amount, current_reduction + amount)
-    return reduced_damage, current_reduction
+    current_reduction = max(0, _effect_int(effect, "stacks", 0))
+    # Increase BEFORE applying so the very first incoming hit is already reduced
+    # (previously the first hit got 0 because stacks started at 0). With
+    # max_stacks == 1 this is a flat reduction; with max_stacks > 1 it ramps
+    # (amount, 2*amount, ... up to max_stacks*amount) starting from the first hit.
+    new_reduction = min(max_stacks * amount, current_reduction + amount)
+    effect["stacks"] = new_reduction
+    reduced_damage = max(0, int(damage or 0) - new_reduction)
+    return reduced_damage, new_reduction
+
+
+# Self-heal effect types that the Hex-Fluch (heal_curse) blocks when a cursed card
+# heals via an attack effect (rather than a top-level ``heal``/``lifesteal_ratio``).
+_CURSE_BLOCKED_HEAL_EFFECTS = frozenset({"heal", "regen", "mix_heal_or_max", "heal_from_target_dot"})
+
+
+def _apply_conditional_self_heal(
+    view: object,
+    attacker_id: int,
+    attack: dict,
+    effect_events: list[str],
+    *,
+    healing_disabled: bool = False,
+) -> int:
+    """Conditional self-heal used by attacks like Ultron's System-Optimierung.
+
+    If the attack defines ``heal_if_self_hp_below_pct`` and the attacker is at or
+    below that fraction of their max HP, heal ``heal_if_condition`` HP. Returns the
+    amount actually healed (0 if the condition was not met or healing is blocked).
+    """
+    pct = _maybe_float(attack.get("heal_if_self_hp_below_pct"))
+    heal_amount = _maybe_int(attack.get("heal_if_condition", 0)) or 0
+    if pct is None or heal_amount <= 0:
+        return 0
+    current_hp = int(view._hp_for(attacker_id))
+    max_hp = int(view._max_hp_for(attacker_id))
+    if current_hp > int(max_hp * float(pct)):
+        return 0
+    threshold_pct = int(round(float(pct) * 100))
+    if healing_disabled:
+        view._append_effect_event(
+            effect_events,
+            f"Notfall-Reparatur (unter {threshold_pct}% HP) blockiert.",
+        )
+        return 0
+    healed = int(view.heal_player(attacker_id, int(heal_amount)))
+    if healed > 0:
+        view._append_effect_event(
+            effect_events,
+            f"Notfall-Reparatur: +{healed} HP (unter {threshold_pct}% HP).",
+        )
+    return healed
+
+
+def _consume_interrupt_effect(
+    view: object,
+    attacker_id: int,
+    attack: dict,
+    effect_events: list[str],
+) -> bool:
+    """Resolve Human Torch's "Flammenwand" (interrupt_enemy_standard_or_heal_self).
+
+    The effect sits on the *attacker* (the enemy of the caster). When that attacker
+    acts:
+      * Standard attack  -> the attack is interrupted (deals nothing) and the
+        attacker takes ``damage`` (default 15). Returns True so the caller zeroes
+        the attack.
+      * Ability/special  -> the caster (``applier``) heals ``heal`` (default 12).
+        Returns False (the attack itself proceeds normally).
+    Returns False (and does nothing) if no interrupt effect is active.
+    """
+    interrupt_effect = _find_active_effect(view.active_effects, attacker_id, "interrupt_enemy_standard_or_heal_self")
+    if interrupt_effect is None:
+        return False
+    is_standard = bool(attack.get("is_standard_attack"))
+    interrupt_damage = max(0, _effect_int(interrupt_effect, "damage", 0))
+    interrupt_heal = max(0, _effect_int(interrupt_effect, "heal", 0))
+    applier_id = _maybe_int(interrupt_effect.get("applier"))
+    _remove_active_effect(view.active_effects, attacker_id, interrupt_effect)
+    if is_standard:
+        if interrupt_damage > 0:
+            view._apply_non_heal_damage_with_event(
+                effect_events,
+                attacker_id,
+                interrupt_damage,
+                source="Flammenwand",
+                self_damage=True,
+            )
+        view._append_effect_event(effect_events, "Flammenwand fängt den Standardangriff ab — der Angriff verpufft.")
+        return True
+    if interrupt_heal > 0 and applier_id is not None:
+        healed = int(view.heal_player(int(applier_id), interrupt_heal))
+        if healed > 0:
+            name_lookup = getattr(view, "_card_name_for", None)
+            caster_name = str(name_lookup(int(applier_id))) if callable(name_lookup) else "Human Torch"
+            view._append_effect_event(effect_events, f"Flammenwand: {caster_name} heilt {healed} HP.")
+    return False
 
 
 def _record_last_special_attack(
@@ -5028,10 +5151,14 @@ class BattleView(BaseBattleView):
 
         guaranteed_hit = bool(attack.get("guaranteed_hit_if_condition") and conditional_enemy_triggered)
         force_min_damage = _force_min_damage_active(self.active_effects, self.current_turn)
-        attack_cancelled_by_heal_curse = False
+        # Hex-Fluch: Heilung wird blockiert, der Angriff selbst trifft aber normal
+        # (inkl. Schaden und Cooldown). Zusätzlich erleidet der Verfluchte den
+        # festen Fluch-Selbstschaden. ``heal_blocked_by_curse`` gated unten alle
+        # Heilquellen dieses Angriffs.
+        heal_blocked_by_curse = False
         heal_curse_effect = _find_active_effect(self.active_effects, self.current_turn, "heal_curse")
         if (not is_reload_action) and heal_curse_effect is not None and _attack_has_heal_component(attack):
-            attack_cancelled_by_heal_curse = True
+            heal_blocked_by_curse = True
             curse_damage = max(0, _effect_int(heal_curse_effect, "damage", 0))
             curse_source = str(heal_curse_effect.get("source") or "Hex-Fluch")
             turns_left = max(0, _effect_int(heal_curse_effect, "turns", 1) - 1)
@@ -5046,9 +5173,12 @@ class BattleView(BaseBattleView):
                     source=curse_source,
                     self_damage=True,
                 )
-            self._append_effect_event(effect_events, "Heilung wurde blockiert. Diese Attacke verbraucht keinen Cooldown.")
+            self._append_effect_event(effect_events, "Heilung wurde durch den Hex-Fluch blockiert.")
 
         # Manual reload action: spend turn to load the shot again.
+        # Flammenwand (interrupt_enemy_standard_or_heal_self) liegt ggf. auf dem
+        # Angreifer: Standardangriff -> abgebrochen (+15 Schaden), Fähigkeit -> Caster heilt 12.
+        attack_interrupted = (not is_reload_action) and _consume_interrupt_effect(self, self.current_turn, attack, effect_events)
         attack_hits_enemy = True
         self_damage = 0
         if is_reload_action:
@@ -5056,7 +5186,7 @@ class BattleView(BaseBattleView):
             is_critical = False
             attack_hits_enemy = False
             self.set_reload_needed(self.current_turn, attack_index, False)
-        elif attack_cancelled_by_heal_curse:
+        elif attack_interrupted:
             actual_damage = 0
             is_critical = False
             attack_hits_enemy = False
@@ -5256,10 +5386,11 @@ class BattleView(BaseBattleView):
                         self._append_effect_event(effect_events, f"Reaktive Evolution reduziert den Treffer um {reactive_reduction}.")
                     shield_break_counter = 0
                     if actual_damage > 0 and not bypass_all_defense:
-                        actual_damage, shield_break_counter = _consume_shield_damage(
-                            self.active_effects,
+                        actual_damage, shield_break_counter = _consume_shield_damage_logged(
+                            self,
                             defender_id,
                             actual_damage,
+                            effect_events,
                         )
                         if shield_break_counter > 0:
                             self._append_effect_event(effect_events, f"Schild zerbricht und verursacht {shield_break_counter} Rückschaden.")
@@ -5293,7 +5424,7 @@ class BattleView(BaseBattleView):
                     )
                 self._guard_non_heal_damage_result(defender_id, defender_hp_before, "pvp_player_attack")
                 hit_heal, heal_effect = _consume_attack_heal(self.active_effects, self.current_turn)
-                if hit_heal > 0:
+                if hit_heal > 0 and not heal_blocked_by_curse:
                     healed_now = self.heal_player(self.current_turn, hit_heal)
                     if healed_now > 0:
                         self._append_effect_event(effect_events, f"{str((heal_effect or {}).get('source') or 'Trefferheilung')}: Treffer heilt {healed_now} HP.")
@@ -5325,14 +5456,16 @@ class BattleView(BaseBattleView):
             )
 
         heal_data = attack.get("heal")
-        healing_disabled = bool(_find_active_effect(self.active_effects, self.current_turn, "disable_enemy_heal_if_bleeding")) and _sum_target_dot_damage(
+        healing_disabled_by_bleed = bool(_find_active_effect(self.active_effects, self.current_turn, "disable_enemy_heal_if_bleeding")) and _sum_target_dot_damage(
             self.active_effects,
             self.current_turn,
             "bleeding",
         ) > 0
+        healing_disabled = healing_disabled_by_bleed or heal_blocked_by_curse
         if heal_data is not None:
             if healing_disabled:
-                self._append_effect_event(effect_events, "Heilung blockiert: Blutung verhindert diesen Effekt.")
+                block_reason = "Hex-Fluch" if heal_blocked_by_curse else "Blutung"
+                self._append_effect_event(effect_events, f"Heilung blockiert: {block_reason} verhindert diesen Effekt.")
             else:
                 heal_chance = _maybe_float(attack.get("heal_chance", 1.0)) or 1.0
                 if random.random() <= heal_chance:
@@ -5340,6 +5473,9 @@ class BattleView(BaseBattleView):
                     healed_now = self.heal_player(self.current_turn, heal_amount)
                     if healed_now > 0:
                         self._append_effect_event(effect_events, f"Heilung: +{healed_now} HP.")
+
+        # System-Optimierung u.ä.: bedingte Selbstheilung unter X% HP.
+        _apply_conditional_self_heal(self, self.current_turn, attack, effect_events, healing_disabled=healing_disabled)
 
         lifesteal_ratio = _maybe_float(attack.get("lifesteal_ratio", 0.0)) or 0.0
         if lifesteal_ratio > 0 and attack_hits_enemy and actual_damage > 0 and not healing_disabled:
@@ -5376,6 +5512,9 @@ class BattleView(BaseBattleView):
             target = effect.get("target", "enemy")
             target_id = self.current_turn if target == "self" else defender_id
             eff_type = effect.get("type")
+            if heal_blocked_by_curse and target == "self" and str(eff_type or "").strip().lower() in _CURSE_BLOCKED_HEAL_EFFECTS:
+                self._append_effect_event(effect_events, "Heilung blockiert: Hex-Fluch verhindert diesen Heileffekt.")
+                continue
             if target != "self" and not attack_hits_enemy and eff_type not in {"stun"}:
                 continue
             if target != "self" and _should_block_negative_effect(self.active_effects, target_id, eff_type):
@@ -5755,14 +5894,14 @@ class BattleView(BaseBattleView):
             attack=attack,
             card_name=str(current_card.get("name") or attacker_card),
             attack_name=str(attack_name),
-            is_reload_action=is_reload_action or attack_cancelled_by_heal_curse,
+            is_reload_action=is_reload_action,
             is_forced_landing=is_forced_landing,
         )
 
         if self.special_lock_next_turn.get(self.current_turn, 0) > 0:
             self.special_lock_next_turn[self.current_turn] = max(0, self.special_lock_next_turn.get(self.current_turn, 0) - 1)
 
-        if (not is_forced_landing) and (not attack_cancelled_by_heal_curse):
+        if (not is_forced_landing):
             if not is_reload_action and attack.get("requires_reload"):
                 self.set_reload_needed(self.current_turn, attack_index, True)
 
@@ -6117,10 +6256,11 @@ class BattleView(BaseBattleView):
         attack_name = str(attack.get("reload_name") or "Nachladen") if is_reload_action else attack["name"]
         guaranteed_hit = bool(attack.get("guaranteed_hit_if_condition") and conditional_enemy_triggered)
         force_min_damage = _force_min_damage_active(self.active_effects, self.current_turn)
-        attack_cancelled_by_heal_curse = False
+        # Hex-Fluch: Heilung blockieren, Angriff/Schaden/Cooldown laufen normal.
+        heal_blocked_by_curse = False
         heal_curse_effect = _find_active_effect(self.active_effects, self.current_turn, "heal_curse")
         if (not is_reload_action) and heal_curse_effect is not None and _attack_has_heal_component(attack):
-            attack_cancelled_by_heal_curse = True
+            heal_blocked_by_curse = True
             curse_damage = max(0, _effect_int(heal_curse_effect, "damage", 0))
             curse_source = str(heal_curse_effect.get("source") or "Hex-Fluch")
             turns_left = max(0, _effect_int(heal_curse_effect, "turns", 1) - 1)
@@ -6135,7 +6275,7 @@ class BattleView(BaseBattleView):
                     source=curse_source,
                     self_damage=True,
                 )
-            self._append_effect_event(effect_events, "Heilung wurde blockiert. Diese Attacke verbraucht keinen Cooldown.")
+            self._append_effect_event(effect_events, "Heilung wurde durch den Hex-Fluch blockiert.")
         action_type = _attack_kind_label(
             attack,
             attacks=attacks,
@@ -6145,6 +6285,8 @@ class BattleView(BaseBattleView):
         )
         miss_reason: str | None = None
 
+        # Flammenwand auf dem Bot: Standardangriff -> abgebrochen (+15), Fähigkeit -> Caster heilt 12.
+        attack_interrupted = (not is_reload_action) and _consume_interrupt_effect(self, 0, attack, effect_events)
         # Confusion: 77% Selbstschaden, 23% normaler Treffer
         bot_hits_enemy = True
         self_damage = 0
@@ -6152,6 +6294,9 @@ class BattleView(BaseBattleView):
             actual_damage, is_critical = 0, False
             bot_hits_enemy = False
             self.set_reload_needed(0, attack_index, False)
+        elif attack_interrupted:
+            actual_damage, is_critical = 0, False
+            bot_hits_enemy = False
         else:
             min_damage = 0
             max_damage = 0
@@ -6343,10 +6488,11 @@ class BattleView(BaseBattleView):
                         self._append_effect_event(effect_events, f"Reaktive Evolution reduziert den Treffer um {reactive_reduction}.")
                     shield_break_counter = 0
                     if actual_damage > 0 and not bypass_all_defense:
-                        actual_damage, shield_break_counter = _consume_shield_damage(
-                            self.active_effects,
+                        actual_damage, shield_break_counter = _consume_shield_damage_logged(
+                            self,
                             self.player1_id,
                             actual_damage,
+                            effect_events,
                         )
                         if shield_break_counter > 0:
                             self._append_effect_event(effect_events, f"Schild zerbricht und verursacht {shield_break_counter} Rückschaden.")
@@ -6380,7 +6526,7 @@ class BattleView(BaseBattleView):
                     )
                 self._guard_non_heal_damage_result(self.player1_id, defender_hp_before, "pvp_bot_attack")
                 hit_heal, heal_effect = _consume_attack_heal(self.active_effects, 0)
-                if hit_heal > 0:
+                if hit_heal > 0 and not heal_blocked_by_curse:
                     healed_now = self.heal_player(0, hit_heal)
                     if healed_now > 0:
                         self._append_effect_event(effect_events, f"{str((heal_effect or {}).get('source') or 'Trefferheilung')}: Treffer heilt {healed_now} HP.")
@@ -6413,15 +6559,21 @@ class BattleView(BaseBattleView):
 
         heal_data = attack.get("heal")
         if heal_data is not None:
-            heal_chance = float(attack.get("heal_chance", 1.0) or 1.0)
-            if random.random() <= heal_chance:
-                heal_amount = _random_int_from_range(heal_data)
-                healed_now = self.heal_player(0, heal_amount)
-                if healed_now > 0:
-                    self._append_effect_event(effect_events, f"Heilung: +{healed_now} HP.")
+            if heal_blocked_by_curse:
+                self._append_effect_event(effect_events, "Heilung blockiert: Hex-Fluch verhindert diesen Effekt.")
+            else:
+                heal_chance = float(attack.get("heal_chance", 1.0) or 1.0)
+                if random.random() <= heal_chance:
+                    heal_amount = _random_int_from_range(heal_data)
+                    healed_now = self.heal_player(0, heal_amount)
+                    if healed_now > 0:
+                        self._append_effect_event(effect_events, f"Heilung: +{healed_now} HP.")
+
+        # System-Optimierung u.ä.: bedingte Selbstheilung unter X% HP (Bot).
+        _apply_conditional_self_heal(self, 0, attack, effect_events, healing_disabled=heal_blocked_by_curse)
 
         lifesteal_ratio = float(attack.get("lifesteal_ratio", 0.0) or 0.0)
-        if lifesteal_ratio > 0 and bot_hits_enemy and actual_damage > 0:
+        if lifesteal_ratio > 0 and bot_hits_enemy and actual_damage > 0 and not heal_blocked_by_curse:
             lifesteal_heal = self.heal_player(0, int(round(actual_damage * lifesteal_ratio)))
             if lifesteal_heal > 0:
                 self._append_effect_event(effect_events, f"Lebensraub: +{lifesteal_heal} HP.")
@@ -6453,6 +6605,9 @@ class BattleView(BaseBattleView):
             target = effect.get("target", "enemy")
             target_id = 0 if target == "self" else self.player1_id
             eff_type = effect.get("type")
+            if heal_blocked_by_curse and target == "self" and str(eff_type or "").strip().lower() in _CURSE_BLOCKED_HEAL_EFFECTS:
+                self._append_effect_event(effect_events, "Heilung blockiert: Hex-Fluch verhindert diesen Heileffekt.")
+                continue
             if target != "self" and not bot_hits_enemy and eff_type not in {"stun"}:
                 continue
             if _apply_word_runtime_effect(self, effect_events, eff_type=str(eff_type), target_id=target_id, attack_name=attack_name):
@@ -13118,12 +13273,17 @@ class MissionBattleView(BaseBattleView):
         guaranteed_hit = bool(attack.get("guaranteed_hit_if_condition") and conditional_enemy_triggered)
 
         # Confusion handling: 77% self-damage vs 23% normal
+        # Flammenwand auf dem Spieler (Mission): Standard -> abgebrochen (+15), Fähigkeit -> Caster heilt 12.
+        attack_interrupted = (not is_reload_action) and _consume_interrupt_effect(self, self.user_id, attack, effect_events)
         hits_enemy = True
         self_damage = 0
         if is_reload_action:
             actual_damage, is_critical = 0, False
             hits_enemy = False
             self.set_reload_needed(self.user_id, attack_index, False)
+        elif attack_interrupted:
+            actual_damage, is_critical = 0, False
+            hits_enemy = False
         else:
             min_damage = 0
             max_damage = 0
@@ -13317,10 +13477,11 @@ class MissionBattleView(BaseBattleView):
                     actual_damage = self._consume_kingpin_information(effect_events, actual_damage)
                     shield_break_counter = 0
                     if actual_damage > 0 and not bypass_all_defense:
-                        actual_damage, shield_break_counter = _consume_shield_damage(
-                            self.active_effects,
+                        actual_damage, shield_break_counter = _consume_shield_damage_logged(
+                            self,
                             0,
                             actual_damage,
+                            effect_events,
                         )
                         if shield_break_counter > 0:
                             self._append_effect_event(effect_events, f"Schild zerbricht und verursacht {shield_break_counter} Rückschaden.")
@@ -13400,6 +13561,9 @@ class MissionBattleView(BaseBattleView):
                 healed_now = self.heal_player(self.user_id, heal_amount)
                 if healed_now > 0:
                     self._append_effect_event(effect_events, f"Heilung: +{healed_now} HP.")
+
+        # System-Optimierung u.ä.: bedingte Selbstheilung unter X% HP (Mission, Spieler).
+        _apply_conditional_self_heal(self, self.user_id, attack, effect_events)
 
         lifesteal_ratio = float(attack.get("lifesteal_ratio", 0.0) or 0.0)
         if lifesteal_ratio > 0 and hits_enemy and actual_damage > 0:
@@ -13789,6 +13953,10 @@ class MissionBattleView(BaseBattleView):
             )
             return
 
+        # Zugende des Spielers: turn-basierte Effekte des Spielers verfallen lassen
+        # (spiegelt das PvP-Verhalten; ohne dies liefen 1-Runden-Effekte in Missionen ewig weiter).
+        _consume_turn_end_decay_effects(self.active_effects, self.user_id)
+
         # Bot-Zug: kurz große Gegnerkarte, dann Ablauf
         if message is not None:
             try:
@@ -13820,6 +13988,8 @@ class MissionBattleView(BaseBattleView):
             # damit Specials nicht einfrieren.
             self.reduce_cooldowns_bot()
             self.reduce_cooldowns_user()
+            # Zugende des Bots (Betäubungs-Aussetzer): Bot-Effekte verfallen lassen.
+            _consume_turn_end_decay_effects(self.active_effects, 0)
             self._mission_actor_turn = "player"
             self.update_attack_buttons_mission()
             embed = self.create_current_embed(
@@ -13972,6 +14142,8 @@ class MissionBattleView(BaseBattleView):
                 is_forced_landing=is_forced_bot_landing,
             )
             miss_reason: str | None = None
+            # Flammenwand auf dem Boss (Mission): Standard -> abgebrochen (+15), Fähigkeit -> Caster heilt 12.
+            attack_interrupted = (not is_bot_reload_action) and _consume_interrupt_effect(self, 0, attack, bot_effect_events)
             # Bot kann ebenfalls verwirrt sein: 77% Selbstschaden, 23% normaler Treffer
             bot_hits_enemy = True
             self_damage = 0
@@ -13979,6 +14151,9 @@ class MissionBattleView(BaseBattleView):
                 actual_damage, is_critical = 0, False
                 bot_hits_enemy = False
                 self.set_reload_needed(0, best_index, False)
+            elif attack_interrupted:
+                actual_damage, is_critical = 0, False
+                bot_hits_enemy = False
             else:
                 min_damage = 0
                 max_damage = 0
@@ -14154,10 +14329,11 @@ class MissionBattleView(BaseBattleView):
                         actual_damage = max(0, int(final_damage))
                         shield_break_counter = 0
                         if actual_damage > 0 and not bypass_all_defense:
-                            actual_damage, shield_break_counter = _consume_shield_damage(
-                                self.active_effects,
+                            actual_damage, shield_break_counter = _consume_shield_damage_logged(
+                                self,
                                 self.user_id,
                                 actual_damage,
+                                bot_effect_events,
                             )
                             if shield_break_counter > 0:
                                 self._append_effect_event(bot_effect_events, f"Schild zerbricht und verursacht {shield_break_counter} Rückschaden.")
@@ -14242,6 +14418,9 @@ class MissionBattleView(BaseBattleView):
                     healed_now = self.heal_player(0, heal_amount)
                     if healed_now > 0:
                         self._append_effect_event(bot_effect_events, f"Heilung: +{healed_now} HP.")
+
+            # System-Optimierung u.ä.: bedingte Selbstheilung unter X% HP (Mission, Boss).
+            _apply_conditional_self_heal(self, 0, attack, bot_effect_events)
 
             lifesteal_ratio = float(attack.get("lifesteal_ratio", 0.0) or 0.0)
             if lifesteal_ratio > 0 and bot_hits_enemy and actual_damage > 0:
@@ -14634,6 +14813,8 @@ class MissionBattleView(BaseBattleView):
                 )
                 return
 
+            # Zugende des Bots: Bot-Effekte verfallen lassen (mirror PvP).
+            _consume_turn_end_decay_effects(self.active_effects, 0)
             # Update UI für nächsten Spieler-Zug
             self._mission_actor_turn = "player"
             self.update_attack_buttons_mission()
@@ -14653,6 +14834,8 @@ class MissionBattleView(BaseBattleView):
             # v2.3.12: auch im Skip-Fall Bot-Cooldowns senken, damit gesperrte Specials wieder auftauen.
             self.reduce_cooldowns_bot()
             self.reduce_cooldowns_user()
+            # Zugende des Bots (kein Angriff verfügbar): Bot-Effekte verfallen lassen.
+            _consume_turn_end_decay_effects(self.active_effects, 0)
             self._mission_actor_turn = "player"
             self.update_attack_buttons_mission()
 
