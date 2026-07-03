@@ -92,7 +92,7 @@ body {
 .switch input:checked + .slider::before { transform: translateX(16px); }
 
 /* ===== Main ===== */
-.main { flex: 1; padding: 22px 28px 60px; max-width: 1500px; }
+.main { flex: 1; padding: 22px 28px 60px; max-width: 1500px; margin: 0 auto; width: 100%; min-width: 0; }
 .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
 .topbar h1 { font-size: 22px; font-weight: 700; }
 .topbar-right { display: flex; align-items: center; gap: 10px; }
@@ -168,7 +168,7 @@ table.data tbody tr:hover { background: rgba(91, 140, 255, .06); }
 .bar-label { width: 170px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar-track { flex: 1; height: 8px; border-radius: 999px; background: rgba(34, 48, 82, .6); overflow: hidden; }
 .bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .6s ease; }
-.bar-value { width: 48px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+.bar-value { min-width: 64px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
 
 .stack { display: flex; flex-direction: column; gap: 8px; }
 .stack-item {
@@ -256,7 +256,8 @@ table.data tbody tr:hover { background: rgba(91, 140, 255, .06); }
 /* ===== Guild flags ===== */
 .flag-row { display: flex; align-items: center; gap: 14px; padding: 10px 4px; border-bottom: 1px solid rgba(34,48,82,.5); flex-wrap: wrap; }
 .flag-row:last-child { border-bottom: none; }
-.flag-guild { font-family: 'JetBrains Mono', monospace; font-size: 13px; min-width: 190px; }
+.flag-guild { font-family: 'JetBrains Mono', monospace; font-size: 13px; min-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+.flag-guild .muted.mono { margin-left: 6px; font-size: 11px; }
 .flag-toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
 
 /* ===== Responsive ===== */

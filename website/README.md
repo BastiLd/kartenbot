@@ -51,6 +51,7 @@ Der Container mountet `kartenbot.db` (+ WAL/SHM) read-write (für Admin-Aktionen
 | `DASHBOARD_SESSION_TTL` | nein (43200 s) | Login-Gültigkeit |
 | `DASHBOARD_HOST` / `DASHBOARD_PORT` | nein (127.0.0.1 / 8080) | Bind-Adresse |
 | `DASHBOARD_TZ` | nein (Europe/Vienna) | Zeitzone für Tages-/Stundenstatistik |
+| `BOT_TOKEN` | nein | Discord-Bot-Token (nur lesend): zeigt echte User-/Gilden-Namen statt IDs; Namen werden in `dashboard_name_cache` in der DB gecacht und sind dann auch per Name suchbar. Lokal wird das Token automatisch aus der Projekt-`.env` bzw. `bot_token.txt` übernommen; im Docker/ZimaOS als Env-Variable setzen. Ohne Token bleiben IDs sichtbar. |
 
 ## Features
 

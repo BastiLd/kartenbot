@@ -13,6 +13,8 @@ services:
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:?DASHBOARD_PASSWORD setzen (z.B. in website/.env)}
       DASHBOARD_SESSION_SECRET: ${DASHBOARD_SESSION_SECRET:-}
       DASHBOARD_TZ: ${DASHBOARD_TZ:-Europe/Vienna}
+      # Optional: Bot-Token für die Auflösung von User-/Gilden-Namen (read-only genutzt)
+      BOT_TOKEN: ${BOT_TOKEN:-}
     volumes:
       # DB + Log des Bots read-write mounten (Admin-Aktionen schreiben in die DB).
       # Auf ZimaOS die Pfade an den Bot-Datenordner anpassen.

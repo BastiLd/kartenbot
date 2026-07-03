@@ -58,6 +58,17 @@ async function api(path, options = {}) {
   return data;
 }
 
+/* Setzt innerHTML nur bei Änderung — verhindert Flackern, Scroll-Reset und
+   unnötige Re-Renders beim Auto-Refresh. Gibt true zurück, wenn neu gerendert. */
+function setHTML(id, html) {
+  const el = typeof id === "string" ? $(id) : id;
+  if (!el) return false;
+  if (el._html === html) return false;
+  el._html = html;
+  el.innerHTML = html;
+  return true;
+}
+
 function confirmAction(text) {
   return new Promise((resolve) => {
     $("confirmText").textContent = text;
@@ -72,6 +83,62 @@ function confirmAction(text) {
   });
 }
 
+/* ============================ Namen (User & Gilden) ============================ */
+
+/* Client-Cache: einmal aufgelöste Namen bleiben für die Session; das Backend
+   cached zusätzlich persistent in der DB. Unaufgelöste IDs werden beim
+   nächsten Refresh erneut angefragt (billig, Server drosselt selbst). */
+const NAMES = { users: {}, guilds: {} };
+let namesInFlight = false;
+
+function userLabel(id) {
+  const sid = String(id ?? "");
+  if (!sid || sid === "0") return '<span class="muted">System</span>';
+  const n = NAMES.users[sid];
+  return `<span data-uid="${esc(sid)}" title="${esc(sid)}">${esc(n || sid)}</span>`;
+}
+
+function guildLabel(id, showId = false) {
+  const sid = String(id ?? "");
+  if (!sid || sid === "0") return "";
+  const n = NAMES.guilds[sid];
+  return `<span data-gid="${esc(sid)}"${showId ? ' data-showid="1"' : ""} title="${esc(sid)}">${esc(n || sid)}</span>`;
+}
+
+function applyNames() {
+  document.querySelectorAll("[data-uid]").forEach((el) => {
+    const n = NAMES.users[el.dataset.uid];
+    if (n && el.textContent !== n) el.textContent = n;
+  });
+  document.querySelectorAll("[data-gid]").forEach((el) => {
+    const n = NAMES.guilds[el.dataset.gid];
+    if (!n) return;
+    if (el.dataset.showid) {
+      const want = `${esc(n)} <span class="muted mono">${esc(el.dataset.gid)}</span>`;
+      if (el._nameHtml !== want) { el._nameHtml = want; el.innerHTML = want; }
+    } else if (el.textContent !== n) {
+      el.textContent = n;
+    }
+  });
+}
+
+async function resolveNames() {
+  if (namesInFlight) return;
+  const users = new Set(), guilds = new Set();
+  document.querySelectorAll("[data-uid]").forEach((el) => { if (!NAMES.users[el.dataset.uid]) users.add(el.dataset.uid); });
+  document.querySelectorAll("[data-gid]").forEach((el) => { if (!NAMES.guilds[el.dataset.gid]) guilds.add(el.dataset.gid); });
+  applyNames();
+  if (!users.size && !guilds.size) return;
+  namesInFlight = true;
+  try {
+    const res = await api("/api/names", { method: "POST", body: JSON.stringify({ users: [...users], guilds: [...guilds] }) });
+    Object.assign(NAMES.users, res.users || {});
+    Object.assign(NAMES.guilds, res.guilds || {});
+    applyNames();
+  } catch { /* Namen sind optional — IDs bleiben sichtbar */ }
+  finally { namesInFlight = false; }
+}
+
 /* ============================ Charts ============================ */
 
 Chart.defaults.color = "#8fa0c2";
@@ -83,7 +150,15 @@ const PALETTE = ["#5b8cff", "#8b5cf6", "#34d399", "#fbbf24", "#f87171", "#38bdf8
 function renderChart(id, type, labels, values, opts = {}) {
   const canvas = $(id);
   if (!canvas) return;
-  if (state.charts[id]) state.charts[id].destroy();
+  const existing = state.charts[id];
+  if (existing && existing.config.type === type) {
+    // Nur Daten austauschen — keine Neu-Animation beim Auto-Refresh.
+    existing.data.labels = labels;
+    existing.data.datasets[0].data = values;
+    existing.update("none");
+    return;
+  }
+  if (existing) existing.destroy();
   const horizontal = opts.horizontal;
   state.charts[id] = new Chart(canvas, {
     type,
@@ -121,17 +196,18 @@ function chartFromPairs(id, type, pairs, opts = {}) {
   renderChart(id, type, (pairs || []).map((p) => p.label), (pairs || []).map((p) => p.value), opts);
 }
 
-function barList(containerId, rows, labelKey, valueKey) {
+function barList(containerId, rows, labelKey, valueKey, labelHTML) {
   const el = $(containerId);
   if (!el) return;
-  if (!rows || !rows.length) { el.innerHTML = '<div class="empty">Keine Daten</div>'; return; }
+  if (!rows || !rows.length) { setHTML(el, '<div class="empty">Keine Daten</div>'); return; }
   const max = Math.max(...rows.map((r) => Number(r[valueKey]) || 0), 1);
-  el.innerHTML = rows.map((r) => `
+  const labelOf = labelHTML || ((r) => `<span title="${esc(r[labelKey])}">${esc(r[labelKey])}</span>`);
+  setHTML(el, rows.map((r) => `
     <div class="bar-row">
-      <span class="bar-label mono" title="${esc(r[labelKey])}">${esc(r[labelKey])}</span>
+      <span class="bar-label mono">${labelOf(r)}</span>
       <div class="bar-track"><div class="bar-fill" style="width:${(100 * (Number(r[valueKey]) || 0) / max).toFixed(1)}%"></div></div>
       <span class="bar-value">${fmt(r[valueKey])}</span>
-    </div>`).join("");
+    </div>`).join(""));
 }
 
 function tableHTML(headers, rows) {
@@ -165,19 +241,19 @@ async function loadHealth() {
   $("kpiAfk").textContent = fmt(h.afk_timer_count);
   $("kpiFights").textContent = `${fmt(h.open_fight_requests)} offene Kampf-Anfragen`;
 
-  $("lastErrors").innerHTML = (h.last_errors && h.last_errors.length)
+  setHTML("lastErrors", (h.last_errors && h.last_errors.length)
     ? h.last_errors.map((e) => `
         <div class="stack-item">
           <span class="lvl lvl-ERROR">ERROR</span>
           <span class="log-ts mono">${esc(e.timestamp)}</span><br>${esc(e.message)}
         </div>`).join("")
-    : '<div class="empty">Keine Fehler in den letzten 24 h 🎉</div>';
+    : '<div class="empty">Keine Fehler in den letzten 24 h 🎉</div>');
 
   const sessions = (h.active_sessions || []).map((s) =>
-    `<div class="stack-item mono">Session #${s.session_id} · ${esc(s.kind || "?")} · ${esc(s.status || "?")} · ${fmtEpoch(s.updated_at)}</div>`);
+    `<div class="stack-item mono">Session #${s.session_id} · ${esc(s.kind || "?")} · ${esc(s.status || "?")}${s.guild_id ? ` · ${guildLabel(s.guild_id)}` : ""} · ${fmtEpoch(s.updated_at)}</div>`);
   const threads = (h.managed_threads || []).map((t) =>
-    `<div class="stack-item mono">Thread ${t.thread_id} · ${esc(t.kind || "?")} · ${esc(t.status || "?")}</div>`);
-  $("healthSessions").innerHTML = sessions.concat(threads).join("") || '<div class="empty">Keine aktiven Sessions oder Threads</div>';
+    `<div class="stack-item mono">Thread ${t.thread_id} · ${esc(t.kind || "?")} · ${esc(t.status || "?")}${t.guild_id ? ` · ${guildLabel(t.guild_id)}` : ""}</div>`);
+  setHTML("healthSessions", sessions.concat(threads).join("") || '<div class="empty">Keine aktiven Sessions oder Threads</div>');
 }
 
 async function loadLogs() {
@@ -187,11 +263,11 @@ async function loadLogs() {
   if (q) params.set("q", q);
   const data = await api(`/api/logs?${params}`);
   $("logMeta").textContent = data.available ? `· ${fmtBytes(data.file_size)} · ${data.entries.length} Einträge` : "· bot.log nicht gefunden";
-  $("logView").innerHTML = (data.entries || []).map((e) => `
+  setHTML("logView", (data.entries || []).map((e) => `
     <div class="log-line">
       <span class="log-ts">${esc(e.timestamp)}</span><span class="lvl lvl-${esc(e.level)}">${esc(e.level)}</span>${esc(e.message)}
       ${e.detail ? `<div class="log-detail">${esc(e.detail.trim())}</div>` : ""}
-    </div>`).join("") || '<div class="empty">Keine Log-Einträge</div>';
+    </div>`).join("") || '<div class="empty">Keine Log-Einträge</div>');
 }
 
 /* ============================ Players ============================ */
@@ -210,33 +286,46 @@ async function loadPlayers() {
   chartFromPairs("chartCardDist", "bar", (p.card_distribution || []).map((r) => ({ label: r.karten_name, value: r.total })), { horizontal: true });
   chartFromPairs("chartTeamSizes", "doughnut", p.team_sizes);
 
-  barList("topDust", p.top_dust, "user_id", "amount");
-  barList("topUnits", p.top_units, "user_id", "amount");
-  barList("topCards", p.top_cards, "user_id", "total");
-  barList("mostActive", p.most_active, "user_id", "events");
+  const byUser = (r) => userLabel(r.user_id);
+  barList("topDust", p.top_dust, "user_id", "amount", byUser);
+  barList("topUnits", p.top_units, "user_id", "amount", byUser);
+  barList("topCards", p.top_cards, "user_id", "total", byUser);
+  barList("mostActive", p.most_active, "user_id", "events", byUser);
 
-  $("tradingList").innerHTML = tableHTML(
+  setHTML("tradingList", tableHTML(
     ["Code", "Verkäufer", "Karte", "Preis", "Zeit"],
     (p.tradingpost || []).map((t) => [
-      `<span class="mono">${esc(t.code)}</span>`, `<span class="mono">${esc(t.seller_id)}</span>`,
+      `<span class="mono">${esc(t.code)}</span>`, `<span class="mono">${userLabel(t.seller_id)}</span>`,
       esc(t.card_name), fmt(t.preis), fmtEpoch(t.timestamp),
-    ]));
+    ])));
 }
 
 async function lookupUser() {
-  const id = $("userLookup").value.trim();
-  if (!/^\d+$/.test(id)) { toast("Bitte eine numerische User-ID eingeben.", true); return; }
+  const raw = $("userLookup").value.trim();
+  if (!raw) { toast("User-ID oder Namen eingeben.", true); return; }
+  let id = raw;
+  if (!/^\d+$/.test(raw)) {
+    // Suche per Name im Namens-Cache des Servers
+    try {
+      const res = await api(`/api/names/search?q=${encodeURIComponent(raw)}`);
+      const hit = (res.results || []).find((r) => r.kind === "user");
+      if (!hit) { toast(`Kein User „${raw}“ gefunden — Name muss schon einmal im Dashboard aufgetaucht sein.`, true); return; }
+      id = hit.id;
+    } catch (err) { toast(String(err.message || err), true); return; }
+  }
   try {
     const u = await api(`/api/user/${id}`);
     const cards = u.cards.length
       ? tableHTML(["Karte", "Anzahl"], u.cards.map((c) => [esc(c.karten_name), fmt(c.anzahl)]))
       : '<div class="empty">Keine Karten</div>';
-    $("userDetail").innerHTML = `
+    setHTML("userDetail", `
+      <div class="stack-item">👤 <b>${userLabel(id)}</b> <span class="muted mono">${esc(id)}</span></div>
       <div class="stack-item">💠 Dust: <b>${fmt(u.dust)}</b> &nbsp;·&nbsp; 🪖 Units: <b>${fmt(u.units)}</b>
         &nbsp;·&nbsp; 🧩 Team: <span class="mono">${esc(JSON.stringify(u.team))}</span>
         &nbsp;·&nbsp; 📅 Missionen heute: <b>${fmt(u.daily ? u.daily.mission_count : 0)}</b></div>
       ${u.buffs.length ? `<div class="stack-item">Buffs: ${u.buffs.map((b) => `${esc(b.card_name)} (${esc(b.buff_type)} #${b.attack_number}: +${b.buff_amount})`).join(", ")}</div>` : ""}
-      ${cards}`;
+      ${cards}`);
+    resolveNames();
   } catch (err) { toast(String(err.message || err), true); }
 }
 
@@ -257,17 +346,17 @@ async function loadBattles() {
   chartFromPairs("chartAttacks", "bar", b.top_attacks, { horizontal: true });
   chartFromPairs("chartKinds", "doughnut", b.session_kinds);
 
-  $("winrates").innerHTML = tableHTML(
+  setHTML("winrates", tableHTML(
     ["Held", "Siege", "Niederlagen", "Win-Rate"],
-    (b.winrates || []).map((w) => [esc(w.hero), fmt(w.wins), fmt(w.losses), `<b>${w.winrate}%</b>`]));
+    (b.winrates || []).map((w) => [esc(w.hero), fmt(w.wins), fmt(w.losses), `<b>${w.winrate}%</b>`])));
 
-  $("afkList").innerHTML = (b.afk_timers || []).length
-    ? b.afk_timers.map((t) => `<div class="stack-item mono">${esc(t.kind)} · ${esc(t.battle_id)} · Runde ${t.round_number} · zuletzt ${fmtEpoch(t.last_action_at)}</div>`).join("")
-    : '<div class="empty">Keine AFK-Timer</div>';
+  setHTML("afkList", (b.afk_timers || []).length
+    ? b.afk_timers.map((t) => `<div class="stack-item mono">${esc(t.kind)} · ${esc(t.battle_id)} · Runde ${t.round_number}${t.active_player_id ? ` · am Zug: ${userLabel(t.active_player_id)}` : ""} · zuletzt ${fmtEpoch(t.last_action_at)}</div>`).join("")
+    : '<div class="empty">Keine AFK-Timer</div>');
 
-  $("battleSessions").innerHTML = (b.active_sessions || []).length
+  setHTML("battleSessions", (b.active_sessions || []).length
     ? b.active_sessions.map((s) => `<div class="stack-item mono">#${s.session_id} · ${esc(s.kind || "?")} · ${esc(s.status || "?")} · ${fmtEpoch(s.updated_at)}</div>`).join("")
-    : '<div class="empty">Keine laufenden Sessions</div>';
+    : '<div class="empty">Keine laufenden Sessions</div>');
 }
 
 /* ============================ Analytics ============================ */
@@ -279,20 +368,20 @@ async function loadAnalytics() {
   chartFromPairs("chartCommands", "bar", a.top_commands, { horizontal: true });
   chartFromPairs("chartEventTypes", "doughnut", a.event_types);
 
-  barList("inviteTop", a.invite_top, "user_id", "completed");
+  barList("inviteTop", a.invite_top, "user_id", "completed", (r) => userLabel(r.user_id));
 
-  $("invitePending").innerHTML = (a.invite_pending || []).length
-    ? a.invite_pending.map((i) => `<div class="stack-item mono">#${i.id} · ${esc(i.inviter_id)} → ${esc(i.invitee_id)} · ${fmtEpoch(i.created_at)}</div>`).join("")
-    : '<div class="empty">Keine offenen Invites</div>';
+  setHTML("invitePending", (a.invite_pending || []).length
+    ? a.invite_pending.map((i) => `<div class="stack-item mono">#${i.id} · ${userLabel(i.inviter_id)} → ${userLabel(i.invitee_id)} · ${fmtEpoch(i.created_at)}</div>`).join("")
+    : '<div class="empty">Keine offenen Invites</div>');
 
-  $("dustAudit").innerHTML = (a.dust_audit || []).length
-    ? a.dust_audit.map((d) => `<div class="stack-item mono">${esc(d.action)}/${esc(d.mode)} · ${esc(d.actor_id)} → ${esc(d.target_id)} · ${fmt(d.applied_amount)} · ${fmtEpoch(d.created_at)}</div>`).join("")
-    : '<div class="empty">Keine Einträge</div>';
+  setHTML("dustAudit", (a.dust_audit || []).length
+    ? a.dust_audit.map((d) => `<div class="stack-item mono">${esc(d.action)}/${esc(d.mode)} · ${userLabel(d.actor_id)} → ${userLabel(d.target_id)} · ${fmt(d.applied_amount)} · ${fmtEpoch(d.created_at)}</div>`).join("")
+    : '<div class="empty">Keine Einträge</div>');
 }
 
 /* ============================ Admin ============================ */
 
-let META = { cards: [], admin_enabled: false };
+let META = { cards: [], admin_enabled: false, names_enabled: false };
 
 async function refreshAdminUI() {
   const status = await api("/api/admin/status");
@@ -326,20 +415,23 @@ async function loadGuildFlags() {
   try {
     const guilds = await api("/api/admin/guilds");
     const flags = ["maintenance_mode", "beta_enabled", "alpha_enabled"];
-    $("guildFlags").innerHTML = guilds.length
+    const changed = setHTML("guildFlags", guilds.length
       ? guilds.map((g) => `
         <div class="flag-row">
-          <span class="flag-guild">${esc(g.guild_id)}</span>
+          <span class="flag-guild">${guildLabel(g.guild_id, true)}</span>
           ${flags.map((f) => `
             <label class="flag-toggle">
               <input type="checkbox" data-guild="${esc(g.guild_id)}" data-flag="${f}" ${g[f] ? "checked" : ""}>
               ${f.replace("_enabled", "").replace("_mode", "")}
             </label>`).join("")}
         </div>`).join("")
-      : '<div class="empty">Noch keine Guild-Konfigurationen. Guild-ID oben eingeben und einen Schalter setzen.</div>';
-    document.querySelectorAll('#guildFlags input[type="checkbox"]').forEach((box) => {
-      box.addEventListener("change", () => setGuildFlag(box.dataset.guild, box.dataset.flag, box.checked, box));
-    });
+      : '<div class="empty">Noch keine Guild-Konfigurationen. Guild-ID oben eingeben und einen Schalter setzen.</div>');
+    if (changed) {
+      document.querySelectorAll('#guildFlags input[type="checkbox"]').forEach((box) => {
+        box.addEventListener("change", () => setGuildFlag(box.dataset.guild, box.dataset.flag, box.checked, box));
+      });
+    }
+    resolveNames();
   } catch (err) { toast(String(err.message || err), true); }
 }
 
@@ -356,22 +448,30 @@ async function setGuildFlag(guildId, flag, enabled, box) {
   }
 }
 
+/* "user:123" / "guild:456" im Audit-Ziel als Namen anzeigen */
+function auditTarget(target) {
+  const m = /^(user|guild):(\d+)$/.exec(String(target || ""));
+  if (m) return m[1] === "user" ? userLabel(m[2]) : guildLabel(m[2]);
+  return esc(target);
+}
+
 async function loadAudit() {
   try {
     const rows = await api("/api/admin/audit?limit=100");
-    $("auditLog").innerHTML = tableHTML(
+    setHTML("auditLog", tableHTML(
       ["Zeit", "Aktion", "Ziel", "Betrag", "Detail"],
-      rows.map((r) => [fmtEpoch(r.created_at), esc(r.action), `<span class="mono">${esc(r.target)}</span>`,
-        r.amount == null ? "–" : fmt(r.amount), esc(r.detail || "")]));
+      rows.map((r) => [fmtEpoch(r.created_at), esc(r.action), `<span class="mono">${auditTarget(r.target)}</span>`,
+        r.amount == null ? "–" : fmt(r.amount), esc(r.detail || "")])));
+    resolveNames();
   } catch (err) { toast(String(err.message || err), true); }
 }
 
 async function loadTradingAdmin() {
   try {
     const p = await api(`/api/players?range=all`);
-    $("tpAdminList").innerHTML = (p.tradingpost || []).length
-      ? p.tradingpost.map((t) => `<div class="stack-item mono">${esc(t.code)} · ${esc(t.card_name)} · ${fmt(t.preis)} · Verkäufer ${esc(t.seller_id)}</div>`).join("")
-      : '<div class="empty">Trading-Post ist leer</div>';
+    setHTML("tpAdminList", (p.tradingpost || []).length
+      ? p.tradingpost.map((t) => `<div class="stack-item mono">${esc(t.code)} · ${esc(t.card_name)} · ${fmt(t.preis)} · Verkäufer ${userLabel(t.seller_id)}</div>`).join("")
+      : '<div class="empty">Trading-Post ist leer</div>');
   } catch { /* nur Anzeige */ }
 }
 
@@ -380,7 +480,8 @@ async function submitCurrency() {
         amount = parseInt($("curAmount").value, 10), action = $("curAction").value;
   if (!/^\d+$/.test(userId) || !(amount > 0)) { toast("User-ID und Betrag prüfen.", true); return; }
   const label = kind === "dust" ? "InfinityDust" : "Units";
-  if (!(await confirmAction(`${action === "give" ? "GEBEN" : "ABZIEHEN"}: ${fmt(amount)} ${label} für User ${userId}?`))) return;
+  const who = NAMES.users[userId] ? `${NAMES.users[userId]} (${userId})` : `User ${userId}`;
+  if (!(await confirmAction(`${action === "give" ? "GEBEN" : "ABZIEHEN"}: ${fmt(amount)} ${label} für ${who}?`))) return;
   try {
     const res = await api("/api/admin/currency", { method: "POST", body: JSON.stringify({ kind, user_id: userId, amount, action }) });
     toast(`OK — angewendet: ${fmt(res.applied)}, neuer Stand: ${fmt(res.new_amount)}`);
@@ -392,7 +493,8 @@ async function submitCard() {
   const userId = $("cardUserId").value.trim(), name = $("cardName").value.trim(),
         amount = parseInt($("cardAmount").value, 10), action = $("cardAction").value;
   if (!/^\d+$/.test(userId) || !name || !(amount > 0)) { toast("Eingaben prüfen.", true); return; }
-  if (!(await confirmAction(`${action === "give" ? "GEBEN" : "ENTFERNEN"}: ${amount}× „${name}“ für User ${userId}?`))) return;
+  const who = NAMES.users[userId] ? `${NAMES.users[userId]} (${userId})` : `User ${userId}`;
+  if (!(await confirmAction(`${action === "give" ? "GEBEN" : "ENTFERNEN"}: ${amount}× „${name}“ für ${who}?`))) return;
   try {
     const res = await api("/api/admin/card", { method: "POST", body: JSON.stringify({ user_id: userId, card_name: name, amount, action }) });
     toast(`OK — ${res.applied}× ${res.card}`);
@@ -434,6 +536,7 @@ const LOADERS = {
 async function loadTab(tab) {
   try {
     await LOADERS[tab]();
+    resolveNames();
   } catch (err) {
     toast(`Fehler beim Laden: ${err.message || err}`, true);
   }
@@ -495,6 +598,9 @@ async function init() {
   try {
     META = await api("/api/meta");
     $("cardNames").innerHTML = (META.cards || []).map((c) => `<option value="${esc(c)}">`).join("");
+    if (META.names_enabled === false) {
+      $("userLookup").placeholder = "Discord User-ID … (BOT_TOKEN setzen für Namen)";
+    }
   } catch { /* Meta optional */ }
 
   await loadHealth().catch(() => {});

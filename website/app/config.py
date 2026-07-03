@@ -61,3 +61,21 @@ PORT: int = int(os.getenv("DASHBOARD_PORT", "8080"))
 
 # Zeitzone für Tages-/Stunden-Auswertungen (wie stats_export.py)
 TIMEZONE: str = os.getenv("DASHBOARD_TZ", "Europe/Vienna")
+
+# Bot-Token (nur lesend genutzt) für die Auflösung von User-/Gilden-Namen über
+# die Discord-API. Ohne Token zeigt das Dashboard weiterhin nur IDs an.
+# Fallback wie beim Bot (config.py): bot_token.txt / token.txt im Projekt-Root.
+def _resolve_bot_token() -> str | None:
+    token = os.getenv("BOT_TOKEN") or os.getenv("DISCORD_TOKEN")
+    if token:
+        return token
+    for filename in ("bot_token.txt", "token.txt"):
+        path = PROJECT_ROOT / filename
+        if path.exists():
+            token = path.read_text(encoding="utf-8").strip().strip("\"'")
+            if token:
+                return token
+    return None
+
+
+BOT_TOKEN: str | None = _resolve_bot_token()

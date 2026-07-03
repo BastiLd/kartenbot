@@ -11,7 +11,7 @@ from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, Respo
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import actions, auth, config, queries
+from . import actions, auth, config, names, queries
 from .cards import all_card_names
 from .database import DashboardDBError
 from .logparse import parse_log
@@ -79,7 +79,22 @@ def api_meta():
         "cards": all_card_names(),
         "admin_enabled": auth.admin_enabled(),
         "guild_flags": sorted(actions.GUILD_FLAGS),
+        "names_enabled": names.enabled(),
     }
+
+
+@app.post("/api/names")
+def api_names(payload: dict = Body(...)):
+    users = payload.get("users") or []
+    guilds = payload.get("guilds") or []
+    if not isinstance(users, list) or not isinstance(guilds, list):
+        raise HTTPException(status_code=400, detail="users/guilds müssen Listen sein.")
+    return names.resolve(users, guilds)
+
+
+@app.get("/api/names/search")
+def api_names_search(q: str = Query("", max_length=64)):
+    return {"results": names.search(q)}
 
 
 # ------------------------------------------------------------------- Auth ---
