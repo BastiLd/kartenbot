@@ -601,6 +601,7 @@ async function init() {
     if (META.names_enabled === false) {
       $("userLookup").placeholder = "Discord User-ID … (BOT_TOKEN setzen für Namen)";
     }
+    if (META.version) $("dashVersion").textContent = `· v${META.version}`;
   } catch { /* Meta optional */ }
 
   await loadHealth().catch(() => {});

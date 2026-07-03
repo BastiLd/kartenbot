@@ -29,10 +29,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Read dashboard version
+        id: version
+        run: echo "value=$(cat website/VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
           file: website/Dockerfile
           push: true
-          tags: ghcr.io/bastild/kartenbot-dashboard:latest
+          tags: |
+            ghcr.io/bastild/kartenbot-dashboard:latest
+            ghcr.io/bastild/kartenbot-dashboard:${{ steps.version.outputs.value }}

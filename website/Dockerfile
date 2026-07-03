@@ -14,6 +14,7 @@ COPY karten.py items.py namenconfig.py ./
 COPY services/__init__.py services/card_variants.py services/battle_types.py services/
 COPY website/app website/app
 COPY website/static website/static
+COPY website/VERSION website/VERSION
 
 WORKDIR /opt/kartenbot/website
 

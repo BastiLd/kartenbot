@@ -29,6 +29,30 @@ cd website
 Dann <http://localhost:8080> öffnen. Das Dashboard startet **nicht** automatisch mit dem
 Bot — es ist bewusst separat.
 
+## Versionierung & Docker-Image
+
+Die Datei `website/VERSION` enthält die aktuelle Dashboard-Version (z.B. `1.1.0`) und
+wird unten links im Sidebar-Footer angezeigt (`v1.1.0`) — so lässt sich prüfen, ob ein
+Container tatsächlich die neue Version fährt. Bei jeder inhaltlichen Änderung am
+Dashboard `website/VERSION` hochzählen.
+
+Die GitHub Action (`.github/workflows/dashboard-image.yml`) baut bei jedem Push auf
+`main`, der `website/**` betrifft, automatisch ein neues Image und pusht es als
+`ghcr.io/bastild/kartenbot-dashboard:latest` **und** zusätzlich mit dem konkreten
+Versions-Tag aus `website/VERSION` (z.B. `:1.1.0`).
+
+**Wichtig für ZimaOS/Docker-Update:** Ein Update auf denselben Tag `:latest` wird von
+vielen Auto-Update-Mechanismen nur erkannt, wenn sie den Image-**Digest** vergleichen,
+nicht nur den Tag-Namen. Falls ZimaOS nach einem Push nicht automatisch aktualisiert:
+
+- Sicherstellen, dass die "Always pull latest image" / Digest-Vergleich-Option beim
+  Auto-Update aktiv ist (nicht nur "Tag geändert?").
+- Alternativ den konkreten Versions-Tag (z.B. `:1.1.0`) im Compose/ZimaOS-App
+  eintragen und bei jedem Update manuell auf die neue Versionsnummer setzen — das
+  erzwingt garantiert einen Pull.
+- Zur Kontrolle: die im Dashboard angezeigte Versionsnummer mit dem `website/VERSION`
+  im aktuellsten `main`-Commit vergleichen.
+
 ## Docker / ZimaOS
 
 ```bash

@@ -16,9 +16,12 @@ from .cards import all_card_names
 from .database import DashboardDBError
 from .logparse import parse_log
 
-app = FastAPI(title="Kartenbot Dashboard", version="1.0.0", docs_url=None, redoc_url=None)
+WEBSITE_DIR = Path(__file__).resolve().parent.parent
+VERSION = (WEBSITE_DIR / "VERSION").read_text(encoding="utf-8").strip() if (WEBSITE_DIR / "VERSION").exists() else "0.0.0"
 
-STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+app = FastAPI(title="Kartenbot Dashboard", version=VERSION, docs_url=None, redoc_url=None)
+
+STATIC_DIR = WEBSITE_DIR / "static"
 
 VALID_RANGES = {"today", "7d", "30d", "all"}
 
@@ -80,6 +83,7 @@ def api_meta():
         "admin_enabled": auth.admin_enabled(),
         "guild_flags": sorted(actions.GUILD_FLAGS),
         "names_enabled": names.enabled(),
+        "version": VERSION,
     }
 
 
