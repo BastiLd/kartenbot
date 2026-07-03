@@ -1,0 +1,23 @@
+# Start aus dem Projekt-Root:  docker compose -f website/docker-compose.yml up -d
+services:
+  kartenbot-dashboard:
+    build:
+      context: ..
+      dockerfile: website/Dockerfile
+    container_name: kartenbot-dashboard
+    ports:
+      - "8080:8080"
+    environment:
+      KARTENBOT_DB_PATH: /data/kartenbot.db
+      KARTENBOT_LOG_PATH: /data/bot.log
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:?DASHBOARD_PASSWORD setzen (z.B. in website/.env)}
+      DASHBOARD_SESSION_SECRET: ${DASHBOARD_SESSION_SECRET:-}
+      DASHBOARD_TZ: ${DASHBOARD_TZ:-Europe/Vienna}
+    volumes:
+      # DB + Log des Bots read-write mounten (Admin-Aktionen schreiben in die DB).
+      # Auf ZimaOS die Pfade an den Bot-Datenordner anpassen.
+      - ../kartenbot.db:/data/kartenbot.db
+      - ../kartenbot.db-wal:/data/kartenbot.db-wal
+      - ../kartenbot.db-shm:/data/kartenbot.db-shm
+      - ../bot.log:/data/bot.log:ro
+    restart: unless-stopped

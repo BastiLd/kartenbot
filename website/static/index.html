@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kartenbot · Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🃏</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ======================= Sidebar ======================= -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-icon">🃏</div>
+      <div>
+        <div class="brand-name">Kartenbot</div>
+        <div class="brand-sub">Operations Dashboard</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-item active" data-tab="health">
+        <span class="nav-icon">⚡</span> Health &amp; Logs
+      </button>
+      <button class="nav-item" data-tab="players">
+        <span class="nav-icon">👥</span> Spieler &amp; Economy
+      </button>
+      <button class="nav-item" data-tab="battles">
+        <span class="nav-icon">⚔️</span> Battles &amp; Missionen
+      </button>
+      <button class="nav-item" data-tab="analytics">
+        <span class="nav-icon">📈</span> Commands &amp; Invites
+      </button>
+      <button class="nav-item" data-tab="admin">
+        <span class="nav-icon">🛠️</span> Admin
+      </button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="status-pill" id="botStatusPill">
+        <span class="dot" id="botStatusDot"></span>
+        <span id="botStatusText">prüfe …</span>
+      </div>
+      <div class="refresh-row">
+        <label class="switch" title="Auto-Refresh alle 15 s">
+          <input type="checkbox" id="autoRefresh" checked>
+          <span class="slider"></span>
+        </label>
+        <span class="refresh-label">Auto-Refresh</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ======================= Main ======================= -->
+  <main class="main">
+    <header class="topbar">
+      <h1 id="pageTitle">Health &amp; Logs</h1>
+      <div class="topbar-right">
+        <div class="range-picker" id="rangePicker">
+          <button data-range="today">Heute</button>
+          <button data-range="7d" class="active">7 Tage</button>
+          <button data-range="30d">30 Tage</button>
+          <button data-range="all">Alles</button>
+        </div>
+        <button class="icon-btn" id="refreshBtn" title="Jetzt aktualisieren">⟳</button>
+      </div>
+    </header>
+
+    <div class="toast" id="toast"></div>
+
+    <!-- ================= Tab: Health ================= -->
+    <section class="tab active" id="tab-health">
+      <div class="grid kpi-grid">
+        <div class="card kpi"><div class="kpi-label">Status</div><div class="kpi-value" id="kpiOnline">–</div><div class="kpi-sub" id="kpiOnlineSub"></div></div>
+        <div class="card kpi"><div class="kpi-label">Uptime</div><div class="kpi-value" id="kpiUptime">–</div><div class="kpi-sub" id="kpiRestart"></div></div>
+        <div class="card kpi"><div class="kpi-label">Fehler (24 h)</div><div class="kpi-value" id="kpiErrors">–</div><div class="kpi-sub" id="kpiWarnings"></div></div>
+        <div class="card kpi"><div class="kpi-label">DB-Größe</div><div class="kpi-value" id="kpiDbSize">–</div><div class="kpi-sub" id="kpiEvents"></div></div>
+        <div class="card kpi"><div class="kpi-label">Aktive Sessions</div><div class="kpi-value" id="kpiSessions">–</div><div class="kpi-sub" id="kpiThreads"></div></div>
+        <div class="card kpi"><div class="kpi-label">AFK-Timer</div><div class="kpi-value" id="kpiAfk">–</div><div class="kpi-sub" id="kpiFights"></div></div>
+      </div>
+
+      <div class="grid two-col">
+        <div class="card">
+          <div class="card-head"><h3>Letzte Fehler</h3></div>
+          <div id="lastErrors" class="stack"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Aktive Sessions &amp; Threads</h3></div>
+          <div id="healthSessions" class="stack"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>Log-Viewer <span class="muted" id="logMeta"></span></h3>
+          <div class="log-controls">
+            <select id="logLevel">
+              <option value="">Alle Level</option>
+              <option value="ERROR">ERROR</option>
+              <option value="WARNING">WARNING</option>
+              <option value="INFO">INFO</option>
+              <option value="ERROR,WARNING">ERROR + WARNING</option>
+            </select>
+            <input type="text" id="logSearch" placeholder="Suchen …">
+            <button class="btn small" id="logReload">Laden</button>
+          </div>
+        </div>
+        <div class="log-view" id="logView"></div>
+      </div>
+    </section>
+
+    <!-- ================= Tab: Players ================= -->
+    <section class="tab" id="tab-players">
+      <div class="grid kpi-grid">
+        <div class="card kpi"><div class="kpi-label">Aktive Spieler</div><div class="kpi-value" id="pKpiActive">–</div><div class="kpi-sub">im Zeitraum</div></div>
+        <div class="card kpi"><div class="kpi-label">Spieler gesamt</div><div class="kpi-value" id="pKpiTotal">–</div><div class="kpi-sub">mit Karten</div></div>
+        <div class="card kpi"><div class="kpi-label">InfinityDust</div><div class="kpi-value" id="pKpiDust">–</div><div class="kpi-sub" id="pKpiDustHolders"></div></div>
+        <div class="card kpi"><div class="kpi-label">Units</div><div class="kpi-value" id="pKpiUnits">–</div><div class="kpi-sub" id="pKpiUnitHolders"></div></div>
+        <div class="card kpi"><div class="kpi-label">Daily (24 h)</div><div class="kpi-value" id="pKpiDaily">–</div><div class="kpi-sub">Nutzer</div></div>
+        <div class="card kpi"><div class="kpi-label">Teams</div><div class="kpi-value" id="pKpiTeams">–</div><div class="kpi-sub">gespeichert</div></div>
+      </div>
+
+      <div class="grid two-col">
+        <div class="card"><div class="card-head"><h3>Meist besessene Karten</h3></div><div class="chart-box"><canvas id="chartCardDist"></canvas></div></div>
+        <div class="card"><div class="card-head"><h3>Team-Größen</h3></div><div class="chart-box"><canvas id="chartTeamSizes"></canvas></div></div>
+      </div>
+
+      <div class="grid three-col">
+        <div class="card"><div class="card-head"><h3>Top InfinityDust</h3></div><div id="topDust"></div></div>
+        <div class="card"><div class="card-head"><h3>Top Units</h3></div><div id="topUnits"></div></div>
+        <div class="card"><div class="card-head"><h3>Top Sammler</h3></div><div id="topCards"></div></div>
+      </div>
+
+      <div class="grid two-col">
+        <div class="card"><div class="card-head"><h3>Aktivste Spieler (Events)</h3></div><div id="mostActive"></div></div>
+        <div class="card"><div class="card-head"><h3>Trading-Post</h3></div><div id="tradingList"></div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>Spieler-Detail</h3>
+          <div class="log-controls">
+            <input type="text" id="userLookup" placeholder="Discord User-ID …">
+            <button class="btn small" id="userLookupBtn">Anzeigen</button>
+          </div>
+        </div>
+        <div id="userDetail" class="stack"><div class="empty">User-ID eingeben, um Karten, Dust, Units &amp; Team zu sehen.</div></div>
+      </div>
+    </section>
+
+    <!-- ================= Tab: Battles ================= -->
+    <section class="tab" id="tab-battles">
+      <div class="grid kpi-grid">
+        <div class="card kpi"><div class="kpi-label">Kämpfe</div><div class="kpi-value" id="bKpiFights">–</div><div class="kpi-sub">fight_result</div></div>
+        <div class="card kpi"><div class="kpi-label">Attacken</div><div class="kpi-value" id="bKpiAttacks">–</div><div class="kpi-sub">attack_used</div></div>
+        <div class="card kpi"><div class="kpi-label">Bug-Feedback</div><div class="kpi-value" id="bKpiBug">–</div><div class="kpi-sub" id="bKpiNoBug"></div></div>
+        <div class="card kpi"><div class="kpi-label">Kampf-Anfragen</div><div class="kpi-value" id="bKpiFightReq">–</div><div class="kpi-sub" id="bKpiMissionReq"></div></div>
+      </div>
+
+      <div class="grid two-col">
+        <div class="card"><div class="card-head"><h3>Beliebteste Helden</h3></div><div class="chart-box"><canvas id="chartHeroes"></canvas></div></div>
+        <div class="card"><div class="card-head"><h3>Beliebteste Attacken</h3></div><div class="chart-box"><canvas id="chartAttacks"></canvas></div></div>
+      </div>
+
+      <div class="grid two-col">
+        <div class="card"><div class="card-head"><h3>Win-Rates</h3></div><div id="winrates"></div></div>
+        <div class="card">
+          <div class="card-head"><h3>Kampf-Modi</h3></div>
+          <div class="chart-box"><canvas id="chartKinds"></canvas></div>
+        </div>
+      </div>
+
+      <div class="grid two-col">
+        <div class="card"><div class="card-head"><h3>AFK-Timer</h3></div><div id="afkList"></div></div>
+        <div class="card"><div class="card-head"><h3>Laufende Sessions</h3></div><div id="battleSessions"></div></div>
+      </div>
+    </section>
+
+    <!-- ================= Tab: Analytics ================= -->
+    <section class="tab" id="tab-analytics">
+      <div class="grid two-col">
+        <div class="card"><div class="card-head"><h3>Events pro Tag</h3></div><div class="chart-box"><canvas id="chartPerDay"></canvas></div></div>
+        <div class="card"><div class="card-head"><h3>Aktivität nach Uhrzeit</h3></div><div class="chart-box"><canvas id="chartPerHour"></canvas></div></div>
+      </div>
+      <div class="grid two-col">
+        <div class="card"><div class="card-head"><h3>Meistgenutzte Commands</h3></div><div class="chart-box"><canvas id="chartCommands"></canvas></div></div>
+        <div class="card"><div class="card-head"><h3>Event-Typen</h3></div><div class="chart-box"><canvas id="chartEventTypes"></canvas></div></div>
+      </div>
+      <div class="grid three-col">
+        <div class="card"><div class="card-head"><h3>Top-Inviter</h3></div><div id="inviteTop"></div></div>
+        <div class="card"><div class="card-head"><h3>Offene Invites</h3></div><div id="invitePending"></div></div>
+        <div class="card"><div class="card-head"><h3>Admin-Dust-Audit</h3></div><div id="dustAudit"></div></div>
+      </div>
+    </section>
+
+    <!-- ================= Tab: Admin ================= -->
+    <section class="tab" id="tab-admin">
+      <div id="adminLocked" class="card login-card">
+        <h3>🔐 Admin-Login</h3>
+        <p class="muted" id="adminLockedMsg">Schreib-Aktionen erfordern das Dashboard-Passwort (Env: <code>DASHBOARD_PASSWORD</code>).</p>
+        <div class="log-controls">
+          <input type="password" id="adminPassword" placeholder="Passwort">
+          <button class="btn" id="adminLoginBtn">Einloggen</button>
+        </div>
+      </div>
+
+      <div id="adminPanel" style="display:none">
+        <div class="admin-bar">
+          <span class="ok-pill">✔ Eingeloggt</span>
+          <button class="btn small ghost" id="adminLogoutBtn">Logout</button>
+        </div>
+
+        <div class="grid two-col">
+          <div class="card">
+            <div class="card-head"><h3>💠 Dust / Units vergeben oder abziehen</h3></div>
+            <div class="form-grid">
+              <input type="text" id="curUserId" placeholder="User-ID">
+              <select id="curKind"><option value="dust">InfinityDust</option><option value="units">Units</option></select>
+              <input type="number" id="curAmount" placeholder="Betrag" min="1" value="1">
+              <select id="curAction"><option value="give">Geben</option><option value="remove">Abziehen</option></select>
+              <button class="btn accent" id="curSubmit">Ausführen</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>🃏 Karte geben / entfernen</h3></div>
+            <div class="form-grid">
+              <input type="text" id="cardUserId" placeholder="User-ID">
+              <input type="text" id="cardName" list="cardNames" placeholder="Kartenname">
+              <datalist id="cardNames"></datalist>
+              <input type="number" id="cardAmount" placeholder="Anzahl" min="1" value="1">
+              <select id="cardAction"><option value="give">Geben</option><option value="remove">Entfernen</option></select>
+              <button class="btn accent" id="cardSubmit">Ausführen</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid two-col">
+          <div class="card">
+            <div class="card-head"><h3>🏪 Trading-Post-Eintrag entfernen</h3></div>
+            <div class="form-grid">
+              <input type="text" id="tpCode" placeholder="Code des Eintrags">
+              <button class="btn danger" id="tpDelete">Eintrag löschen</button>
+            </div>
+            <div id="tpAdminList" class="stack"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>🧹 Aufräumen</h3></div>
+            <p class="muted">Entfernt beendete bzw. &gt; 24 h alte Einträge.</p>
+            <div class="form-grid">
+              <button class="btn" data-cleanup="sessions">Sessions aufräumen</button>
+              <button class="btn" data-cleanup="threads">Threads aufräumen</button>
+              <button class="btn" data-cleanup="afk">AFK-Timer aufräumen</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>⚙️ Guild-Einstellungen</h3>
+            <div class="log-controls">
+              <input type="text" id="flagGuildId" placeholder="Guild-ID (für neue Guild)">
+              <button class="btn small" id="guildReload">Neu laden</button>
+            </div>
+          </div>
+          <div id="guildFlags"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>📜 Dashboard-Audit-Log</h3></div>
+          <div id="auditLog"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- Bestätigungs-Dialog -->
+<div class="modal-backdrop" id="confirmModal">
+  <div class="modal">
+    <h3>Aktion bestätigen</h3>
+    <p id="confirmText"></p>
+    <div class="modal-actions">
+      <button class="btn ghost" id="confirmNo">Abbrechen</button>
+      <button class="btn danger" id="confirmYes">Ja, ausführen</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

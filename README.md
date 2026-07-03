@@ -65,6 +65,12 @@ KARTENBOT_DB_PATH=kartenbot.db
 
 Alpha und Beta werden nicht mehr über `.env` gesetzt, sondern pro Server im Entwicklerpanel ein- und ausgeschaltet. Neue Server starten mit Alpha aus.
 
+## Dashboard-Webseite
+
+Unter `website/` liegt ein separates Monitoring- & Admin-Dashboard (FastAPI, liest
+`kartenbot.db` read-only, Admin-Aktionen mit Passwort-Login und Audit-Log). Es startet
+unabhängig vom Bot — Anleitung, Docker-Setup und Env-Variablen: siehe `website/README.md`.
+
 ## Wichtige Befehle
 
 - `/anfang`

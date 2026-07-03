@@ -1,0 +1,38 @@
+name: Build & Push Dashboard Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - 'karten.py'
+      - 'items.py'
+      - 'namenconfig.py'
+      - 'services/card_variants.py'
+      - 'services/battle_types.py'
+      - 'services/__init__.py'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: website/Dockerfile
+          push: true
+          tags: ghcr.io/bastild/kartenbot-dashboard:latest

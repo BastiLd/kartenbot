@@ -3,6 +3,7 @@ __pycache__/
 .pycache_tmp/
 .env
 .env.*
+!website/.env.example
 env.env
 bot_token.txt
 token.txt
