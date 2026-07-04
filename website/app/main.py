@@ -12,7 +12,7 @@ import urllib.request
 from pathlib import Path
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import actions, auth, config, names, queries
@@ -235,7 +235,11 @@ def api_audit(limit: int = Query(100, ge=1, le=500)):
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    # Cache-Busting: Assets bekommen die Version als Query-Parameter, die
+    # Startseite selbst wird nie gecacht — Browser laden nach jedem Update
+    # garantiert das neue Frontend (statt tagelang altes JS/CSS zu zeigen).
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8").replace("__ASSET_V__", VERSION)
+    return HTMLResponse(html, headers={"Cache-Control": "no-store, must-revalidate"})
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

@@ -11,7 +11,51 @@ const state = {
   showDone: {},                   // Toggle-Zustand "abgeschlossene anzeigen" je Liste
   detailUser: null,               // aktuell analysierter User im Ultra-Detail-Tab
   loading: false,
+  openInfo: new Set(),            // aufgeklappte Erklärungs-Panels (überleben Auto-Refresh)
 };
+
+/* Glossar: erklärt Typen & Status in den aufklappbaren Info-Panels */
+const KIND_INFO = {
+  fight_pvp: "⚔️ PvP-Kampf — Spieler gegen Spieler",
+  fight_bot: "🤖 Bot-Kampf — Spieler gegen den Bot",
+  mission: "🗺️ Mission — PvE-Missions-Durchlauf",
+  fight: "⚔️ Kampf-Thread — vom Bot verwalteter Discord-Thread für einen Kampf",
+  challenge: "🤝 Herausforderung — wartet auf Annahme durch den Gegner",
+};
+const STATUS_INFO = {
+  active: "läuft gerade",
+  running: "läuft gerade",
+  pending: "wartet auf Start bzw. Annahme",
+  completed: "normal abgeschlossen",
+  failed: "mit Fehler beendet",
+  cancelled: "abgebrochen",
+  canceled: "abgebrochen",
+  declined: "abgelehnt",
+  deleted: "gelöscht",
+  archived: "archiviert",
+};
+const kindText = (k) => KIND_INFO[k] || `Typ „${esc(k || "?")}“`;
+const statusText = (s) => `Status „${esc(s || "?")}“ — ${STATUS_INFO[String(s || "").toLowerCase()] || "unbekannter Status"}`;
+
+/* Klickbarer Listeneintrag mit aufklappbarem Erklärungs-Panel */
+function infoRow(key, main, info, actionBtn = "") {
+  const open = state.openInfo.has(key);
+  return `<div class="stack-item mono clickable-item${open ? " open" : ""}" data-info-key="${esc(key)}">
+    <div class="row-line"><span>${main}</span><span class="row-actions">${actionBtn}<span class="chev">▸</span></span></div>
+    <div class="item-info">${info}</div>
+  </div>`;
+}
+
+function copyText(t) {
+  const done = () => toast(`📋 Kopiert: ${t}`);
+  if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(t).then(done).catch(() => {}); return; }
+  const ta = document.createElement("textarea");
+  ta.value = t; ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand("copy"); done(); } catch { toast("Kopieren nicht möglich", true); }
+  ta.remove();
+}
+const copyBtn = (id, label) => `<button class="btn small ghost" data-copy="${esc(id)}">📋 ${esc(label)}</button>`;
 
 const TAB_TITLES = {
   health: "Health & Logs",
@@ -284,12 +328,21 @@ function tableHTML(headers, rows) {
 
 function sessionItem(s, withAction) {
   const btn = withAction ? `<button class="mini-btn" data-end-session="${s.session_id}" title="Session als beendet markieren">✕</button>` : "";
-  return `<div class="stack-item mono row"><span>Session #${s.session_id} · ${esc(s.kind || "?")} · ${statusBadge(s.status)}${s.guild_id ? ` · ${guildLabel(s.guild_id)}` : ""} · ${agoSpan(s.updated_at)}</span>${btn}</div>`;
+  const main = `Session #${s.session_id} · ${esc(s.kind || "?")} · ${statusBadge(s.status)} · ${agoSpan(s.updated_at)}`;
+  const info = `${kindText(s.kind)}<br>${statusText(s.status)}<br>
+    ${s.guild_id ? `Server: ${guildLabel(s.guild_id)}<br>` : ""}Zuletzt aktualisiert: ${fmtEpoch(s.updated_at)}
+    <div class="info-actions">${copyBtn(s.session_id, "Session-ID kopieren")}</div>`;
+  return infoRow(`sess:${s.session_id}`, main, info, btn);
 }
 
 function threadItem(t, withAction) {
-  const btn = withAction ? `<button class="mini-btn" data-close-thread="${t.thread_id}" title="Thread schließen (Discord + DB)">🗑</button>` : "";
-  return `<div class="stack-item mono row"><span>Thread ${t.thread_id} · ${esc(t.kind || "?")} · ${statusBadge(t.status)}${t.guild_id ? ` · ${guildLabel(t.guild_id)}` : ""} · ${agoSpan(t.updated_at)}</span>${btn}</div>`;
+  const btn = withAction ? `<button class="mini-btn" data-close-thread="${t.thread_id}" title="Thread schließen (löscht ihn auch in Discord)">🗑</button>` : "";
+  const main = `Thread ${t.thread_id} · ${esc(t.kind || "?")} · ${statusBadge(t.status)} · ${agoSpan(t.updated_at)}`;
+  const info = `${kindText(t.kind)}<br>${statusText(t.status)}<br>
+    ${t.guild_id ? `Server: ${guildLabel(t.guild_id)}<br>` : ""}Zuletzt aktualisiert: ${fmtEpoch(t.updated_at)}<br>
+    <span class="muted">🗑 schließt den Thread — er wird auch in Discord gelöscht (Admin-Login nötig).</span>
+    <div class="info-actions">${copyBtn(t.thread_id, "Thread-ID kopieren")}</div>`;
+  return infoRow(`thr:${t.thread_id}`, main, info, btn);
 }
 
 /* Aktive Einträge immer zeigen; abgeschlossene hinter einem Aufklapp-Button */
@@ -308,9 +361,26 @@ function splitList(items, isActive, renderItem, toggleKey, activeActionOnly = tr
 function renderHealthLists(h) {
   const isActiveS = (s) => ACTIVE_STATUSES.has(String(s.status || "").toLowerCase());
   const isActiveT = (t) => String(t.status || "").toLowerCase() === "active";
-  const sessions = splitList(h.active_sessions || [], isActiveS, sessionItem, "healthSessions");
-  const threads = splitList(h.managed_threads || [], isActiveT, (t) => threadItem(t, true), "healthThreads", false);
-  setHTML("healthSessions", (sessions + threads) || '<div class="empty">Keine aktiven Sessions oder Threads</div>');
+  const allS = h.active_sessions || [], allT = h.managed_threads || [];
+  const sessions = splitList(allS, isActiveS, sessionItem, "healthSessions");
+  const threads = splitList(allT, isActiveT, (t) => threadItem(t, true), "healthThreads", false);
+  const head = (icon, name, act, total) =>
+    `<div class="list-sep">${icon} ${name} <span class="muted">— ${fmt(act)} aktiv / ${fmt(total)} gesamt</span></div>`;
+  setHTML("healthSessions",
+    ((allS.length ? head("🗂", "Sessions", allS.filter(isActiveS).length, allS.length) + sessions : "")
+     + (allT.length ? head("🧵", "Threads", allT.filter(isActiveT).length, allT.length) + threads : ""))
+    || '<div class="empty">Keine aktiven Sessions oder Threads</div>');
+  applySessionFilter();
+}
+
+/* Client-seitiger Textfilter über die Sessions/Threads-Liste */
+function applySessionFilter() {
+  const el = $("sessionFilter");
+  if (!el) return;
+  const q = el.value.trim().toLowerCase();
+  document.querySelectorAll("#healthSessions .stack-item").forEach((item) => {
+    item.style.display = !q || item.textContent.toLowerCase().includes(q) ? "" : "none";
+  });
 }
 
 async function loadHealth() {
@@ -443,7 +513,11 @@ async function loadBattles() {
     (b.winrates || []).map((w) => [esc(w.hero), fmt(w.wins), fmt(w.losses), `<b>${w.winrate}%</b>`])));
 
   setHTML("afkList", (b.afk_timers || []).length
-    ? b.afk_timers.map((t) => `<div class="stack-item mono">${esc(t.kind)} · ${esc(t.battle_id)} · Runde ${t.round_number}${t.active_player_id ? ` · am Zug: ${userLabel(t.active_player_id)}` : ""} · ${agoSpan(t.last_action_at)}</div>`).join("")
+    ? b.afk_timers.map((t) => infoRow(`afk:${t.battle_id}`,
+        `${esc(t.kind)} · ${esc(t.battle_id)} · Runde ${t.round_number}${t.active_player_id ? ` · am Zug: ${userLabel(t.active_player_id)}` : ""} · ${agoSpan(t.last_action_at)}`,
+        `⏱ AFK-Timer: überwacht Inaktivität in einem laufenden Kampf — reagiert der aktive Spieler zu lange nicht, greift der Bot ein.<br>
+         ${kindText(t.kind)}<br>Kampf-ID: ${esc(t.battle_id)} · Runde ${t.round_number}<br>
+         ${t.active_player_id ? `Am Zug: ${userLabel(t.active_player_id)}<br>` : ""}Letzte Aktion: ${fmtEpoch(t.last_action_at)}`)).join("")
     : '<div class="empty">Keine AFK-Timer</div>');
 
   const isActiveS = (s) => ACTIVE_STATUSES.has(String(s.status || "").toLowerCase());
@@ -464,11 +538,15 @@ async function loadAnalytics() {
   barList("inviteTop", a.invite_top, "user_id", "completed", (r) => userLabel(r.user_id));
 
   setHTML("invitePending", (a.invite_pending || []).length
-    ? a.invite_pending.map((i) => `<div class="stack-item mono">#${i.id} · ${userLabel(i.inviter_id)} → ${userLabel(i.invitee_id)} · ${agoSpan(i.created_at)}</div>`).join("")
+    ? a.invite_pending.map((i) => infoRow(`inv:${i.id}`,
+        `#${i.id} · ${userLabel(i.inviter_id)} → ${userLabel(i.invitee_id)} · ${agoSpan(i.created_at)}`,
+        `📨 Offener Invite: ${userLabel(i.inviter_id)} hat ${userLabel(i.invitee_id)} eingeladen — zählt erst als „completed“, wenn der Eingeladene die Bedingungen erfüllt.<br>Erstellt: ${fmtEpoch(i.created_at)}`)).join("")
     : '<div class="empty">Keine offenen Invites</div>');
 
   setHTML("dustAudit", (a.dust_audit || []).length
-    ? a.dust_audit.map((d) => `<div class="stack-item mono">${esc(d.action)}/${esc(d.mode)} · ${userLabel(d.actor_id)} → ${userLabel(d.target_id)} · ${fmt(d.applied_amount)} · ${agoSpan(d.created_at)}</div>`).join("")
+    ? a.dust_audit.map((d) => infoRow(`da:${d.created_at}:${d.target_id}`,
+        `${esc(d.action)}/${esc(d.mode)} · ${userLabel(d.actor_id)} → ${userLabel(d.target_id)} · ${fmt(d.applied_amount)} · ${agoSpan(d.created_at)}`,
+        `💠 Admin-Dust-Buchung: ${userLabel(d.actor_id)} hat ${userLabel(d.target_id)} per „${esc(d.action)}“ (${esc(d.mode)}) <b>${fmt(d.applied_amount)}</b> InfinityDust ${d.action === "give" ? "gutgeschrieben" : "abgezogen"}.<br>Zeitpunkt: ${fmtEpoch(d.created_at)}`)).join("")
     : '<div class="empty">Keine Einträge</div>');
 }
 
@@ -531,12 +609,24 @@ function renderDetail(d) {
   barList("detailEventTypes", d.event_types, "label", "value");
 
   setHTML("detailFights", (d.fights || []).length
-    ? d.fights.map((f) => `<div class="stack-item mono ${f.won ? "win" : "loss"}">${f.won ? "🏆 Sieg" : "💀 Niederlage"} · ${esc(f.own_hero)} vs ${esc(f.opp_hero)} · gegen ${f.opponent_id === "0" ? "🤖 Bot" : userLabel(f.opponent_id)}${f.rounds ? ` · ${f.rounds} Runden` : ""} · ${esc(f.kind)} · ${agoSpan(f.created_at)}</div>`).join("")
+    ? d.fights.map((f, idx) => {
+        const cls = f.won ? "win" : "loss";
+        const opp = f.opponent_id === "0" ? "🤖 Bot" : userLabel(f.opponent_id);
+        return `<div class="stack-item mono clickable-item ${cls}${state.openInfo.has(`fx:${f.created_at}:${idx}`) ? " open" : ""}" data-info-key="fx:${f.created_at}:${idx}">
+          <div class="row-line"><span>${f.won ? "🏆 Sieg" : "💀 Niederlage"} · ${esc(f.own_hero)} vs ${esc(f.opp_hero)} · gegen ${opp} · ${agoSpan(f.created_at)}</span><span class="row-actions"><span class="chev">▸</span></span></div>
+          <div class="item-info">${kindText(f.kind)}<br>
+            Eigener Held: <b>${esc(f.own_hero)}</b> · Gegner-Held: <b>${esc(f.opp_hero)}</b> (${opp})<br>
+            ${f.rounds ? `Dauer: ${f.rounds} Runden · ` : ""}Zeitpunkt: ${fmtEpoch(f.created_at)}</div>
+        </div>`;
+      }).join("")
     : '<div class="empty">Keine Kämpfe aufgezeichnet</div>');
   $("detailFightsMeta").textContent = d.fights && d.fights.length ? `· ${d.fights.length} angezeigt` : "";
 
   setHTML("detailMissions", (d.missions || []).length
-    ? d.missions.map((m) => `<div class="stack-item mono">#${m.id}${m.name ? ` · ${esc(m.name)}` : ""} · ${statusBadge(m.status)}${m.guild_id !== "0" ? ` · ${guildLabel(m.guild_id)}` : ""} · <span title="${fmtEpoch(m.created_at)}">${fmtEpoch(m.created_at)}</span></div>`).join("")
+    ? d.missions.map((m) => infoRow(`mx:${m.id}`,
+        `#${m.id}${m.name ? ` · ${esc(m.name)}` : ""} · ${statusBadge(m.status)} · ${agoSpan(m.created_at)}`,
+        `🗺️ Missions-Anfrage #${m.id}${m.name ? ` — „${esc(m.name)}“` : ""}<br>${statusText(m.status)}<br>
+         ${m.guild_id !== "0" ? `Server: ${guildLabel(m.guild_id)}<br>` : ""}Gestartet: ${fmtEpoch(m.created_at)}`)).join("")
     : '<div class="empty">Keine Missionen aufgezeichnet</div>');
   $("detailMissionsMeta").textContent = d.missions && d.missions.length ? `· ${d.missions.length} angezeigt` : "";
 
@@ -741,6 +831,26 @@ async function closeThread(threadId) {
 
 /* ============================ Update-Check ============================ */
 
+/* Version des geladenen Frontends (aus dem ?v=-Parameter des Script-Tags).
+   Weicht sie von der Backend-Version ab, hat der Browser altes JS gecacht —
+   dann Banner zeigen statt stillschweigend die alte UI zu präsentieren. */
+function assetVersion() {
+  const s = document.querySelector('script[src*="app.js"]');
+  const m = s && /[?&]v=([^&]+)/.exec(s.getAttribute("src") || "");
+  return m ? m[1] : null;
+}
+
+function showReloadBanner(backendVersion) {
+  if ($("reloadBanner")) return;
+  const div = document.createElement("div");
+  div.id = "reloadBanner";
+  div.className = "reload-banner";
+  div.innerHTML = `🔄 Dein Browser zeigt eine veraltete Oberfläche (Server: v${esc(backendVersion)}) —
+    <button class="btn small accent" id="reloadNow">Jetzt neu laden</button>`;
+  document.body.appendChild(div);
+  $("reloadNow").addEventListener("click", () => location.reload(true));
+}
+
 let UPDATE_INFO = null;
 
 async function checkUpdate(force = false) {
@@ -848,6 +958,7 @@ async function init() {
     scheduleRefresh();
   });
   $("logReload").addEventListener("click", loadLogs);
+  $("sessionFilter").addEventListener("input", applySessionFilter);
   $("logSearch").addEventListener("keydown", (e) => e.key === "Enter" && loadLogs());
   $("logLevel").addEventListener("change", loadLogs);
   $("userLookupBtn").addEventListener("click", lookupUser);
@@ -913,6 +1024,17 @@ async function init() {
       analyzeUser(open.dataset.openDetail);
       return;
     }
+    const cp = e.target.closest("[data-copy]");
+    if (cp) { copyText(cp.dataset.copy); return; }
+    // Klick auf einen Listeneintrag: Erklärungs-Panel auf-/zuklappen
+    const item = e.target.closest("[data-info-key]");
+    if (item && !e.target.closest("button")) {
+      item.classList.toggle("open");
+      const key = item.dataset.infoKey;
+      if (item.classList.contains("open")) state.openInfo.add(key);
+      else state.openInfo.delete(key);
+      return;
+    }
     if (e.target.closest("#kpiErrors")) {
       $("logLevel").value = "ERROR,WARNING";
       loadLogs();
@@ -937,6 +1059,8 @@ async function init() {
       $("detailSearch").placeholder = "Discord User-ID … (BOT_TOKEN setzen für Namen)";
     }
     if (META.version) $("dashVersion").textContent = `· v${META.version}`;
+    const av = assetVersion();
+    if (av && META.version && av !== META.version) showReloadBanner(META.version);
   } catch { /* Meta optional */ }
 
   await loadHealth().catch(() => {});
