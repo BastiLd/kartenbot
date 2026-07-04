@@ -114,6 +114,20 @@ body {
   transition: transform .3s ease;
 }
 .icon-btn:hover { transform: rotate(180deg); border-color: var(--accent); }
+.icon-btn.loading { animation: spin .8s linear infinite; border-color: var(--accent); pointer-events: none; }
+@keyframes spin { from { transform: rotate(0) } to { transform: rotate(360deg) } }
+
+.last-updated { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Update-Badge in der Sidebar */
+.update-badge {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  background: rgba(251, 191, 36, .12); border: 1px solid rgba(251, 191, 36, .45);
+  color: var(--yellow); border-radius: 999px; padding: 8px 12px;
+  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  animation: pulse 2s infinite;
+}
+.update-badge:hover { background: rgba(251, 191, 36, .22); }
 
 /* ===== Tabs / Cards ===== */
 .tab { display: none; animation: fadeUp .3s ease; }
@@ -147,6 +161,16 @@ section > .card { margin-bottom: 16px; }
 .kpi-sub { font-size: 12px; color: var(--muted); }
 
 .chart-box { position: relative; height: 260px; }
+.chart-box.empty::after {
+  content: "Keine Daten im Zeitraum"; position: absolute; inset: 0;
+  display: grid; place-items: center; color: var(--muted); font-size: 13px;
+}
+.chart-box.empty canvas { visibility: hidden; }
+
+.scroll-list { max-height: 340px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 2px; }
+
+.kpi.clickable { cursor: pointer; }
+.kpi.clickable:hover { border-color: var(--accent); }
 
 .muted { color: var(--muted); font-size: 12px; font-weight: 400; }
 .empty { color: var(--muted); font-size: 13px; padding: 14px 4px; text-align: center; }
@@ -175,6 +199,47 @@ table.data tbody tr:hover { background: rgba(91, 140, 255, .06); }
   background: var(--panel-2); border: 1px solid var(--border);
   border-radius: 10px; padding: 10px 12px; font-size: 13px;
 }
+.stack-item.row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.stack-item.row > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.stack-item.win { border-left: 3px solid var(--green); }
+.stack-item.loss { border-left: 3px solid var(--red); }
+
+.mini-btn {
+  flex-shrink: 0; background: transparent; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 7px; width: 26px; height: 26px; cursor: pointer; font-size: 12px; line-height: 1;
+  transition: all .15s;
+}
+.mini-btn:hover { border-color: var(--red); color: var(--red); background: rgba(248,113,113,.1); }
+
+/* Status-Badges für Sessions/Threads/Requests */
+.st { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.st-active { background: rgba(52,211,153,.14); color: var(--green); }
+.st-done { background: rgba(143,160,194,.14); color: var(--muted); }
+.st-bad { background: rgba(248,113,113,.14); color: var(--red); }
+.st-warn { background: rgba(251,191,36,.14); color: var(--yellow); }
+
+.toggle-done {
+  background: none; border: 1px dashed var(--border); color: var(--muted);
+  border-radius: 10px; padding: 8px 12px; font: inherit; font-size: 12px;
+  cursor: pointer; text-align: center; transition: all .15s;
+}
+.toggle-done:hover { color: var(--text); border-color: var(--accent); }
+
+/* Spieler-Analyse Profil-Kopf */
+.profile-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.profile-avatar {
+  width: 54px; height: 54px; border-radius: 14px; display: grid; place-items: center;
+  font-size: 26px; background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  flex-shrink: 0;
+}
+.profile-name { font-size: 20px; font-weight: 800; }
+.profile-meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.profile-tags { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.tag {
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+  border-radius: 999px; padding: 5px 12px; font-size: 12px;
+}
+.tag b { color: var(--text); }
 
 /* ===== Logs ===== */
 .log-controls { display: flex; gap: 8px; flex-wrap: wrap; }

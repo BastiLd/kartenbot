@@ -9,20 +9,23 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from . import config
+
+TZ = ZoneInfo(config.TIMEZONE)
 
 _LINE_RE = re.compile(
     r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d{3} (?P<level>[A-Z]+) (?P<msg>.*)$"
 )
 
-# Marker, an denen ein Bot-(Neu)start erkennbar ist. discord.py loggt beim
-# Start u.a. "logging in using static token"; zusätzlich taucht die
-# davey/voice-Warnung bei jedem Start auf.
+# Marker, an denen ein echter Bot-(Neu)start erkennbar ist. WICHTIG: kein
+# generisches "shard id" — "Shard ID None has successfully RESUMED" ist nur
+# ein Gateway-Reconnect, KEIN Neustart (führte zu falscher Mini-Uptime).
 _STARTUP_MARKERS = (
     "logging in using static token",
     "davey is not installed",
-    "shard id",
+    "has sent the identify payload",
 )
 
 MAX_BYTES = 2 * 1024 * 1024  # nur die letzten 2 MB lesen — reicht für den Viewer
@@ -60,7 +63,10 @@ def parse_log(limit: int = 300, level: str | None = None, query: str | None = No
                 entries.append(current)
             ts_text = match.group("ts")
             try:
-                epoch = int(datetime.strptime(ts_text, "%Y-%m-%d %H:%M:%S").timestamp())
+                # Log-Zeitstempel sind lokale Bot-Zeit (DASHBOARD_TZ) — NICHT
+                # Container-Lokalzeit (UTC), sonst ist die Uptime um Stunden
+                # verschoben (negative Uptime-Anzeige).
+                epoch = int(datetime.strptime(ts_text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ).timestamp())
             except ValueError:
                 epoch = 0
             current = {
@@ -74,6 +80,19 @@ def parse_log(limit: int = 300, level: str | None = None, query: str | None = No
             current["detail"] += line + "\n"
     if current:
         entries.append(current)
+
+    # Auto-Kalibrierung: Die Datei-mtime entspricht (fast) exakt der Echtzeit
+    # des letzten Log-Eintrags. Weicht der geparste Zeitstempel davon ab,
+    # loggt der Bot in einer anderen Zeitzone als DASHBOARD_TZ — dann alle
+    # Epochen um den (auf 15 min gerundeten) Offset korrigieren. Verhindert
+    # negative/verschobene Uptime unabhängig von Host-Zeitzonen.
+    if entries and entries[-1]["epoch"]:
+        delta = int(path.stat().st_mtime) - entries[-1]["epoch"]
+        correction = round(delta / 900) * 900
+        if correction:
+            for entry in entries:
+                if entry["epoch"]:
+                    entry["epoch"] += correction
 
     counts: dict[str, int] = {}
     last_startup = None

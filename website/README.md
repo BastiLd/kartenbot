@@ -53,6 +53,18 @@ nicht nur den Tag-Namen. Falls ZimaOS nach einem Push nicht automatisch aktualis
 - Zur Kontrolle: die im Dashboard angezeigte Versionsnummer mit dem `website/VERSION`
   im aktuellsten `main`-Commit vergleichen.
 
+Das Dashboard prüft zusätzlich selbst alle 30 min gegen GitHub, ob eine neuere
+Version existiert — dann erscheint unten links ein gelber „⬆ Update verfügbar“-Badge
+mit einer Schritt-für-Schritt-Anleitung (auch per Klick auf die Versionsnummer).
+
+## Online-Status & Uptime
+
+Der Bot schreibt jede Minute einen Heartbeat in `bot_settings` (Keys
+`heartbeat_at`/`started_at`) — daraus liest das Dashboard präzisen Online-Status
+und Uptime. **Dafür muss der Bot mindestens auf dem Stand dieses Commits laufen**
+(Bot neu deployen!). Für ältere Bot-Versionen fällt das Dashboard auf die
+Log-Heuristik zurück (letzter Log-Eintrag/Analytics-Event < 15 min).
+
 ## Docker / ZimaOS
 
 ```bash
@@ -75,6 +87,7 @@ Der Container mountet `kartenbot.db` (+ WAL/SHM) read-write (für Admin-Aktionen
 | `DASHBOARD_SESSION_TTL` | nein (43200 s) | Login-Gültigkeit |
 | `DASHBOARD_HOST` / `DASHBOARD_PORT` | nein (127.0.0.1 / 8080) | Bind-Adresse |
 | `DASHBOARD_TZ` | nein (Europe/Vienna) | Zeitzone für Tages-/Stundenstatistik |
+| `DASHBOARD_UPDATE_URL` | nein | URL für den Update-Check (Default: `website/VERSION` auf GitHub main) |
 | `BOT_TOKEN` | nein | Discord-Bot-Token (nur lesend): zeigt echte User-/Gilden-Namen statt IDs; Namen werden in `dashboard_name_cache` in der DB gecacht und sind dann auch per Name suchbar. Lokal wird das Token automatisch aus der Projekt-`.env` bzw. `bot_token.txt` übernommen; im Docker/ZimaOS als Env-Variable setzen. Ohne Token bleiben IDs sichtbar. |
 
 ## Features

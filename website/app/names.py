@@ -82,18 +82,27 @@ def _load_cached(kind: str, ids: list[int]) -> dict[int, tuple[str, int]]:
     return {int(r["id"]): (r["name"], int(r["updated_at"])) for r in rows}
 
 
-def _discord_get(path: str) -> tuple[dict | None, int]:
+def discord_request(method: str, path: str) -> tuple[dict | None, int]:
+    """Roher Discord-API-Call mit dem Bot-Token. (None, 0) ohne Token/bei Netzfehler."""
+    if not config.BOT_TOKEN:
+        return None, 0
     req = urllib.request.Request(
         API_BASE + path,
+        method=method,
         headers={"Authorization": f"Bot {config.BOT_TOKEN}", "User-Agent": "KartenbotDashboard/1.0"},
     )
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as res:
-            return json.loads(res.read().decode("utf-8")), res.status
+            body = res.read()
+            return (json.loads(body.decode("utf-8")) if body else {}), res.status
     except urllib.error.HTTPError as exc:
         return None, exc.code
     except (urllib.error.URLError, TimeoutError, ValueError, OSError):
         return None, 0
+
+
+def _discord_get(path: str) -> tuple[dict | None, int]:
+    return discord_request("GET", path)
 
 
 def _fetch_name(kind: str, id_: int) -> tuple[str | None, int]:

@@ -66,15 +66,17 @@ def health_stats() -> dict:
     db_path = Path(config.DB_PATH)
     with read_connection() as con:
         active_sessions = fetch_all(
-            con, "SELECT session_id, kind, guild_id, status, updated_at FROM active_sessions ORDER BY updated_at DESC LIMIT 50"
+            con, "SELECT session_id, kind, guild_id, status, updated_at FROM active_sessions ORDER BY updated_at DESC LIMIT 100"
         )
         managed_threads = fetch_all(
-            con, "SELECT thread_id, guild_id, kind, status, updated_at FROM managed_threads ORDER BY updated_at DESC LIMIT 50"
+            con, "SELECT thread_id, guild_id, kind, status, updated_at FROM managed_threads ORDER BY updated_at DESC LIMIT 100"
         )
         open_fights = scalar(con, "SELECT COUNT(*) FROM fight_requests WHERE status = 'pending'")
         afk_timers = scalar(con, "SELECT COUNT(*) FROM afk_timers")
         total_events = scalar(con, "SELECT COUNT(*) FROM analytics_events")
         last_event = scalar(con, "SELECT MAX(created_at) FROM analytics_events", default=0)
+        heartbeat_raw = scalar(con, "SELECT value FROM bot_settings WHERE key = 'heartbeat_at'", default=None)
+        started_raw = scalar(con, "SELECT value FROM bot_settings WHERE key = 'started_at'", default=None)
 
     db_size = db_path.stat().st_size if db_path.exists() else 0
     for suffix in ("-wal", "-shm"):
@@ -82,14 +84,42 @@ def health_stats() -> dict:
         if side.exists():
             db_size += side.stat().st_size
 
+    def _to_int(raw) -> int | None:
+        try:
+            value = int(str(raw).strip())
+            return value if value > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    now = int(time.time())
+    heartbeat_at = _to_int(heartbeat_raw)
+    started_at = _to_int(started_raw)
+
+    # Online-Status: Der Bot-Heartbeat (jede Minute in bot_settings) ist die
+    # präzise Quelle. Fallback für alte Bot-Versionen ohne Heartbeat:
+    # Log-Heuristik + letztes Analytics-Event (15-min-Fenster).
+    if heartbeat_at:
+        online = (now - heartbeat_at) < 180
+        online_source = "heartbeat"
+    else:
+        online = bool(info["online_guess"]) or bool(last_event and now - int(last_event) < 900)
+        online_source = "log"
+
     uptime_seconds = None
-    if info["online_guess"] and info["last_startup_epoch"]:
-        uptime_seconds = int(time.time()) - info["last_startup_epoch"]
+    if online and online_source == "heartbeat" and started_at:
+        uptime_seconds = now - started_at
+    elif online and info["last_startup_epoch"]:
+        uptime_seconds = now - info["last_startup_epoch"]
+        if uptime_seconds < 0:
+            uptime_seconds = None
+    last_startup = started_at if (online_source == "heartbeat" and started_at) else info["last_startup_epoch"]
 
     return {
-        "online": info["online_guess"],
+        "online": online,
+        "online_source": online_source,
+        "heartbeat_at": heartbeat_at,
         "uptime_seconds": uptime_seconds,
-        "last_startup_epoch": info["last_startup_epoch"],
+        "last_startup_epoch": last_startup,
         "last_log_epoch": info["last_log_epoch"],
         "errors_24h": info["errors_24h"],
         "warnings_24h": info["warnings_24h"],
@@ -413,4 +443,172 @@ def user_detail(user_id: int) -> dict:
         "team": team,
         "daily": daily,
         "buffs": buffs,
+    }
+
+
+# ---------------------------------------------------- Ultra-Detail ----------
+
+def user_full(user_id: int) -> dict:
+    """Tiefenanalyse eines Spielers: alles, was die DB über ihn weiß."""
+    base = user_detail(user_id)
+    with read_connection() as con:
+        events = fetch_all(
+            con,
+            "SELECT created_at, event_type, guild_id, session_kind, command_name, "
+            "hero_name, attack_name, actor_user_id, target_user_id, payload_json "
+            "FROM analytics_events WHERE actor_user_id = ? OR target_user_id = ? "
+            "ORDER BY created_at DESC LIMIT 2000",
+            (user_id, user_id),
+        )
+        events_total = scalar(
+            con,
+            "SELECT COUNT(*) FROM analytics_events WHERE actor_user_id = ? OR target_user_id = ?",
+            (user_id, user_id),
+        )
+        first_seen = scalar(
+            con,
+            "SELECT MIN(created_at) FROM analytics_events WHERE actor_user_id = ? OR target_user_id = ?",
+            (user_id, user_id), default=None,
+        )
+        missions = fetch_all(
+            con,
+            "SELECT id, guild_id, status, created_at, mission_data FROM mission_requests "
+            "WHERE user_id = ? ORDER BY created_at DESC LIMIT 100",
+            (user_id,),
+        )
+        fight_reqs = fetch_all(
+            con,
+            "SELECT id, guild_id, challenger_id, challenged_id, challenger_card, status, created_at "
+            "FROM fight_requests WHERE challenger_id = ? OR challenged_id = ? "
+            "ORDER BY created_at DESC LIMIT 100",
+            (user_id, user_id),
+        )
+        invites_completed = scalar(
+            con, "SELECT completed_invites FROM invite_stats WHERE user_id = ?", (user_id,)
+        )
+        invite_history = fetch_all(
+            con,
+            "SELECT inviter_id, invitee_id, status, created_at FROM invite_history "
+            "WHERE inviter_id = ? OR invitee_id = ? ORDER BY created_at DESC LIMIT 50",
+            (user_id, user_id),
+        )
+        trading = fetch_all(
+            con,
+            "SELECT code, card_name, preis, timestamp FROM tradingpost "
+            "WHERE seller_id = ? ORDER BY timestamp DESC LIMIT 50",
+            (user_id,),
+        )
+        dust_audit = fetch_all(
+            con,
+            "SELECT actor_id, target_id, action, mode, applied_amount, created_at "
+            "FROM admin_dust_audit WHERE actor_id = ? OR target_id = ? "
+            "ORDER BY created_at DESC LIMIT 50",
+            (user_id, user_id),
+        )
+
+    commands: Counter[str] = Counter()
+    heroes: Counter[str] = Counter()
+    attacks: Counter[str] = Counter()
+    types: Counter[str] = Counter()
+    by_day: Counter[str] = Counter()
+    fights: list[dict] = []
+    wins = losses = 0
+    guilds_seen: set[int] = set()
+
+    for row in events:  # DESC — für Timeline unten wieder sortieren
+        types[row["event_type"]] += 1
+        if row["guild_id"]:
+            guilds_seen.add(int(row["guild_id"]))
+        if row["created_at"]:
+            by_day[_day_text(row["created_at"])] += 1
+        etype = row["event_type"]
+        is_actor = row["actor_user_id"] == user_id
+        if etype == "command_used" and is_actor and row["command_name"]:
+            commands[row["command_name"]] += 1
+        elif etype == "attack_used" and is_actor:
+            if row["hero_name"]:
+                heroes[row["hero_name"]] += 1
+            if row["hero_name"] and row["attack_name"]:
+                attacks[f"{row['hero_name']} — {row['attack_name']}"] += 1
+        elif etype == "fight_result":
+            payload = _payload(row["payload_json"])
+            won = int(payload.get("winner_id") or 0) == user_id or (is_actor and "winner_id" not in payload)
+            if won:
+                wins += 1
+            else:
+                losses += 1
+            own_hero = payload.get("winner_hero") if won else payload.get("loser_hero")
+            opp_hero = payload.get("loser_hero") if won else payload.get("winner_hero")
+            opp_id = payload.get("loser_id") if won else payload.get("winner_id")
+            fights.append({
+                "created_at": row["created_at"],
+                "won": won,
+                "own_hero": own_hero or "?",
+                "opp_hero": opp_hero or "?",
+                "opponent_id": str(opp_id or 0),
+                "rounds": payload.get("rounds"),
+                "kind": row["session_kind"] or "?",
+            })
+
+    total_fights = wins + losses
+    mission_rows = []
+    for m in missions:
+        name = None
+        data = _payload(m.get("mission_data"))
+        if data:
+            name = data.get("name") or data.get("mission") or data.get("title")
+        mission_rows.append({
+            "id": m["id"],
+            "guild_id": str(m["guild_id"] or 0),
+            "status": m["status"],
+            "created_at": m["created_at"],
+            "name": name,
+        })
+
+    # Timeline aufsteigend, nur die letzten 60 Tage mit Daten
+    timeline = [{"label": day, "value": count} for day, count in sorted(by_day.items())][-60:]
+
+    return {
+        **base,
+        "events_total": events_total,
+        "events_fetched": len(events),
+        "first_seen": first_seen,
+        "last_seen": events[0]["created_at"] if events else None,
+        "timeline": timeline,
+        "top_commands": [{"label": k, "value": v} for k, v in commands.most_common(15)],
+        "top_heroes": [{"label": k, "value": v} for k, v in heroes.most_common(10)],
+        "top_attacks": [{"label": k, "value": v} for k, v in attacks.most_common(10)],
+        "event_types": [{"label": k, "value": v} for k, v in types.most_common(15)],
+        "fights": fights[:100],
+        "wins": wins,
+        "losses": losses,
+        "winrate": round(100 * wins / total_fights, 1) if total_fights else None,
+        "missions": mission_rows,
+        "mission_count": len(missions),
+        "fight_requests": [
+            {**r, "challenger_id": str(r["challenger_id"] or 0), "challenged_id": str(r["challenged_id"] or 0)}
+            for r in fight_reqs
+        ],
+        "invites_completed": invites_completed or 0,
+        "invite_history": [
+            {**r, "inviter_id": str(r["inviter_id"]), "invitee_id": str(r["invitee_id"])}
+            for r in invite_history
+        ],
+        "trading": trading,
+        "dust_audit": [
+            {**r, "actor_id": str(r["actor_id"]), "target_id": str(r["target_id"])} for r in dust_audit
+        ],
+        "guilds_seen": [str(g) for g in sorted(guilds_seen)],
+        "recent_events": [
+            {
+                "created_at": r["created_at"],
+                "event_type": r["event_type"],
+                "command_name": r["command_name"],
+                "hero_name": r["hero_name"],
+                "attack_name": r["attack_name"],
+                "session_kind": r["session_kind"],
+                "guild_id": str(r["guild_id"] or 0),
+            }
+            for r in events[:150]
+        ],
     }

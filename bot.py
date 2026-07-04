@@ -2584,9 +2584,40 @@ async def on_ready():
     global _afk_loop_task
     if _afk_loop_task is None or _afk_loop_task.done():
         _afk_loop_task = asyncio.create_task(afk_tracker_loop())
+    global _heartbeat_task
+    if _heartbeat_task is None or _heartbeat_task.done():
+        _heartbeat_task = asyncio.create_task(heartbeat_loop())
 
 
 _afk_loop_task: "asyncio.Task | None" = None
+_heartbeat_task: "asyncio.Task | None" = None
+_process_started_at = int(time.time())
+
+
+async def heartbeat_loop() -> None:
+    """Schreibt jede Minute Heartbeat + Prozessstart in bot_settings.
+
+    Das Dashboard (website/) liest die Keys ``heartbeat_at`` und ``started_at``
+    für einen präzisen Online-Status und die Uptime — die Log-Heuristik dort
+    ist nur noch Fallback."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            async with db_context() as db:
+                await db.execute(
+                    "INSERT INTO bot_settings (key, value) VALUES ('heartbeat_at', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (str(int(time.time())),),
+                )
+                await db.execute(
+                    "INSERT INTO bot_settings (key, value) VALUES ('started_at', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (str(_process_started_at),),
+                )
+                await db.commit()
+        except Exception:
+            logging.exception("Heartbeat-Schreiben fehlgeschlagen")
+        await asyncio.sleep(60)
 
 
 async def afk_tracker_loop() -> None:

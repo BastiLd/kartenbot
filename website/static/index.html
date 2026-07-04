@@ -36,12 +36,16 @@
       <button class="nav-item" data-tab="analytics">
         <span class="nav-icon">📈</span> Commands &amp; Invites
       </button>
+      <button class="nav-item" data-tab="detail">
+        <span class="nav-icon">🔎</span> Spieler-Analyse
+      </button>
       <button class="nav-item" data-tab="admin">
         <span class="nav-icon">🛠️</span> Admin
       </button>
     </nav>
 
     <div class="sidebar-footer">
+      <button class="update-badge" id="updateBadge" style="display:none">⬆ Update verfügbar</button>
       <div class="status-pill" id="botStatusPill">
         <span class="dot" id="botStatusDot"></span>
         <span id="botStatusText">prüfe …</span>
@@ -61,6 +65,7 @@
     <header class="topbar">
       <h1 id="pageTitle">Health &amp; Logs</h1>
       <div class="topbar-right">
+        <span class="last-updated" id="lastUpdated" title="Zeitpunkt der letzten erfolgreichen Aktualisierung"></span>
         <div class="range-picker" id="rangePicker">
           <button data-range="today">Heute</button>
           <button data-range="7d" class="active">7 Tage</button>
@@ -197,6 +202,59 @@
       </div>
     </section>
 
+    <!-- ================= Tab: Spieler-Analyse (Ultra-Detail) ================= -->
+    <section class="tab" id="tab-detail">
+      <div class="card">
+        <div class="card-head"><h3>🔎 Spieler-Analyse</h3>
+          <div class="log-controls">
+            <input type="text" id="detailSearch" list="knownNames" placeholder="User-ID oder Name …">
+            <button class="btn small accent" id="detailSearchBtn">Analysieren</button>
+          </div>
+        </div>
+        <div id="detailHint" class="empty">User-ID oder Namen eingeben — zeigt ALLES, was die Datenbank über den Spieler weiß:
+          Missionen, Kämpfe, Commands, Aktivität, Invites, Trading, Karten, Buffs &amp; komplette Event-Historie.</div>
+      </div>
+
+      <div id="detailBody" style="display:none">
+        <div class="card" id="detailProfile"></div>
+
+        <div class="grid kpi-grid">
+          <div class="card kpi"><div class="kpi-label">Events</div><div class="kpi-value" id="dKpiEvents">–</div><div class="kpi-sub" id="dKpiEventsSub"></div></div>
+          <div class="card kpi"><div class="kpi-label">Kämpfe</div><div class="kpi-value" id="dKpiFights">–</div><div class="kpi-sub" id="dKpiWinrate"></div></div>
+          <div class="card kpi"><div class="kpi-label">Missionen</div><div class="kpi-value" id="dKpiMissions">–</div><div class="kpi-sub" id="dKpiMissionsSub"></div></div>
+          <div class="card kpi"><div class="kpi-label">InfinityDust</div><div class="kpi-value" id="dKpiDust">–</div><div class="kpi-sub" id="dKpiUnits"></div></div>
+          <div class="card kpi"><div class="kpi-label">Karten</div><div class="kpi-value" id="dKpiCards">–</div><div class="kpi-sub" id="dKpiCardsSub"></div></div>
+          <div class="card kpi"><div class="kpi-label">Invites</div><div class="kpi-value" id="dKpiInvites">–</div><div class="kpi-sub">geworben</div></div>
+        </div>
+
+        <div class="grid two-col">
+          <div class="card"><div class="card-head"><h3>Aktivität (Events pro Tag)</h3></div><div class="chart-box"><canvas id="chartUserActivity"></canvas></div></div>
+          <div class="card"><div class="card-head"><h3>Meistgenutzte Commands</h3></div><div id="detailCommands"></div></div>
+        </div>
+
+        <div class="grid two-col">
+          <div class="card"><div class="card-head"><h3>⚔️ Kampf-Historie <span class="muted" id="detailFightsMeta"></span></h3></div><div id="detailFights" class="scroll-list"></div></div>
+          <div class="card"><div class="card-head"><h3>🗺️ Missionen <span class="muted" id="detailMissionsMeta"></span></h3></div><div id="detailMissions" class="scroll-list"></div></div>
+        </div>
+
+        <div class="grid two-col">
+          <div class="card"><div class="card-head"><h3>Helden-Nutzung (Attacken)</h3></div><div id="detailHeroes"></div></div>
+          <div class="card"><div class="card-head"><h3>Event-Typen</h3></div><div id="detailEventTypes"></div></div>
+        </div>
+
+        <div class="grid three-col">
+          <div class="card"><div class="card-head"><h3>📨 Invites</h3></div><div id="detailInvites" class="scroll-list"></div></div>
+          <div class="card"><div class="card-head"><h3>🏪 Trading-Angebote</h3></div><div id="detailTrading" class="scroll-list"></div></div>
+          <div class="card"><div class="card-head"><h3>💠 Dust-Audit</h3></div><div id="detailDustAudit" class="scroll-list"></div></div>
+        </div>
+
+        <div class="grid two-col">
+          <div class="card"><div class="card-head"><h3>🃏 Karten, Team &amp; Buffs</h3></div><div id="detailInventory" class="scroll-list"></div></div>
+          <div class="card"><div class="card-head"><h3>🕘 Letzte Events <span class="muted" id="detailEventsMeta"></span></h3></div><div id="detailEvents" class="scroll-list"></div></div>
+        </div>
+      </div>
+    </section>
+
     <!-- ================= Tab: Admin ================= -->
     <section class="tab" id="tab-admin">
       <div id="adminLocked" class="card login-card">
@@ -290,6 +348,21 @@
     </div>
   </div>
 </div>
+
+<!-- Update-Dialog -->
+<div class="modal-backdrop" id="updateModal">
+  <div class="modal">
+    <h3>🔄 Dashboard-Update</h3>
+    <div id="updateModalBody"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="updateCheckNow">Jetzt prüfen</button>
+      <button class="btn" id="updateClose">Schließen</button>
+    </div>
+  </div>
+</div>
+
+<!-- Bekannte Namen (Autocomplete für alle Such-Felder) -->
+<datalist id="knownNames"></datalist>
 
 <script src="/static/app.js"></script>
 </body>

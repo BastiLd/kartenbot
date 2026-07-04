@@ -5,6 +5,10 @@ Start (aus dem Ordner website/):
 """
 from __future__ import annotations
 
+import os
+import re
+import time
+import urllib.request
 from pathlib import Path
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, Response
@@ -76,6 +80,11 @@ def api_user(user_id: int):
     return queries.user_detail(user_id)
 
 
+@app.get("/api/user/{user_id}/full")
+def api_user_full(user_id: int):
+    return queries.user_full(user_id)
+
+
 @app.get("/api/meta")
 def api_meta():
     return {
@@ -99,6 +108,37 @@ def api_names(payload: dict = Body(...)):
 @app.get("/api/names/search")
 def api_names_search(q: str = Query("", max_length=64)):
     return {"results": names.search(q)}
+
+
+# ------------------------------------------------------------ Update-Check --
+
+UPDATE_URL = os.getenv(
+    "DASHBOARD_UPDATE_URL",
+    "https://raw.githubusercontent.com/BastiLd/kartenbot/main/website/VERSION",
+)
+_update_cache: dict = {"at": 0.0, "latest": None}
+
+
+def _version_tuple(v: str | None) -> tuple:
+    return tuple(int(x) for x in re.findall(r"\d+", v or "")[:3])
+
+
+@app.get("/api/update-check")
+def api_update_check(force: bool = Query(False)):
+    now = time.time()
+    if force or now - _update_cache["at"] > 1800:
+        try:
+            with urllib.request.urlopen(UPDATE_URL, timeout=4) as res:
+                _update_cache["latest"] = res.read().decode("utf-8").strip()[:32]
+        except OSError:
+            _update_cache["latest"] = _update_cache.get("latest")
+        _update_cache["at"] = now
+    latest = _update_cache["latest"]
+    return {
+        "current": VERSION,
+        "latest": latest,
+        "update_available": bool(latest) and _version_tuple(latest) > _version_tuple(VERSION),
+    }
 
 
 # ------------------------------------------------------------------- Auth ---
@@ -171,6 +211,19 @@ def api_guild_flag(payload: dict = Body(...)):
 @app.post("/api/admin/cleanup", dependencies=[Depends(auth.require_admin)])
 def api_cleanup(payload: dict = Body(...)):
     return actions.cleanup(str(payload.get("what", "")))
+
+
+@app.post("/api/admin/session/end", dependencies=[Depends(auth.require_admin)])
+def api_session_end(payload: dict = Body(...)):
+    return actions.end_session(int(payload.get("session_id", 0)))
+
+
+@app.post("/api/admin/thread/close", dependencies=[Depends(auth.require_admin)])
+def api_thread_close(payload: dict = Body(...)):
+    return actions.close_thread(
+        thread_id=int(payload.get("thread_id", 0)),
+        delete_discord=bool(payload.get("delete_discord", False)),
+    )
 
 
 @app.get("/api/admin/audit", dependencies=[Depends(auth.require_admin)])

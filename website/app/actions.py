@@ -229,6 +229,53 @@ def cleanup(what: str) -> dict:
     return {"removed": removed}
 
 
+# ------------------------------------------------- Sessions & Threads -------
+
+def end_session(session_id: int) -> dict:
+    """Markiert eine Session als beendet (Bot ignoriert nicht-aktive Sessions)."""
+    session_id = int(session_id)
+    with write_connection() as con:
+        row = con.execute(
+            "SELECT status FROM active_sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        if not row:
+            raise DashboardDBError(f"Session #{session_id} nicht gefunden.")
+        con.execute(
+            "UPDATE active_sessions SET status = 'completed', updated_at = ? WHERE session_id = ?",
+            (int(time.time()), session_id),
+        )
+        _audit(con, "session_end", f"session:{session_id}", None, f"vorher={row['status']}")
+    return {"session_id": session_id, "status": "completed"}
+
+
+def close_thread(thread_id: int, delete_discord: bool) -> dict:
+    """Markiert einen verwalteten Thread als gelöscht; optional wird der
+    Thread auch wirklich in Discord gelöscht (braucht BOT_TOKEN + Rechte)."""
+    thread_id = int(thread_id)
+    discord_status = None
+    if delete_discord:
+        from .names import discord_request, enabled
+        if not enabled():
+            raise DashboardDBError("Kein BOT_TOKEN gesetzt — Discord-Löschen nicht möglich (nur DB-Markierung ohne Häkchen).")
+        _data, discord_status = discord_request("DELETE", f"/channels/{thread_id}")
+        # 404 = Thread existiert nicht mehr — DB trotzdem aufräumen
+        if discord_status not in (200, 204, 404):
+            raise DashboardDBError(f"Discord-Löschen fehlgeschlagen (HTTP {discord_status}) — Berechtigungen prüfen.")
+    with write_connection() as con:
+        con.execute(
+            "UPDATE managed_threads SET status = 'deleted', updated_at = ? WHERE thread_id = ?",
+            (int(time.time()), thread_id),
+        )
+        con.execute(
+            "UPDATE active_sessions SET status = 'completed', updated_at = ? WHERE thread_id = ? "
+            "AND COALESCE(status, '') IN ('active', 'running', 'pending')",
+            (int(time.time()), thread_id),
+        )
+        _audit(con, "thread_close", f"thread:{thread_id}", None,
+               f"discord={'ja (' + str(discord_status) + ')' if delete_discord else 'nein'}")
+    return {"thread_id": str(thread_id), "discord_status": discord_status}
+
+
 # ------------------------------------------------------------------ Audit ---
 
 def audit_log(limit: int = 100) -> list[dict]:
