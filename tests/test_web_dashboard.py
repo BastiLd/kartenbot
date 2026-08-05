@@ -229,6 +229,91 @@ def test_finalize_teilt_nie_durch_null():
 
 
 # --------------------------------------------------------------------------
+# Foren: haben selbst keinen Verlauf, nur ihre Beitraege
+# --------------------------------------------------------------------------
+def test_forumkanal_hat_wirklich_kein_history():
+    """Grundlage des Fehlers: discord.py bietet fuer Foren kein history() an.
+    Faellt dieser Test, hat sich die Bibliothek geaendert."""
+    assert not hasattr(discord.ForumChannel, "history")
+    assert hasattr(discord.TextChannel, "history")
+    assert hasattr(discord.Thread, "history")
+
+
+class _FakeForum(discord.ForumChannel):
+    # threads ist in discord.py eine schreibgeschuetzte Eigenschaft, deshalb
+    # wird sie hier ueberschrieben statt zugewiesen.
+    def __init__(self, threads, archiviert=()):
+        self.id = 42
+        self.name = "forum"
+        self._threads = list(threads)
+        self._archiviert = list(archiviert)
+
+    @property
+    def threads(self):
+        return list(self._threads)
+
+    def archived_threads(self, limit=None):
+        eintraege = self._archiviert
+
+        class _Iter:
+            def __aiter__(self_inner):
+                self_inner._i = iter(eintraege)
+                return self_inner
+
+            async def __anext__(self_inner):
+                try:
+                    return next(self_inner._i)
+                except StopIteration:
+                    raise StopAsyncIteration
+        return _Iter()
+
+
+def _lauf(coro):
+    import asyncio
+    return asyncio.run(coro)
+
+
+def test_forum_wird_in_seine_beitraege_aufgeloest():
+    forum = _FakeForum(threads=['laufend1', 'laufend2'], archiviert=['alt1'])
+    quellen = _lauf(history_scan._lesbare_quellen(forum))
+    # Das Forum selbst darf NICHT dabei sein - es hat keinen Verlauf.
+    assert forum not in quellen
+    assert quellen == ['laufend1', 'laufend2', 'alt1']
+
+
+def test_forum_ohne_zugriff_auf_archiv_liefert_wenigstens_die_laufenden():
+    class _Gesperrt(_FakeForum):
+        def archived_threads(self, limit=None):
+            class _Iter:
+                def __aiter__(self_inner): return self_inner
+                async def __anext__(self_inner):
+                    raise discord.Forbidden(_Antwort(403), "keine Rechte")
+            return _Iter()
+
+    forum = _Gesperrt(threads=['laufend1'])
+    assert _lauf(history_scan._lesbare_quellen(forum)) == ['laufend1']
+
+
+class _Antwort:
+    """Minimale Attrappe fuer die HTTP-Antwort, die discord.Forbidden erwartet."""
+    def __init__(self, status):
+        self.status = status
+        self.reason = "Forbidden"
+
+
+def test_textkanal_ist_selbst_die_quelle_und_nimmt_threads_mit():
+    kanal = SimpleNamespace(id=1, name="allgemein", threads=['thread-a', 'thread-b'])
+    quellen = _lauf(history_scan._lesbare_quellen(kanal))
+    assert quellen[0] is kanal
+    assert quellen[1:] == ['thread-a', 'thread-b']
+
+
+def test_textkanal_ohne_threads_funktioniert_auch():
+    kanal = SimpleNamespace(id=1, name="still")
+    assert _lauf(history_scan._lesbare_quellen(kanal)) == [kanal]
+
+
+# --------------------------------------------------------------------------
 # Rollen-Rangordnung
 # --------------------------------------------------------------------------
 class _Rolle:

@@ -197,33 +197,53 @@ async def scan_guild(guild: discord.Guild, channel_ids: list[str], range_key: st
         kanal_namen[str(kanal.id)] = kanal.name
         gelesen = 0
         try:
-            async for message in kanal.history(limit=max_per_channel or None, after=nach,
-                                               oldest_first=False):
-                if message.author.bot:
-                    continue
-                _absorb(message, pro_nutzer, antwort_netz, heatmap, muster, kanal)
-                kanal_zahlen[str(kanal.id)] += 1
-                nachrichten_gesamt += 1
-                gelesen += 1
-
-                # Häppchenweise: kurz Luft holen, damit der Bot bedienbar bleibt
-                # und Discords Anfragebremse nicht greift.
-                if gelesen % 100 == 0:
-                    if cancelled is not None and await cancelled():
-                        abgebrochen = True
-                        break
-                    if progress is not None:
-                        await progress(index - 1, len(kanaele),
-                                       f"{kanal.name}: {gelesen} Nachrichten")
-                    if pause:
-                        await asyncio.sleep(pause)
+            quellen = await _lesbare_quellen(kanal)
         except discord.Forbidden:
             uebersprungen.append({"channel_id": str(kanal.id), "name": kanal.name,
                                   "grund": "Discord hat den Zugriff verweigert."})
+            continue
         except discord.HTTPException as exc:
-            logging.warning("Verlauf von #%s nicht vollständig lesbar: %s", kanal.name, exc)
             uebersprungen.append({"channel_id": str(kanal.id), "name": kanal.name,
                                   "grund": f"Discord meldet: {exc}"})
+            continue
+
+        for quelle in quellen:
+            if abgebrochen:
+                break
+            try:
+                async for message in quelle.history(limit=max_per_channel or None, after=nach,
+                                                    oldest_first=False):
+                    if message.author.bot:
+                        continue
+                    _absorb(message, pro_nutzer, antwort_netz, heatmap, muster, kanal)
+                    kanal_zahlen[str(kanal.id)] += 1
+                    nachrichten_gesamt += 1
+                    gelesen += 1
+
+                    # Häppchenweise: kurz Luft holen, damit der Bot bedienbar bleibt
+                    # und Discords Anfragebremse nicht greift.
+                    if gelesen % 100 == 0:
+                        if cancelled is not None and await cancelled():
+                            abgebrochen = True
+                            break
+                        if progress is not None:
+                            await progress(index - 1, len(kanaele),
+                                           f"{kanal.name}: {gelesen} Nachrichten")
+                        if pause:
+                            await asyncio.sleep(pause)
+            except discord.Forbidden:
+                uebersprungen.append({"channel_id": str(kanal.id), "name": kanal.name,
+                                      "grund": "Discord hat den Zugriff verweigert."})
+            except discord.HTTPException as exc:
+                logging.warning("Verlauf von #%s nicht vollständig lesbar: %s", kanal.name, exc)
+                uebersprungen.append({"channel_id": str(kanal.id), "name": kanal.name,
+                                      "grund": f"Discord meldet: {exc}"})
+            except Exception as exc:  # noqa: BLE001
+                # Sicherheitsnetz: ein einzelner kaputter Kanal darf niemals den
+                # ganzen Lauf mitreissen — sonst waere alles bisher Gelesene weg.
+                logging.exception("Unerwarteter Fehler beim Lesen von #%s", kanal.name)
+                uebersprungen.append({"channel_id": str(kanal.id), "name": kanal.name,
+                                      "grund": f"Unerwarteter Fehler: {exc}"})
 
         if progress is not None:
             await progress(index, len(kanaele), f"{kanal.name} fertig")
@@ -263,6 +283,31 @@ async def scan_guild(guild: discord.Guild, channel_ids: list[str], range_key: st
     }
     return {"profile": profile, "zusammenfassung": zusammenfassung,
             "nachrichten": nachrichten_gesamt, "abgebrochen": abgebrochen}
+
+
+async def _lesbare_quellen(kanal) -> list:
+    """Welche Objekte lassen sich bei diesem Kanal wirklich auslesen?
+
+    Ein normaler Textkanal ist selbst die Quelle. Ein Forum dagegen hat gar
+    keinen eigenen Nachrichtenverlauf — seine Beitraege sind Threads. Wer das
+    uebersieht, laeuft in einen AttributeError, weil ForumChannel schlicht kein
+    history() besitzt.
+    """
+    if isinstance(kanal, discord.ForumChannel):
+        quellen = list(kanal.threads)                     # laufende Beiträge
+        try:
+            async for thread in kanal.archived_threads(limit=None):
+                quellen.append(thread)                    # abgelegte Beiträge
+        except (discord.Forbidden, discord.HTTPException):
+            pass                                          # dann eben nur die laufenden
+        return quellen
+
+    quellen = [kanal]
+    # Threads in einem Textkanal zaehlen mit — sonst fehlt ein guter Teil des
+    # Gespraechs, gerade auf lebendigen Servern.
+    for thread in getattr(kanal, "threads", []):
+        quellen.append(thread)
+    return quellen
 
 
 def _absorb(message: discord.Message, pro_nutzer: dict, antwort_netz: Counter,
