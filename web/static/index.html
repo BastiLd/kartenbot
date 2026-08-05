@@ -1,0 +1,128 @@
+<title>Kartenbot Web</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<link rel="stylesheet" href="/static/style.css?v=__VERSION__">
+
+<!-- ===================== Anmeldung ===================== -->
+<div id="gate" class="gate" hidden>
+  <form class="gate-box" id="gateForm" autocomplete="on">
+    <div class="gate-mark" aria-hidden="true">🃏</div>
+    <h1>Kartenbot Web</h1>
+    <p class="gate-sub" id="gateSub">Bitte melde dich an.</p>
+
+    <div id="gateStepPassword">
+      <label class="field">
+        <span>Passwort</span>
+        <input type="password" id="gatePassword" name="password" autocomplete="current-password"
+               required autofocus>
+      </label>
+      <button class="btn primary wide" type="submit" id="gateSubmit">Anmelden</button>
+    </div>
+
+    <div id="gateStepDiscord" hidden>
+      <p class="gate-note">Zweiter Schritt: Melde dich mit deinem Discord-Konto an.
+        Nur das eingetragene Besitzer-Konto kommt hier durch.</p>
+      <button class="btn primary wide" type="button" id="gateDiscord">Mit Discord anmelden</button>
+    </div>
+
+    <p class="gate-error" id="gateError" role="alert" hidden></p>
+    <p class="gate-tier" id="gateTier"></p>
+  </form>
+</div>
+
+<!-- ===================== Anwendung ===================== -->
+<div id="app" class="layout" hidden>
+
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">🃏</span>
+      <span class="brand-text">
+        <strong>Kartenbot</strong>
+        <small>Web v__VERSION__</small>
+      </span>
+      <button class="icon-btn only-narrow" id="menuClose" aria-label="Menü schließen">✕</button>
+    </div>
+
+    <button class="search-trigger" id="searchTrigger">
+      <span aria-hidden="true">🔎</span>
+      <span>Suchen …</span>
+      <kbd>Strg K</kbd>
+    </button>
+
+    <nav class="nav" id="nav" aria-label="Bereiche">
+      <button data-tab="uebersicht"  class="nav-item"><span aria-hidden="true">⚡</span> Übersicht</button>
+      <button data-tab="spieler"     class="nav-item"><span aria-hidden="true">👥</span> Spieler</button>
+      <button data-tab="karten"      class="nav-item"><span aria-hidden="true">🃏</span> Karten</button>
+      <button data-tab="statistik"   class="nav-item"><span aria-hidden="true">📈</span> Statistiken</button>
+      <button data-tab="rollen"      class="nav-item"><span aria-hidden="true">🛡</span> Rollen &amp; Mitglieder</button>
+      <button data-tab="analyse"     class="nav-item"><span aria-hidden="true">🔬</span> Server-Analyse</button>
+      <button data-tab="steuerung"   class="nav-item"><span aria-hidden="true">🎛</span> Bot-Steuerung</button>
+      <button data-tab="einstellungen" class="nav-item"><span aria-hidden="true">⚙</span> Einstellungen</button>
+    </nav>
+
+    <div class="side-foot">
+      <div class="pill" id="botState"><span class="dot"></span><span>verbinde …</span></div>
+      <div class="pill subtle" id="tierState" title="Aus welchem Netz du gerade zugreifst"></div>
+      <button class="link-btn" id="logout">Abmelden</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn only-narrow" id="menuOpen" aria-label="Menü öffnen">☰</button>
+      <div class="topbar-title">
+        <h1 id="pageTitle">Übersicht</h1>
+        <p id="pageHint" class="muted"></p>
+      </div>
+      <div class="topbar-tools">
+        <label class="select-wrap" id="guildWrap" hidden>
+          <span class="sr-only">Server</span>
+          <select id="guildSelect" title="Auf welchen Discord-Server bezieht sich diese Ansicht?"></select>
+        </label>
+        <button class="icon-btn" id="refresh" title="Neu laden" aria-label="Neu laden">⟳</button>
+      </div>
+    </header>
+
+    <main class="content" id="content" tabindex="-1">
+      <section class="tab" data-tab="uebersicht"></section>
+      <section class="tab" data-tab="spieler"></section>
+      <section class="tab" data-tab="karten"></section>
+      <section class="tab" data-tab="statistik"></section>
+      <section class="tab" data-tab="rollen"></section>
+      <section class="tab" data-tab="analyse"></section>
+      <section class="tab" data-tab="steuerung"></section>
+      <section class="tab" data-tab="einstellungen"></section>
+    </main>
+  </div>
+</div>
+
+<!-- ===================== Overlays ===================== -->
+<div class="palette" id="palette" hidden>
+  <div class="palette-back" data-close></div>
+  <div class="palette-box" role="dialog" aria-label="Suche">
+    <input id="paletteInput" placeholder="Nutzer, Karte, Einstellung oder Aktion suchen …"
+           autocomplete="off" spellcheck="false">
+    <div class="palette-results" id="paletteResults"></div>
+    <div class="palette-foot">
+      <span><kbd>↑</kbd><kbd>↓</kbd> wählen</span>
+      <span><kbd>Enter</kbd> öffnen</span>
+      <span><kbd>Esc</kbd> schließen</span>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal" hidden>
+  <div class="modal-back" data-close></div>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-head">
+      <h2 id="modalTitle"></h2>
+      <button class="icon-btn" data-close aria-label="Schließen">✕</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-foot" id="modalFoot"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script src="/static/app.js?v=__VERSION__"></script>
