@@ -2636,6 +2636,14 @@ async def web_job_loop() -> None:
     Gleiches Muster wie heartbeat_loop: kleine Portion Arbeit, dann schlafen.
     """
     await bot.wait_until_ready()
+    # Einmalig beim Start: Auftraege aufraeumen, die ein Neustart mitten in der
+    # Arbeit erwischt hat. Sonst blieben sie fuer immer auf "laeuft" stehen und
+    # die Website liesse fuer den Server nie wieder einen Scan zu.
+    try:
+        await web_jobs.reset_orphaned()
+    except Exception:
+        logging.exception("Aufraeumen haengengebliebener Web-Auftraege fehlgeschlagen")
+
     while not bot.is_closed():
         try:
             await _expire_temporary_roles()

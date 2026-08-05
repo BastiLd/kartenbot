@@ -144,6 +144,36 @@ async def claim_next() -> dict | None:
     return job
 
 
+async def reset_orphaned() -> int:
+    """Räumt Aufträge auf, die ein Neustart mitten in der Arbeit erwischt hat.
+
+    Aufträge werden ausschließlich vom Bot bearbeitet. Steht beim Start also
+    etwas auf "läuft", kann das nur ein abgebrochener Rest von vorher sein —
+    es gibt niemanden, der daran noch arbeitet.
+
+    Ohne dieses Aufräumen bliebe so ein Auftrag für immer auf "läuft" stehen.
+    Die Website liesse dann für diesen Server nie wieder einen neuen Scan zu,
+    weil sie denkt, es liefe schon einer.
+    """
+    await ensure_schema()
+    hinweis = ("Der Bot wurde neu gestartet, während dieser Auftrag lief. "
+               "Er wurde deshalb abgebrochen — du kannst ihn einfach neu starten.")
+    async with db_context() as db:
+        cursor = await db.execute(
+            "UPDATE web_jobs SET status = 'failed', error = ?, finished_at = ?, updated_at = ? "
+            "WHERE status = 'running'", (hinweis, _now(), _now()))
+        anzahl = cursor.rowcount or 0
+        # Angefangene Analyse-Läufe genauso schliessen, sonst zeigt die
+        # Oberfläche dauerhaft einen Lauf an, der nie zu Ende geht.
+        await db.execute(
+            "UPDATE scan_runs SET status = 'failed', finished_at = ?, error = ? "
+            "WHERE status = 'running'", (_now(), hinweis))
+        await db.commit()
+    if anzahl:
+        logging.info("%s haengengebliebene Web-Auftraege nach Neustart aufgeraeumt", anzahl)
+    return anzahl
+
+
 async def update_progress(job_id: int, progress: int, total: int | None = None,
                           stage: str | None = None) -> None:
     async with db_context() as db:
