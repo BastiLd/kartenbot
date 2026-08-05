@@ -1,0 +1,40 @@
+# Kartenbot Web — Backend fuer die Website.
+#
+# Starten (aus dem Projekt-Wurzelverzeichnis, nicht aus web/):
+#   docker compose -f web/docker-compose.yml up -d --build
+#
+# Danach in WebHafen eine Website anlegen und als API-Ziel eintragen:
+#   <IP-des-Servers>:8090
+# Dann laufen Oberflaeche und Backend unter einer Adresse.
+services:
+  kartenbot-web:
+    build:
+      context: ..
+      dockerfile: web/Dockerfile
+    container_name: kartenbot-web
+    restart: unless-stopped
+    ports:
+      # Nur im lokalen Netz veroeffentlichen. Nach aussen geht ausschliesslich
+      # der Port von WebHafen - dieser hier nicht.
+      - "8090:8090"
+    environment:
+      WEB_PASSWORD: ${WEB_PASSWORD:?Bitte WEB_PASSWORD in web/.env setzen}
+      WEB_SESSION_SECRET: ${WEB_SESSION_SECRET:-}
+      BOT_TOKEN: ${BOT_TOKEN:-}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:-}
+      WEB_OWNER_DISCORD_ID: ${WEB_OWNER_DISCORD_ID:-965593518745731152}
+      WEB_TRUSTED_LAN: ${WEB_TRUSTED_LAN:-127.0.0.0/8,::1/128,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12}
+      WEB_TRUSTED_VPN: ${WEB_TRUSTED_VPN:-100.64.0.0/10,fd7a:115c:a1e0::/48}
+      WEB_TZ: ${WEB_TZ:-Europe/Vienna}
+      OLLAMA_URL: ${OLLAMA_URL:-http://192.168.68.10:11434}
+    volumes:
+      # Die Datenbank des Bots. Muss beschreibbar sein - die Website bucht
+      # Karten und Waehrung genau wie der Bot selbst.
+      - ../kartenbot.db:/data/kartenbot.db
+      - ../kartenbot.db-wal:/data/kartenbot.db-wal
+      - ../kartenbot.db-shm:/data/kartenbot.db-shm
+      # Die Logdatei wird nur gelesen.
+      - ../bot.log:/data/bot.log:ro
+      # --- Auf ZimaOS stattdessen die echten Pfade eintragen, z. B.: ---
+      # - /DATA/AppData/kartenbot/kartenbot.db:/data/kartenbot.db
