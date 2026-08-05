@@ -197,6 +197,7 @@ from services.runtime_store import (
 )
 from services.stats_export import build_stats_workbook
 from services.card_grant import grant_cards_to_users
+from services import history_scan, role_manager, web_jobs
 from services.user_data import (
     add_exact_card_variant_once,
     add_card_buff,
@@ -2587,10 +2588,14 @@ async def on_ready():
     global _heartbeat_task
     if _heartbeat_task is None or _heartbeat_task.done():
         _heartbeat_task = asyncio.create_task(heartbeat_loop())
+    global _web_job_task
+    if _web_job_task is None or _web_job_task.done():
+        _web_job_task = asyncio.create_task(web_job_loop())
 
 
 _afk_loop_task: "asyncio.Task | None" = None
 _heartbeat_task: "asyncio.Task | None" = None
+_web_job_task: "asyncio.Task | None" = None
 _process_started_at = int(time.time())
 
 
@@ -2620,6 +2625,153 @@ async def heartbeat_loop() -> None:
         await asyncio.sleep(60)
 
 
+async def web_job_loop() -> None:
+    """Arbeitet Aufträge ab, die Kartenbot Web (web/) in ``web_jobs`` ablegt.
+
+    Alles, was Discord anfassen muss — Rollen vergeben, Verlauf auswerten —
+    läuft hier im Bot-Prozess. Damit gelten automatisch die Rechteprüfungen,
+    die Rangordnung der Rollen und die Wiederholungslogik von discord.py,
+    statt sie in der Website ein zweites Mal nachzubauen.
+
+    Gleiches Muster wie heartbeat_loop: kleine Portion Arbeit, dann schlafen.
+    """
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            await _expire_temporary_roles()
+            auftrag = await web_jobs.claim_next()
+            if auftrag is None:
+                await asyncio.sleep(3)
+                continue
+            logging.info("Web-Auftrag %s (%s) wird bearbeitet", auftrag["id"], auftrag["kind"])
+            try:
+                ergebnis = await _run_web_job(auftrag)
+                zustand = "cancelled" if ergebnis.get("abgebrochen") else "done"
+                await web_jobs.finish(auftrag["id"], zustand, result=ergebnis)
+            except Exception as exc:  # noqa: BLE001
+                logging.exception("Web-Auftrag %s fehlgeschlagen", auftrag["id"])
+                await web_jobs.finish(auftrag["id"], "failed", error=str(exc)[:1000])
+        except Exception:
+            logging.exception("Web-Auftrags-Schleife: unerwarteter Fehler")
+            await asyncio.sleep(10)
+
+
+async def _run_web_job(job: dict) -> dict:
+    """Führt einen einzelnen Auftrag aus und liefert das Ergebnis zurück."""
+    art = job["kind"]
+    nutzlast = job.get("payload") or {}
+    guild = bot.get_guild(int(job["guild_id"])) if job.get("guild_id") else None
+    if guild is None:
+        raise RuntimeError("Der Bot ist auf diesem Server nicht (mehr) Mitglied.")
+
+    async def fortschritt(erledigt, gesamt, stufe=None):
+        await web_jobs.update_progress(job["id"], erledigt, gesamt, stufe)
+
+    async def abgebrochen() -> bool:
+        return await web_jobs.is_cancelled(job["id"])
+
+    if art == "role.apply":
+        ergebnis = await role_manager.apply_changes(
+            guild, nutzlast.get("changes", []), nutzlast.get("action", "add"),
+            nutzlast.get("reason", "Über Kartenbot Web"),
+            progress=fortschritt, cancelled=abgebrochen)
+        await web_jobs.record_role_grants(
+            guild.id, nutzlast.get("action", "add"), ergebnis["gesetzt"],
+            job.get("requested_by"), job["id"], nutzlast.get("expires_at"))
+        return ergebnis
+
+    if art == "scan.history":
+        return await _run_history_scan(job, guild, nutzlast, fortschritt, abgebrochen)
+
+    if art == "member.modify":
+        if "nickname" in nutzlast:
+            return await role_manager.set_nickname(
+                guild, int(nutzlast["user_id"]), nutzlast.get("nickname"),
+                nutzlast.get("reason", "Über Kartenbot Web"))
+        bis = nutzlast.get("timeout_until")
+        ziel = datetime.fromisoformat(bis) if bis else None
+        ergebnis = await role_manager.set_timeout(
+            guild, int(nutzlast["user_id"]), ziel,
+            nutzlast.get("reason", "Über Kartenbot Web"))
+        await web_jobs.log_mod_event(
+            guild.id, nutzlast["user_id"], "timeout" if ziel else "timeout_aufgehoben",
+            actor_id=job.get("requested_by"), reason=nutzlast.get("reason"),
+            until_at=bis, source="web")
+        return ergebnis
+
+    if art in ("member.kick", "member.ban"):
+        member = guild.get_member(int(nutzlast["user_id"]))
+        if member is None:
+            raise RuntimeError("Diese Person ist nicht auf dem Server.")
+        grund = nutzlast.get("reason", "Über Kartenbot Web")[:400]
+        if art == "member.kick":
+            await member.kick(reason=grund)
+        else:
+            await member.ban(reason=grund,
+                             delete_message_seconds=int(nutzlast.get("delete_seconds", 0)))
+        await web_jobs.log_mod_event(guild.id, member.id, art.split(".")[1],
+                                     actor_id=job.get("requested_by"), reason=grund,
+                                     source="web")
+        return {"user_id": str(member.id), "name": member.display_name, "aktion": art}
+
+    if art == "guild.sync":
+        return role_manager.overview(guild)
+
+    raise RuntimeError(f"Diese Auftragsart kennt der Bot nicht: {art}")
+
+
+async def _run_history_scan(job: dict, guild, nutzlast: dict, fortschritt, abgebrochen) -> dict:
+    lauf_id = await web_jobs.start_scan_run(
+        guild.id, job["id"], nutzlast.get("range_key", "3m"), None,
+        nutzlast.get("channel_ids", []))
+    try:
+        ergebnis = await history_scan.scan_guild(
+            guild,
+            nutzlast.get("channel_ids", []),
+            nutzlast.get("range_key", "3m"),
+            badwords=nutzlast.get("badwords") or [],
+            pause_ms=int(nutzlast.get("chunk_pause_ms", 250)),
+            max_per_channel=int(nutzlast.get("max_messages_per_channel", 0)),
+            progress=fortschritt,
+            cancelled=abgebrochen,
+        )
+    except Exception as exc:  # noqa: BLE001
+        await web_jobs.finish_scan_run(lauf_id, "failed", error=str(exc)[:1000])
+        raise
+
+    await web_jobs.save_member_profiles(guild.id, lauf_id, ergebnis["profile"])
+    await web_jobs.finish_scan_run(
+        lauf_id, "cancelled" if ergebnis["abgebrochen"] else "done",
+        messages=ergebnis["nachrichten"], members=len(ergebnis["profile"]),
+        summary=ergebnis["zusammenfassung"])
+    # Die Einzelprofile stehen in der Datenbank — im Auftragsergebnis reicht
+    # die Zusammenfassung, sonst wird die Zeile unnötig groß.
+    return {"scan_run_id": lauf_id, "abgebrochen": ergebnis["abgebrochen"],
+            **ergebnis["zusammenfassung"]}
+
+
+async def _expire_temporary_roles() -> None:
+    """Nimmt Rollen wieder weg, deren Frist abgelaufen ist ("Rolle auf Zeit")."""
+    try:
+        faellig = await web_jobs.due_expirations()
+    except Exception:
+        logging.exception("Abgelaufene Rollen konnten nicht ermittelt werden")
+        return
+    for eintrag in faellig:
+        guild = bot.get_guild(int(eintrag["guild_id"]))
+        if guild is None:
+            await web_jobs.mark_undone(eintrag["id"])
+            continue
+        try:
+            await role_manager.apply_changes(
+                guild, [{"user_id": eintrag["user_id"], "role_id": eintrag["role_id"]}],
+                "remove", "Rolle auf Zeit — Frist abgelaufen")
+        except Exception:
+            logging.exception("Abgelaufene Rolle konnte nicht entfernt werden (%s)",
+                              eintrag["id"])
+        await web_jobs.mark_undone(eintrag["id"])
+
+
 async def afk_tracker_loop() -> None:
     """Lädt alle 5 Minuten alle aktiven AFK-Zustände und ruft ``tick`` auf (Req. 13.1-13.5)."""
     await bot.wait_until_ready()
@@ -2635,6 +2787,29 @@ async def afk_tracker_loop() -> None:
         except Exception:
             logging.exception("AFK-Tracker-Loop-Durchlauf fehlgeschlagen")
         await asyncio.sleep(300)
+
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    """Schreibt Auszeiten (Timeouts) mit, sobald sie gesetzt oder aufgehoben werden.
+
+    Discord selbst hebt sein Prüfprotokoll nur rund 45 Tage auf. Alles, was hier
+    ab jetzt festgehalten wird, bleibt dauerhaft nachvollziehbar — egal ob die
+    Auszeit über die Website, einen anderen Bot oder von Hand gesetzt wurde.
+    """
+    vorher = before.timed_out_until
+    nachher = after.timed_out_until
+    if vorher == nachher:
+        return
+    try:
+        if nachher is not None:
+            await web_jobs.log_mod_event(after.guild.id, after.id, "timeout",
+                                         until_at=nachher.isoformat(), source="live")
+        else:
+            await web_jobs.log_mod_event(after.guild.id, after.id, "timeout_aufgehoben",
+                                         source="live")
+    except Exception:
+        logging.exception("Auszeit-Änderung konnte nicht mitgeschrieben werden")
 
 
 @bot.event
