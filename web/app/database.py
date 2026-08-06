@@ -64,9 +64,33 @@ def write_connection():
             con.close()
 
 
+# Spalten, deren Inhalt eine Discord-ID ist. Sie muessen als Text zum Browser,
+# niemals als Zahl - siehe _ids_als_text().
+_ID_SPALTEN = ("user_id", "guild_id", "channel_id", "thread_id", "role_id",
+               "actor_id", "target_id", "actor_user_id", "target_user_id",
+               "message_id", "inviter_id", "invitee_id", "session_id")
+
+
+def _ids_als_text(zeile: dict) -> dict:
+    """Wandelt Discord-IDs in Text um, bevor sie den Browser erreichen.
+
+    Der Bot legt IDs als Zahl ab. JavaScript rechnet aber nur mit 53 Bit genau,
+    und eine Discord-ID braucht mehr. Aus 965593518745731152 wird im Browser
+    stillschweigend 965593518745731200 - eine falsche ID, mit der weder ein
+    Name gefunden noch eine Aktion ausgefuehrt werden kann.
+
+    Deshalb hier zentral: was nach einer ID aussieht, geht als Text raus.
+    """
+    for spalte in _ID_SPALTEN:
+        wert = zeile.get(spalte)
+        if isinstance(wert, int):
+            zeile[spalte] = str(wert)
+    return zeile
+
+
 def fetch_all(con: sqlite3.Connection, sql: str, params: tuple = ()) -> list[dict]:
     try:
-        return [dict(r) for r in con.execute(sql, params).fetchall()]
+        return [_ids_als_text(dict(r)) for r in con.execute(sql, params).fetchall()]
     except sqlite3.OperationalError as exc:
         msg = str(exc).lower()
         if "no such table" in msg or "no such column" in msg:

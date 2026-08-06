@@ -435,3 +435,48 @@ def test_zu_id_bei_leerer_eingabe():
     n = _namen_modul()
     assert asyncio.run(n.zu_id("")) is None
     assert asyncio.run(n.zu_id("   ")) is None
+
+
+# --------------------------------------------------------------------------
+# Discord-IDs muessen als Text zum Browser
+# --------------------------------------------------------------------------
+def _db_modul():
+    import importlib, sys, pathlib
+    import pytest
+    pytest.importorskip("httpx", reason="Web-Abhaengigkeiten nur im Web-Container")
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "web"))
+    return importlib.import_module("app.database")
+
+
+def test_javascript_kann_discord_ids_nicht_genau_darstellen():
+    """Die Grundlage des Fehlers - festgehalten, damit klar bleibt warum.
+
+    JavaScript rechnet nur mit 53 Bit genau. Eine Discord-ID braucht mehr,
+    also wuerde sie beim Einlesen stillschweigend gerundet.
+    """
+    discord_id = 965593518745731152
+    assert discord_id > 2 ** 53 - 1
+
+
+def test_ids_verlassen_die_datenbank_als_text():
+    db = _db_modul()
+    zeile = db._ids_als_text({"user_id": 965593518745731152, "wert": 48})
+    assert zeile["user_id"] == "965593518745731152"
+    assert isinstance(zeile["user_id"], str)
+    # Zahlen, die keine ID sind, bleiben Zahlen - sonst koennte man nicht
+    # mehr damit rechnen.
+    assert zeile["wert"] == 48
+
+
+def test_alle_id_spalten_werden_umgewandelt():
+    db = _db_modul()
+    zeile = db._ids_als_text({s: 965593518745731152 for s in db._ID_SPALTEN})
+    for spalte in db._ID_SPALTEN:
+        assert zeile[spalte] == "965593518745731152", f"{spalte} blieb eine Zahl"
+
+
+def test_umwandlung_laesst_text_und_leerwerte_in_ruhe():
+    db = _db_modul()
+    zeile = db._ids_als_text({"user_id": "schon-text", "guild_id": None})
+    assert zeile["user_id"] == "schon-text"
+    assert zeile["guild_id"] is None
