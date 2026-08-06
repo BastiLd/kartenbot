@@ -161,7 +161,7 @@ def player_detail(user_id: str | int) -> dict:
             row["tags"] = []
 
     return {
-        "user_id": uid,
+        "user_id": str(uid),
         "karten": karten,
         "karten_gesamt": sum(k["anzahl"] for k in karten),
         "karten_verschieden": len(karten),

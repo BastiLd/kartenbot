@@ -87,18 +87,26 @@ def adjust_currency(*, currency: str, user_id, amount: int, remove: bool,
                 (uid, applied),
             )
 
-        # Für Infinitydust führt der Bot ein eigenes Protokoll — dort mitschreiben,
-        # damit /dust-Auswertungen die Website-Buchungen ebenfalls sehen.
-        if currency == "infinitydust":
+        # Der Bot fuehrt ein eigenes Protokoll fuer Waehrungsbuchungen. Frueher
+        # stand dort nur Infinitydust - Units-Buchungen von der Website waren
+        # fuer die Auswertungen des Bots unsichtbar, und niemand konnte
+        # nachvollziehen, wo die Units herkamen. Jetzt beide.
+        #
+        # Die Spalte "mode" haelt fest, welche Waehrung gemeint war. Fuer
+        # Infinitydust bleibt es bei "web", damit bestehende Auswertungen des
+        # Bots unveraendert weiterlaufen.
+        if currency in ("infinitydust", "units"):
             con.execute(
                 "INSERT INTO admin_dust_audit (actor_id, target_id, guild_id, channel_id, "
                 "action, mode, requested_amount, applied_amount, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'web', ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (int(actor_id or 0), uid, int(guild_id or 0), 0,
-                 "remove" if remove else "give", wanted, applied, int(time.time())),
+                 "remove" if remove else "give",
+                 "web" if currency == "infinitydust" else "web-units",
+                 wanted, applied, int(time.time())),
             )
 
-    return {"waehrung": label, "user_id": uid, "vorher": before, "nachher": after,
+    return {"waehrung": label, "user_id": str(uid), "vorher": before, "nachher": after,
             "gewuenscht": wanted, "gebucht": applied,
             "hinweis": ("Es war weniger vorhanden als angegeben — es wurde auf 0 gesetzt."
                         if remove and applied < wanted else None)}
@@ -142,7 +150,7 @@ def adjust_card(*, user_id, card_name: str, amount: int, remove: bool) -> dict:
                 "ON CONFLICT(user_id, karten_name) DO UPDATE SET anzahl = anzahl + excluded.anzahl",
                 (uid, resolved, applied))
 
-    return {"user_id": uid, "karte": resolved, "vorher": before, "nachher": after,
+    return {"user_id": str(uid), "karte": resolved, "vorher": before, "nachher": after,
             "gewuenscht": wanted, "gebucht": applied,
             "hinweis": ("Es waren weniger vorhanden als angegeben." if remove and applied < wanted
                         else None)}
@@ -233,5 +241,5 @@ def delete_player(user_id) -> dict:
                 geloescht[table] = cursor.rowcount
             except Exception:                                       # noqa: BLE001
                 geloescht[table] = 0
-    return {"user_id": uid, "geloescht": geloescht,
+    return {"user_id": str(uid), "geloescht": geloescht,
             "gesamt": sum(v for v in geloescht.values() if v > 0)}

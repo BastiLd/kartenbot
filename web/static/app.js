@@ -265,7 +265,9 @@ const QUELLEN = {
 
 /* Ohne Eingabe die ganze Liste - der Pfeil soll ja zum Stoebern taugen. */
 function filtere(liste, text) {
-  const alle = liste || [];
+  // Eintraege ohne Namen waeren im Feld nur "undefined" - lieber gar nicht
+  // anbieten, als etwas Sinnloses anzubieten.
+  const alle = (liste || []).filter((e) => e && e.name);
   const k = (text || '').toLowerCase();
   if (!k) return alle.slice(0, 50);
   return alle.filter((e) => `${e.name} ${e.id || ''}`.toLowerCase().includes(k)).slice(0, 50);
@@ -707,7 +709,7 @@ function erfolgstext(was, antwort, entfernen) {
     ` (neuer Stand: ${num(antwort.nachher)}).`;
 }
 
-function bestenliste(titel, zeilen) {
+function bestenliste(titel, zeilen, leerText = 'Noch keine Daten.') {
   const max = Math.max(1, ...zeilen.map((z) => Number(z.wert) || 0));
   return `<div class="panel"><div class="panel-head"><h3>${esc(titel)}</h3></div>
     ${zeilen.length ? zeilen.slice(0, 12).map((z) => `
@@ -715,7 +717,7 @@ function bestenliste(titel, zeilen) {
         <span class="name">${person(z.user_id)}</span>
         <span class="val">${num(z.wert)}</span>
         <span class="track"><span class="fill" style="width:${(Number(z.wert) || 0) / max * 100}%"></span></span>
-      </div>`).join('') : leer('Noch keine Daten.')}
+      </div>`).join('') : leer(leerText)}
   </div>`;
 }
 
@@ -837,6 +839,9 @@ RENDER.statistik = async (ziel, options = {}) => {
           </div>`).join('') : leer('Noch keine Kämpfe ausgewertet.')}
       </div>
       ${liste('Meistbesessene Karten', d.top_karten, 'karten_name', 'anzahl')}
+      ${bestenliste('Wer wirbt am meisten', (d.top_einlader || []).map((e) => ({
+        user_id: e.user_id, wert: e.invited_count })),
+        'Noch hat niemand jemanden geworben.')}
     </div>
 
     <div class="panel">
@@ -890,7 +895,10 @@ RENDER.rollen = async (ziel) => {
   merkeRollen(rollen);
   setzeQuelle('rolle', rollen.map((r) => ({ id: r.id, name: r.name,
     unter: r.manageable ? '' : 'kann der Bot nicht setzen' })));
-  setzeQuelle('mitglied', mitglieder.map((m) => ({ id: m.id, name: m.name })));
+  setzeQuelle('mitglied', mitglieder.map((m) => {
+    const u = m.user || {};
+    return { id: u.id, name: m.nick || u.global_name || u.username || u.id };
+  }));
 
   ziel.innerHTML = `
     ${!rollenInfo.bot_may_manage_roles ? `<div class="notice bad" style="margin-bottom:20px">
