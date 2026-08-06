@@ -354,6 +354,12 @@ def api_karte_testlaeufe(name: str, limit: int = 5,
     return {"laeufe": queries.card_testruns(name, limit=min(max(limit, 1), 25))}
 
 
+@app.get("/api/mitschrift")
+def api_mitschrift(_: auth.Caller = Depends(auth.require_login)):
+    """Was die Zug-Mitschrift bisher gesammelt hat."""
+    return queries.mitschrift_zahlen()
+
+
 @app.get("/api/papierkorb")
 def api_papierkorb(_: auth.Caller = Depends(auth.require_login)):
     return {"eintraege": sicherung.liste(),

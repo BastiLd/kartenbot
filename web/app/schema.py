@@ -170,6 +170,33 @@ _TABLES = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_card_testruns_karte ON card_testruns(karten_name, id)",
+    # --- Zug-Mitschrift: die Lage im Moment jeder Entscheidung.
+    #     Geschrieben wird ausschliesslich vom Bot (services/move_log.py) und
+    #     nur, wenn der Schalter mitschrift.aktiv an ist. ---
+    """
+    CREATE TABLE IF NOT EXISTS battle_moves (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        erstellt_am    TEXT NOT NULL,
+        session_id     INTEGER,
+        kampf_art      TEXT NOT NULL DEFAULT '',
+        runde          INTEGER NOT NULL DEFAULT 0,
+        spieler_id     TEXT NOT NULL DEFAULT '',
+        ist_bot        INTEGER NOT NULL DEFAULT 0,
+        karte          TEXT NOT NULL DEFAULT '',
+        gegner_karte   TEXT NOT NULL DEFAULT '',
+        eigene_hp      INTEGER NOT NULL DEFAULT 0,
+        eigene_max_hp  INTEGER NOT NULL DEFAULT 0,
+        gegner_hp      INTEGER NOT NULL DEFAULT 0,
+        gegner_max_hp  INTEGER NOT NULL DEFAULT 0,
+        angriff_index  INTEGER NOT NULL DEFAULT -1,
+        angriff_name   TEXT NOT NULL DEFAULT '',
+        lage_json      TEXT NOT NULL DEFAULT '{}',
+        bedenkzeit_ms  INTEGER,
+        ausgang        TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_battle_moves_session ON battle_moves(session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_battle_moves_lernen ON battle_moves(karte, ausgang)",
     # --- Zwischenspeicher für Namen von Servern, Kanälen, Rollen, Mitgliedern ---
     """
     CREATE TABLE IF NOT EXISTS web_discord_cache (

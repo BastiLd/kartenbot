@@ -347,6 +347,33 @@ def card_testruns(karten_name: str | None = None, limit: int = 10) -> list[dict]
     return rows
 
 
+def mitschrift_zahlen() -> dict:
+    """Wie viel die Zug-Mitschrift schon gesammelt hat.
+
+    „Nichts wird still gesammelt": Die Einstellungsseite soll zeigen, was da
+    ist — und zwar bevor daraus je gelernt wird.
+    """
+    with read_connection() as con:
+        gesamt = fetch_one(
+            con, "SELECT COUNT(*) AS zuege, COUNT(DISTINCT session_id) AS kaempfe, "
+                 "SUM(CASE WHEN ausgang IS NOT NULL THEN 1 ELSE 0 END) AS verwertbar, "
+                 "SUM(CASE WHEN ist_bot = 1 THEN 1 ELSE 0 END) AS vom_bot, "
+                 "MIN(erstellt_am) AS seit FROM battle_moves") or {}
+        nach_art = fetch_all(
+            con, "SELECT kampf_art, COUNT(*) AS zuege FROM battle_moves "
+                 "GROUP BY kampf_art ORDER BY zuege DESC")
+    return {
+        "zuege": int(gesamt.get("zuege") or 0),
+        "kaempfe": int(gesamt.get("kaempfe") or 0),
+        # Nur Zuege aus zu Ende gespielten Kaempfen taugen zum Lernen - bei den
+        # anderen ist nicht bekannt, ob die Entscheidungen zum Sieg fuehrten.
+        "verwertbar": int(gesamt.get("verwertbar") or 0),
+        "vom_bot": int(gesamt.get("vom_bot") or 0),
+        "seit": gesamt.get("seit"),
+        "nach_art": nach_art,
+    }
+
+
 def role_history(guild_id: str, limit: int = 200) -> list[dict]:
     with read_connection() as con:
         return fetch_all(

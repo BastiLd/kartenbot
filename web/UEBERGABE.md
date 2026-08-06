@@ -66,7 +66,57 @@ brauchen 3, in `bot.py` oder `services/` brauchen 1.
   stark ist. (Iron-Man etwa: 10,9 % bestmöglich, 21,2 % mit Fehlern — er
   lebt davon, dass Gegner Fehler machen.)
 
-502 Tests grün: `.venv/Scripts/python.exe -m pytest -q`
+**Zug-Mitschrift** (Stufe 5, Schritt 6 — vorgezogen):
+
+- Bei jedem Zug wird festgehalten, wie die Lage war: Lebenspunkte beider
+  Seiten, aktive Effekte, Abklingzeiten, welche Angriffe zur Wahl standen,
+  die getroffene Wahl und die **Bedenkzeit**.
+- Gilt für alle drei Kampfarten: gegen Mitspieler, gegen den Bot (dessen
+  eigene Züge inklusive, markiert mit `ist_bot`) und Missionen.
+- **Voreingestellt aus.** Der Schalter steht in den Einstellungen unter
+  „Kämpfe"; darüber zeigt die Seite, wie viel schon zusammengekommen ist.
+
+532 Tests grün: `.venv/Scripts/python.exe -m pytest -q`
+
+### Wie die Zug-Mitschrift gebaut ist
+
+| Teil | Wo |
+|---|---|
+| Erfassen und Speichern | `services/move_log.py` |
+| Tabelle | `battle_moves` — Kennzahlen als Spalten, die Lage in `lage_json` |
+| Schalter | Einstellung `mitschrift.aktiv`, Voreinstellung aus |
+| Zähler | `/api/mitschrift`, angezeigt über dem Schalter |
+
+**Die Falle, die sonst Tage kostet:** `CombatRunner` wird **nur von der
+Simulation** benutzt, nicht vom echten Kampf. Wer dort mitschreibt, bekommt
+kein einziges echtes Spiel zu fassen. Im echten Spiel fällt ein Zug an drei
+Stellen in `bot.py`: `BattleView.execute_attack` (gegen Mitspieler und gegen
+den Bot), `execute_bot_attack` (der Zug des Bots) und
+`MissionBattleView.execute_attack`.
+
+**Warum in zwei Schritten** (`merke_lage` … `schreibe_gemerkten_zug`):
+Zwischen dem Klick und der Ausführung liegen Prüfungen, die den Zug noch
+ablehnen können — Abklingzeit, Sperre, erzwungene Landung. Wer beim Klick
+schreibt, sammelt Züge ein, die nie stattfanden. Deshalb wird erst gemerkt
+und nur geschrieben, wenn der Zug wirklich durch ist. Der Aufruf steht
+jeweils **vor** der Kampfende-Prüfung, sonst fehlte ausgerechnet der
+entscheidende letzte Zug.
+
+**Die Bedenkzeit** kommt aus einem Zeitstempel, den der Setter von
+`current_turn` in `BaseBattleView` setzt — deshalb ist das eine Property
+und kein einfaches Attribut. So musste keiner der vielen Zugwechsel
+angefasst werden. In Missionen bleibt `current_turn` allerdings durchgehend
+beim Spieler; dort zählt stattdessen die Zeit seit dem letzten
+mitgeschriebenen Zug.
+
+**Was bewusst nicht gespeichert wird**, weil es später ableitbar ist:
+Wiederholung nach einem Fehlschlag (steht im vorherigen Zug desselben
+Spielers) und ob die Karte kurz vorher geändert wurde (ergibt sich aus
+`erstellt_am` und `card_override_history`).
+
+**Bekannte Lücke:** Die Züge der Bosse in Missionen werden noch nicht
+mitgeschrieben — ihre Auswahl steckt in den Boss-Hooks und ist an jeder
+Stelle anders. Die Spielerzüge in Missionen sind vollständig da.
 
 ### Wie der Testlauf gebaut ist
 
@@ -89,37 +139,6 @@ belegt, dass dabei Zahl für Zahl dasselbe herauskommt wie bei
 ---
 
 ## Was als Nächstes ansteht
-
-### Zug-Mitschrift (als Nächstes gewünscht) — Vorarbeit ist gemacht
-
-Plan-Punkt 6. **Wichtig zu wissen, das kostet sonst Zeit:** `CombatRunner`
-wird **nur von der Simulation** benutzt, nicht vom echten Kampf. Wer dort
-mitschreibt, bekommt kein einziges echtes Spiel zu fassen.
-
-Im echten Spiel fällt ein Zug an genau drei Stellen in `bot.py`:
-
-| Stelle | Zeile | Was |
-|---|---|---|
-| `BattleView.execute_attack` | ~5138 | Mensch gegen Mensch und Mensch gegen Bot |
-| `BattleView.execute_bot_attack` | ~6419 | der Zug des Bots |
-| `MissionBattleView.execute_attack` | ~13377 | Missionen und Bosse |
-
-Alles Nötige liegt dort schon bereit: `player1_hp`/`player2_hp`,
-`active_effects`, `attack_cooldowns`, `round_counter`, `session_id`,
-`session_kind`, `current_turn` und die Karten. Der Aufruf gehört jeweils
-hinter `_safe_defer_interaction` — da steht die Lage vor dem Zug fest und
-der gewählte Angriff ist bekannt.
-
-**Die Bedenkzeit ist der einzige Knackpunkt.** Sie braucht einen
-Zeitstempel, wann jemand an die Reihe kam, und `current_turn` wird an
-vielen Stellen umgesetzt. Statt alle zu suchen: `current_turn` in
-`BaseBattleView` zu einer Property machen, deren Setter die Zeit merkt.
-Dann muss kein einziger Aufrufer angefasst werden — dasselbe Muster wie
-`player1_hp`, das es dort schon gibt.
-
-Der Rest ist risikoarm: eigene Tabelle, eigenes Modul unter `services/`,
-Aufruf in try/except, damit ein Fehler beim Mitschreiben niemals einen
-laufenden Kampf stört, und ein Schalter zum Abstellen.
 
 ### Schritt 4: Zweites KI-Modell für den Testlauf
 
@@ -199,6 +218,12 @@ in die Auftragsliste zeigt, woran es liegt.
 **Lange Shell-Zeichenketten mit Umlauten und Anführungszeichen** scheitern am
 Zitieren. Für größere Textblöcke die Datei-Werkzeuge nehmen, nicht `bash`
 mit Heredoc.
+
+**`Get-Content` + `Set-Content` zerstören Umlaute in Quelldateien.**
+PowerShell 5.1 liest ohne `-Encoding` in ANSI: Aus „für" wird „fÃ¼r", und
+`Set-Content -Encoding utf8` friert das mitsamt einem BOM ein. Quelldateien
+deshalb **nie** über die Shell umschreiben. Passiert es doch, ist der
+Rückweg: BOM abschneiden, als Windows-1252 kodieren, als UTF-8 lesen.
 
 ---
 

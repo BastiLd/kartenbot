@@ -2111,13 +2111,36 @@ function schalter(guild, flag, label, aktiv) {
 }
 
 /* ----------------------------------------------------------- Einstellungen */
+/* Was die Zug-Mitschrift bisher gesammelt hat.
+   Steht bewusst ueber dem Schalter: Wer ihn umlegt, soll vorher sehen, was
+   da ist - gesammelt wird nie still. */
+function mitschriftStand(m) {
+  if (!m) return '';
+  if (!m.zuege) {
+    return `<div class="notice" style="margin-bottom:16px">Noch nichts aufgezeichnet.
+      Solange der Schalter aus ist, wird auch nichts gesammelt.</div>`;
+  }
+  const arten = { fight_pvp: 'gegen Mitspieler', fight_bot: 'gegen den Bot', mission: 'Missionen' };
+  return `
+    <div class="notice ok" style="margin-bottom:16px">
+      <strong>${num(m.zuege)} Züge aus ${num(m.kaempfe)} Kämpfen</strong> aufgezeichnet${
+        m.seit ? `, seit ${esc(zeitpunkt(m.seit))}` : ''}.<br>
+      Davon zum Lernen brauchbar: <strong>${num(m.verwertbar)}</strong> —
+      nur Züge aus Kämpfen, die zu Ende gespielt wurden.
+      ${m.vom_bot ? `<br>${num(m.vom_bot)} davon sind Züge des Bots selbst.` : ''}
+      ${(m.nach_art || []).length ? `<br><span class="muted">${m.nach_art.map((a) =>
+        `${esc(arten[a.kampf_art] || a.kampf_art || 'unbekannt')}: ${num(a.zuege)}`).join(' · ')}</span>` : ''}
+    </div>`;
+}
+
 RENDER.einstellungen = async (ziel) => {
-  const [d, ki, modelle, test] = await Promise.all([
+  const [d, ki, modelle, test, mitschrift] = await Promise.all([
     api('/api/settings'),
     api('/api/ai/status').catch((e) => ({ ok: false, error: e.message })),
     // Nur fürs Auswahlfeld. Ist Ollama gerade weg, bleibt es eben ein Textfeld.
     api('/api/ai/models').then((m) => m.modelle).catch(() => null),
     api('/api/selbsttest').catch((e) => ({ pruefungen: [], fehler: e.message })),
+    api('/api/mitschrift').catch(() => null),
   ]);
   const gruppen = {};
   d.einstellungen.forEach((e) => { (gruppen[e.group] = gruppen[e.group] || []).push(e); });
@@ -2154,6 +2177,7 @@ RENDER.einstellungen = async (ziel) => {
     ${Object.entries(gruppen).map(([gruppe, felder]) => `
       <div class="panel">
         <div class="panel-head"><h3>${esc(gruppe)}</h3></div>
+        ${gruppe === 'Kämpfe' ? mitschriftStand(mitschrift) : ''}
         <div style="display:grid;gap:18px">
           ${felder.map((f) => feldHtml(f, modelle)).join('')}
         </div>

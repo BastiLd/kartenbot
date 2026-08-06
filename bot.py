@@ -197,7 +197,8 @@ from services.runtime_store import (
 )
 from services.stats_export import build_stats_workbook
 from services.card_grant import grant_cards_to_users
-from services import card_store, card_testrun, history_scan, role_manager, web_jobs
+from services import (card_store, card_testrun, history_scan, move_log,
+                      role_manager, web_jobs)
 from services.user_data import (
     add_exact_card_variant_once,
     add_card_buff,
@@ -3850,6 +3851,23 @@ class BaseBattleView(BattleMechanicsMixin, DurableView):
     Beide IDs sind generisch: PvP nutzt ``(player1_id, player2_id)``, PvE ``(user_id, 0)``.
     """
 
+    # Wer gerade am Zug ist. Bewusst eine Property und kein einfaches Attribut:
+    # Der Wert wird an einem Dutzend Stellen umgesetzt (Zugwechsel, Betaeubung,
+    # Wiederherstellung nach Neustart), und die Bedenkzeit fuer die
+    # Zug-Mitschrift braucht den Zeitpunkt, ab dem jemand dran ist. So faellt
+    # der Zeitstempel ueberall von selbst an, ohne dass ein einziger Aufrufer
+    # etwas davon wissen muss. Gleiches Muster wie player1_hp weiter unten.
+    @property
+    def current_turn(self) -> int:
+        return getattr(self, "_current_turn", 0)
+
+    @current_turn.setter
+    def current_turn(self, value: int) -> None:
+        vorher = getattr(self, "_current_turn", None)
+        self._current_turn = value
+        if vorher != value:
+            self._zug_begonnen_ts = time.monotonic()
+
     def _init_hp_and_card_maps(
         self,
         id_a: int,
@@ -5205,6 +5223,14 @@ class BattleView(BaseBattleView):
         effect_events: list[str] = []
         forced_landing_attack = self.resolve_forced_landing_if_due(self.current_turn, effect_events)
         is_forced_landing = forced_landing_attack is not None
+
+        # Zug-Mitschrift: Lage merken, solange sie noch die vor dem Zug ist.
+        # Geschrieben wird erst, wenn der Zug wirklich durchgeht - die
+        # Pruefungen unten koennen ihn noch ablehnen. Bei einer erzwungenen
+        # Landung gab es keine Wahl, das waere nichts zum Lernen.
+        if not is_forced_landing:
+            move_log.merke_lage(self, self.current_turn, attack_index)
+
         current_attacks = (
             self.player1_card.get("attacks", [])
             if self.current_turn == self.player1_id
@@ -6254,6 +6280,11 @@ class BattleView(BaseBattleView):
         if self.airborne_pending_landing.get(defender_id):
             self._consume_airborne_evade_marker(defender_id)
 
+        # Der Zug ist durch - jetzt darf er in die Mitschrift. Steht hier und
+        # nicht erst beim Zugwechsel, damit auch der entscheidende letzte Zug
+        # mitkommt: Nach einem Sieg wird unten abgebrochen, ohne zu wechseln.
+        await move_log.schreibe_gemerkten_zug(self)
+
         # Nach dem Log-Eintrag auf Kampfende prüfen, damit der finale Treffer immer im Log landet.
         if self.player1_hp <= 0 or self.player2_hp <= 0:
             if self.player2_hp <= 0:
@@ -6270,6 +6301,12 @@ class BattleView(BaseBattleView):
                 loser_id = self.player1_id
                 loser_user = _get_member_if_available(guild, self.player1_id)
                 loser_card = self.player1_card["name"]
+
+            # Erst mit dem Ausgang werden die mitgeschriebenen Zuege zum Lernen
+            # brauchbar - es geht ja darum, welche Entscheidungen zum Sieg
+            # gefuehrt haben.
+            await move_log.setze_ausgang(self.session_id, winner_id)
+
             if winner_user:
                 winner_mention = winner_user.mention
             else:
@@ -6470,6 +6507,10 @@ class BattleView(BaseBattleView):
             # Regelbasierte KI-Auswahl statt reinem Max-Schaden.
             attack_index = self._choose_bot_attack_index(attacks)
             attack = attacks[attack_index]
+            # Auch die Zuege des Bots werden mitgeschrieben, markiert mit
+            # ist_bot. Sie sind der Massstab, gegen den sich spaeter Gelerntes
+            # messen lassen muss - beim Lernen selbst kann man sie ausblenden.
+            move_log.merke_lage(self, 0, attack_index)
         base_damage = attack["damage"]
         damage_buff = 0
         attacker_hp = self._hp_for(0)
@@ -7186,6 +7227,10 @@ class BattleView(BaseBattleView):
                 current_cd = self.attack_cooldowns[0].get(landing_cd_index, 0)
                 self.attack_cooldowns[0][landing_cd_index] = max(current_cd, landing_cd_turns)
 
+        # Der Zug des Bots ist durch - vor der Kampfende-Pruefung, damit auch
+        # sein entscheidender letzter Zug in der Mitschrift landet.
+        await move_log.schreibe_gemerkten_zug(self)
+
         if self.player1_hp <= 0 or self.player2_hp <= 0:
             if self.player2_hp <= 0:
                 winner_id = self.player1_id
@@ -7201,6 +7246,9 @@ class BattleView(BaseBattleView):
                 loser_id = self.player1_id
                 loser_user = _get_member_if_available(message.guild, self.player1_id)
                 loser_card = self.player1_card["name"]
+
+            await move_log.setze_ausgang(self.session_id, winner_id)
+
             if winner_user:
                 winner_mention = winner_user.mention
             else:
@@ -13410,6 +13458,11 @@ class MissionBattleView(BaseBattleView):
         forced_landing_attack = self.resolve_forced_landing_if_due(self.user_id, effect_events)
         is_forced_landing = forced_landing_attack is not None
 
+        # Zug-Mitschrift wie im PvP: erst merken, geschrieben wird unten, wenn
+        # der Zug wirklich durchgeht.
+        if not is_forced_landing:
+            move_log.merke_lage(self, self.user_id, attack_index)
+
         regen_heal = self.apply_regen_tick(self.user_id)
         if regen_heal > 0:
             self._append_effect_event(effect_events, f"Regeneration heilt {regen_heal} HP.")
@@ -14213,6 +14266,13 @@ class MissionBattleView(BaseBattleView):
             if isinstance(landing_cd_index, int) and landing_cd_index >= 0 and landing_cd_turns > 0:
                 current_cd = self.user_attack_cooldowns.get(landing_cd_index, 0)
                 self.user_attack_cooldowns[landing_cd_index] = max(current_cd, landing_cd_turns)
+
+        # Der Zug ist durch - vor der Kampfende-Pruefung, damit auch der
+        # entscheidende letzte Zug mitkommt.
+        await move_log.schreibe_gemerkten_zug(self)
+        if self.bot_hp <= 0 or self.player_hp <= 0:
+            await move_log.setze_ausgang(self.session_id,
+                                         self.user_id if self.bot_hp <= 0 else 0)
 
         # Prüfen ob Kampf vorbei nach Spieler-Angriff
         if self.bot_hp <= 0:

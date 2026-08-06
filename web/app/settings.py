@@ -57,6 +57,14 @@ DEFINITIONS: dict[str, tuple] = {
         ",".join(config.TRUSTED_VPN), "text", "Zugang", "VPN-Bereiche (Tailscale)",
         "Von hier aus ist alles außer den kritischen Aktionen erlaubt.",
     ),
+    "mitschrift.aktiv": (
+        "0", "bool", "Kämpfe", "Züge mitschreiben",
+        "Aus = es wird nichts aufgezeichnet. An = der Bot hält bei jedem Zug fest, "
+        "wie die Lage war und wie lange jemand überlegt hat. Daraus lernt später "
+        "der Gegner. Am Spiel selbst ändert das nichts — es wird nur mitgeschrieben. "
+        "Gelernt wird nur aus Kämpfen ab dem Einschalten; je früher es an ist, "
+        "desto eher ist genug beisammen.",
+    ),
     "ui.theme": (
         "dark", "choice:dark,light,auto", "Darstellung", "Design",
         "Automatisch richtet sich nach der Einstellung deines Systems.",
