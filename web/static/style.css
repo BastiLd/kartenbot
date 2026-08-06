@@ -582,3 +582,66 @@ td.num, th.num { text-align: right; font-family: var(--mono); }
    Personen denselben Namen tragen. */
 .pfeld-treffer .pfeld-id { font-size: .74em; color: var(--muted); opacity: .8; }
 .pfeld-leer { padding: .7em .8em; color: var(--muted); font-size: .88em; }
+
+/* ------------------------------------------------------------- Empfaenger -- */
+/* Ausgewaehlte Personen als kleine Plaettchen. Man sieht auf einen Blick,
+   wen es trifft - und kann einzelne wieder wegnehmen. */
+.chips { display: flex; flex-wrap: wrap; gap: .5em; margin-top: .8em; }
+.chip {
+  display: inline-flex; align-items: center; gap: .45em;
+  padding: .3em .5em .3em .7em;
+  background: var(--panel-2, #182238);
+  border: 1px solid var(--border, #223052);
+  border-radius: 999px;
+  font-size: .88em;
+}
+.chip-weg {
+  background: none; border: 0; cursor: pointer;
+  color: var(--muted); font-size: 1.1em; line-height: 1;
+  padding: 0 .15em; border-radius: 50%;
+}
+.chip-weg:hover { color: var(--schlecht, #f87171); background: rgba(248, 113, 113, .15); }
+textarea { width: 100%; resize: vertical; }
+
+/* =========================================================== Handy-Ansicht ==
+   Die Seite ist fuer den grossen Bildschirm gebaut. Unterwegs stoeren vor
+   allem drei Dinge: Formulare in Spalten, breite Tabellen, und Bedienelemente,
+   die zu klein zum Treffen sind. Das wird hier gerade gerueckt. */
+@media (max-width: 700px) {
+  /* Formularzeilen untereinander statt nebeneinander gequetscht. */
+  .form-row { grid-template-columns: 1fr; gap: 14px; }
+  .grid.cols-2, .grid.cols-3 { grid-template-columns: 1fr; }
+
+  /* Alles, was man antippt, mindestens 44px hoch - darunter trifft man
+     mit dem Daumen daneben. */
+  .btn, input, select, textarea { min-height: 44px; }
+  .btn.sm { min-height: 38px; }
+  .pfeld-pfeil { width: 2.8em; }
+  .pfeld-treffer { padding: .7em .8em; }
+  .chip { padding: .45em .6em .45em .85em; }
+  .chip-weg { font-size: 1.3em; padding: 0 .25em; }
+
+  /* Knoepfe nebeneinander brechen um, statt aus dem Bild zu laufen. */
+  .form-actions { flex-wrap: wrap; }
+  .form-actions .btn { flex: 1 1 auto; }
+
+  /* Tabellen wandern lieber seitlich, als die Seite zu sprengen. */
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .table-wrap table { min-width: 520px; }
+
+  /* Die Kopfzeile darf umbrechen, sonst quetscht sie den Titel weg. */
+  .topbar { flex-wrap: wrap; row-gap: 10px; }
+  .select-wrap select { max-width: none; width: 100%; }
+
+  /* Bestenlisten: Balken unter den Namen, sonst bleibt fuer beides zu wenig. */
+  .bar-row { grid-template-columns: 1fr auto; row-gap: 4px; }
+  .bar-row .track { grid-column: 1 / -1; }
+
+  /* Dialoge fast bildschirmfuellend - ein zentriertes Kaestchen mit Rand
+     verschenkt auf einem Handy zu viel Platz. */
+  .modal-box { width: calc(100vw - 24px); max-height: calc(100vh - 24px); }
+
+  /* Meldungen von unten statt oben rechts - dort ist der Daumen. */
+  #toasts { left: 12px; right: 12px; top: auto; bottom: 12px; }
+  #toasts .toast { width: 100%; }
+}

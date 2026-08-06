@@ -580,8 +580,9 @@ RENDER.spieler = async (ziel) => {
       <div class="panel-head"><h2>Geben und nehmen</h2>
         <p class="muted">Wirkt sofort in der Datenbank des Bots — genau wie die Befehle im Discord.</p></div>
       <div class="form-row">
-        <label class="field"><span>Name oder Discord-ID</span>
-          ${personenFeld('aktUser')}</label>
+        <label class="field"><span>An wen</span>
+          ${personenFeld('aktUser')}
+          <span class="hint">Auswählen fügt zur Liste hinzu — es gehen auch mehrere.</span></label>
         <label class="field"><span>Was</span>
           <select id="aktWas">
             <option value="infinitydust">Infinitydust</option>
@@ -596,6 +597,16 @@ RENDER.spieler = async (ziel) => {
         <label class="field" id="aktMengeWrap"><span>Menge</span>
           <input id="aktMenge" type="number" min="1" value="1"></label>
       </div>
+      <div id="aktEmpfaenger" class="chips" hidden></div>
+      <details style="margin-top:10px">
+        <summary class="muted" style="cursor:pointer">Viele auf einmal — Liste einfügen</summary>
+        <div style="margin-top:10px">
+          <textarea id="aktListe" rows="4" placeholder="Eine ID oder ein Name je Zeile"></textarea>
+          <div class="form-actions" style="margin-top:8px">
+            <button class="btn sm" id="aktListeUebernehmen">Zur Liste hinzufügen</button>
+          </div>
+        </div>
+      </details>
       <div class="form-actions">
         <button class="btn primary" id="aktGeben">Geben</button>
         <button class="btn danger" id="aktNehmen">Wegnehmen</button>
@@ -646,11 +657,74 @@ RENDER.spieler = async (ziel) => {
     if (e.key === 'Enter' && (!liste || liste.hidden)) zeigeSpieler();
   });
 
+  /* Empfängerliste. Eine Aktion soll nicht nur eine Person treffen können —
+     wer zehn Leuten dasselbe geben will, soll es nicht zehnmal tippen. */
+  const empfaenger = [];
+  const zeichneEmpfaenger = () => {
+    const box = $('#aktEmpfaenger', ziel);
+    box.hidden = !empfaenger.length;
+    box.innerHTML = empfaenger.map((e, i) => `
+      <span class="chip">${esc(e.name || e.id)}
+        <button type="button" class="chip-weg" data-i="${i}"
+                aria-label="${esc(e.name || e.id)} entfernen">×</button></span>`).join('')
+      + (empfaenger.length > 1
+        ? `<button class="btn sm ghost" id="aktLeeren">alle ${empfaenger.length} entfernen</button>` : '');
+    $$('.chip-weg', box).forEach((b) => b.addEventListener('click', () => {
+      empfaenger.splice(Number(b.dataset.i), 1);
+      zeichneEmpfaenger();
+    }));
+    const leeren = $('#aktLeeren', box);
+    if (leeren) leeren.addEventListener('click', () => { empfaenger.length = 0; zeichneEmpfaenger(); });
+  };
+
+  const ergaenze = (id, name) => {
+    if (!id || empfaenger.some((e) => e.id === id)) return;   // keine Doppelten
+    empfaenger.push({ id, name: name || STATE.namen[id] || id });
+    zeichneEmpfaenger();
+  };
+
+  // Wer im Feld etwas auswählt, landet in der Liste - das Feld wird wieder leer.
+  const userFeld = $('#aktUser', ziel);
+  userFeld.addEventListener('change', () => {
+    const wert = personWert(userFeld);
+    if (!wert) return;
+    ergaenze(wert, userFeld.dataset.id ? userFeld.value : null);
+    userFeld.value = '';
+    delete userFeld.dataset.id;
+  });
+
+  $('#aktListeUebernehmen', ziel).addEventListener('click', async () => {
+    const zeilen = $('#aktListe', ziel).value.split('\n').map((z) => z.trim()).filter(Boolean);
+    if (!zeilen.length) return;
+    let unbekannt = 0;
+    for (const zeile of zeilen) {
+      if (/^\d+$/.test(zeile)) { ergaenze(zeile); continue; }
+      // Namen muessen erst zu einer ID werden - eindeutig oder gar nicht.
+      try {
+        const d = await api(`/api/names/search?q=${encodeURIComponent(zeile)}`);
+        const genau = d.treffer.filter((t) => t.name.toLowerCase() === zeile.toLowerCase());
+        const treffer = genau.length === 1 ? genau[0] : (d.treffer.length === 1 ? d.treffer[0] : null);
+        if (treffer) ergaenze(treffer.id, treffer.name); else unbekannt++;
+      } catch { unbekannt++; }
+    }
+    $('#aktListe', ziel).value = '';
+    if (unbekannt) {
+      toast(`${unbekannt} ${unbekannt === 1 ? 'Zeile war' : 'Zeilen waren'} nicht eindeutig `
+            + 'und wurde nicht übernommen. Dort hilft die Discord-ID.', 'bad');
+    }
+  });
+
   const fuehreAus = async (entfernen) => {
-    const user = personWert($('#aktUser', ziel));
+    // Was noch im Feld steht, aber nicht bestätigt wurde, zählt trotzdem —
+    // sonst wäre es überraschend, wenn nichts passiert.
+    const offen = personWert(userFeld);
+    if (offen) { ergaenze(offen); userFeld.value = ''; delete userFeld.dataset.id; }
+
+    const ziele = empfaenger.map((e) => e.id);
     const was = wasFeld.value;
     const menge = parseInt($('#aktMenge', ziel).value, 10) || 1;
-    if (!user) return toast('Bitte zuerst eine Discord-ID eingeben.', 'bad');
+    if (!ziele.length) return toast('Bitte zuerst mindestens eine Person auswählen.', 'bad');
+    const user = ziele[0];
 
     let pfad, koerper, beschreibung;
     if (was === 'karte') {
@@ -675,26 +749,58 @@ RENDER.spieler = async (ziel) => {
       vorschau: `<p>Das passiert gleich:</p>
         <div class="notice" style="margin-top:12px">
           <strong>${esc(beschreibung)}</strong><br>
-          ${entfernen ? 'wird abgezogen von' : 'geht an'} <span class="mono">${esc(user)}</span>
-        </div>`,
+          ${entfernen ? 'wird abgezogen von' : 'geht an'}
+          ${ziele.length === 1
+            ? empfaenger[0].name ? `<strong>${esc(empfaenger[0].name)}</strong>` : `<span class="mono">${esc(user)}</span>`
+            : `<strong>${ziele.length} Personen</strong>`}
+        </div>
+        ${ziele.length > 1 ? `<div class="chips" style="margin-top:10px">${
+          empfaenger.map((e) => `<span class="chip">${esc(e.name || e.id)}</span>`).join('')}</div>` : ''}`,
       gefahr: entfernen,
       knopfText: entfernen ? 'Ja, wegnehmen' : 'Ja, geben',
     });
     if (!ok) return;
 
     try {
-      const antwort = await api(pfad, { json: koerper });
-      const rueck = { ...koerper, remove: !entfernen };
-      toast(erfolgstext(was, antwort, entfernen), 'ok', {
+      // Der Reihe nach, nicht alle gleichzeitig: die Datenbank des Bots hat
+      // nur eine Schreibverbindung, und bei einem Fehler ist so klar, wo.
+      const gelungen = [];
+      const misslungen = [];
+      let antwort = null;
+      for (const id of ziele) {
+        try {
+          antwort = await api(pfad, { json: { ...koerper, user_id: id } });
+          gelungen.push(id);
+        } catch (e) {
+          misslungen.push({ id, grund: e.message });
+        }
+      }
+
+      if (!gelungen.length) {
+        return fehler(new Error(misslungen[0] ? misslungen[0].grund : 'Nichts ausgeführt.'));
+      }
+
+      const text = ziele.length === 1
+        ? erfolgstext(was, antwort, entfernen)
+        : `${esc(beschreibung)} ${entfernen ? 'abgezogen von' : 'gegeben an'} `
+          + `${gelungen.length} von ${ziele.length} Personen.`;
+      toast(text, misslungen.length ? 'bad' : 'ok', {
         label: 'Rückgängig',
         run: async () => {
-          try {
-            await api(pfad, { json: rueck });
-            toast('Zurückgenommen.', 'ok');
-            zeigeSpieler();
-          } catch (e) { fehler(e); }
+          // Nur das zurücknehmen, was wirklich gebucht wurde.
+          for (const id of gelungen) {
+            try { await api(pfad, { json: { ...koerper, user_id: id, remove: !entfernen } }); }
+            catch (e) { fehler(e); }
+          }
+          toast(`Zurückgenommen (${gelungen.length}).`, 'ok');
+          zeigeSpieler();
         },
       });
+      if (misslungen.length) {
+        toast(`${misslungen.length} fehlgeschlagen: ${esc(misslungen[0].grund)}`, 'bad');
+      }
+      empfaenger.length = 0;
+      zeichneEmpfaenger();
       zeigeSpieler();
     } catch (e) { fehler(e); }
   };
@@ -1445,9 +1551,19 @@ RENDER.steuerung = async (ziel) => {
 
   $$('[data-flag]', ziel).forEach((b) => b.addEventListener('click', async () => {
     const { guild, flag, wert } = b.dataset;
+    const neu = wert !== '1';
+    const name = b.textContent.split(':')[0].trim();
     try {
-      await api('/api/actions/flag', { json: { guild_id: guild, flag, enabled: wert !== '1' } });
-      toast('Schalter geändert.', 'ok');
+      await api('/api/actions/flag', { json: { guild_id: guild, flag, enabled: neu } });
+      toast(`${name} ist jetzt ${neu ? 'an' : 'aus'}.`, 'ok', {
+        label: 'Rückgängig',
+        run: async () => {
+          try {
+            await api('/api/actions/flag', { json: { guild_id: guild, flag, enabled: !neu } });
+            zeichne('steuerung');
+          } catch (e) { fehler(e); }
+        },
+      });
       zeichne('steuerung');
     } catch (e) { fehler(e); }
   }));
