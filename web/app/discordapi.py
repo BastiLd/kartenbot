@@ -125,6 +125,15 @@ async def bot_user() -> dict:
     return await _request("GET", "/users/@me") or {}
 
 
+async def user(user_id: str) -> dict:
+    """Ein einzelnes Discord-Konto nachschlagen.
+
+    Anders als member() braucht das keinen Server - so lassen sich auch Namen
+    von Leuten aufloesen, die inzwischen ausgetreten sind.
+    """
+    return await _request("GET", f"/users/{user_id}") or {}
+
+
 async def guilds() -> list[dict]:
     result = await _request("GET", "/users/@me/guilds?with_counts=true")
     return result or []

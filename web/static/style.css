@@ -501,3 +501,23 @@ td.num, th.num { text-align: right; font-family: var(--mono); }
   h1 { font-size: 1.2rem; }
   .select-wrap select { max-width: 150px; }
 }
+
+/* ---------------------------------------------------------------- Person -- */
+/* Name gross, ID klein und grau daneben: lesbar auf einen Blick, die ID
+   trotzdem greifbar, wenn man sie doch braucht. */
+.person { display: inline-flex; align-items: baseline; gap: .5em; min-width: 0; }
+.person .p-name {
+  font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.person .p-id {
+  font-size: .72em;
+  color: var(--muted);
+  opacity: .65;
+  flex: none;
+  user-select: all;          /* ein Doppelklick markiert die ganze ID */
+}
+/* Auf schmalen Anzeigen wuerde die ID den Namen verdraengen. */
+@media (max-width: 640px) {
+  .person .p-id { display: none; }
+}

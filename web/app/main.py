@@ -19,7 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import (actions, audit, auth, cards, config, database, discordapi, jobs,
-               logparse, netguard, ollama, queries, roles, schema, settings)
+               logparse, names, netguard, ollama, queries, roles, schema,
+               settings)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -167,17 +168,33 @@ def api_overview(_: auth.Caller = Depends(auth.require_login)):
 
 
 @app.get("/api/players")
-def api_players(search: str = "", limit: int = 50,
-                _: auth.Caller = Depends(auth.require_login)):
-    return queries.players(limit=min(max(limit, 1), 200), search=search)
+async def api_players(search: str = "", limit: int = 50,
+                      _: auth.Caller = Depends(auth.require_login)):
+    daten = queries.players(limit=min(max(limit, 1), 200), search=search)
+    # Zu allen IDs, die in den Ranglisten vorkommen, gleich die Namen mitgeben.
+    # Sonst müsste die Oberfläche für jede Liste einzeln nachfragen.
+    ids = []
+    for liste in daten.values():
+        if isinstance(liste, list):
+            ids += [z.get("user_id") for z in liste if isinstance(z, dict) and z.get("user_id")]
+    daten["namen"] = await names.aufloesen(ids, nachladen=False)
+    return daten
 
 
 @app.get("/api/player/{user_id}")
-def api_player(user_id: str, _: auth.Caller = Depends(auth.require_login)):
+async def api_player(user_id: str, _: auth.Caller = Depends(auth.require_login)):
+    # Hier darf auch ein Name stehen - Zahlen abzutippen ist nichts, was man
+    # jemandem zumuten sollte.
+    kennung = await names.zu_id(user_id)
+    if not kennung:
+        raise HTTPException(404, f"Zu „{user_id}“ konnte niemand gefunden werden. "
+                                 f"Tippe den Namen genauer oder nimm die Discord-ID.")
     try:
-        return queries.player_detail(user_id)
+        daten = queries.player_detail(kennung)
     except ValueError:
         raise HTTPException(400, "Das ist keine gültige Discord-Nutzer-ID.") from None
+    daten["name"] = (await names.aufloesen([kennung])).get(kennung, "")
+    return daten
 
 
 @app.get("/api/cards")
@@ -215,6 +232,21 @@ def api_audit(limit: int = 100, guild_id: str | None = None,
 # --------------------------------------------------------------------------
 class SettingsBody(BaseModel):
     changes: dict[str, str]
+
+
+class NamesBody(BaseModel):
+    ids: list[str]
+
+
+@app.post("/api/names")
+async def api_names(body: NamesBody, _: auth.Caller = Depends(auth.require_login)):
+    """IDs zu Namen. Fehlende bleiben weg - die Oberflaeche zeigt dann die ID."""
+    return {"namen": await names.aufloesen(body.ids[:200])}
+
+
+@app.get("/api/names/search")
+def api_names_search(q: str = "", _: auth.Caller = Depends(auth.require_login)):
+    return {"treffer": names.suche(q)}
 
 
 @app.get("/api/settings")
@@ -259,6 +291,9 @@ async def api_discord_channels(guild_id: str, _: auth.Caller = Depends(auth.requ
 async def api_discord_members(guild_id: str, search: str = "", limit: int = 1000,
                               _: auth.Caller = Depends(auth.require_login)):
     members = await discordapi.all_members(guild_id, cap=min(max(limit, 1), 20000))
+    # Die Liste ist ohnehin da - also gleich alle Namen merken. Danach kann die
+    # ganze Seite Namen statt IDs zeigen, ohne Discord noch einmal zu fragen.
+    names.merke_mitglieder(members)
     needle = search.strip().lower()
     if needle:
         def passt(m: dict) -> bool:
@@ -325,34 +360,52 @@ def _ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
+async def _person(eingabe: str) -> str:
+    """Macht aus einer Eingabe eine Discord-ID - egal ob ID oder Name.
+
+    Jedes Feld, in das man eine Person einträgt, geht hier durch. So muss
+    niemand achtzehnstellige Zahlen abtippen, und wer die ID hat, kann sie
+    trotzdem einfach einfügen.
+    """
+    kennung = await names.zu_id(eingabe)
+    if not kennung:
+        raise HTTPException(404, f"Zu „{eingabe}“ konnte niemand gefunden werden. "
+                                 f"Öffne einmal „Rollen & Mitglieder“, damit die Namen "
+                                 f"bekannt sind — oder nimm die Discord-ID.")
+    return kennung
+
+
 @app.post("/api/actions/currency")
-def api_currency(body: CurrencyBody, request: Request,
-                 caller: auth.Caller = Depends(auth.require_login)):
+async def api_currency(body: CurrencyBody, request: Request,
+                       caller: auth.Caller = Depends(auth.require_login)):
+    ziel = await _person(body.user_id)
     actor_id = int(caller.discord_id) if (caller.discord_id or "").isdigit() else 0
     result = actions.adjust_currency(
-        currency=body.currency, user_id=body.user_id, amount=body.amount,
+        currency=body.currency, user_id=ziel, amount=body.amount,
         remove=body.remove, actor_id=actor_id,
         guild_id=int(body.guild_id) if (body.guild_id or "").isdigit() else 0)
     audit.record(actor=caller.actor, action="waehrung.entfernt" if body.remove else "waehrung.gegeben",
-                 guild_id=body.guild_id, target=body.user_id,
+                 guild_id=body.guild_id, target=ziel,
                  detail=f"{result['gebucht']} {result['waehrung']}", client_ip=_ip(request))
     return result
 
 
 @app.post("/api/actions/card")
-def api_card(body: CardBody, request: Request,
-             caller: auth.Caller = Depends(auth.require_login)):
-    result = actions.adjust_card(user_id=body.user_id, card_name=body.card_name,
+async def api_card(body: CardBody, request: Request,
+                   caller: auth.Caller = Depends(auth.require_login)):
+    ziel = await _person(body.user_id)
+    result = actions.adjust_card(user_id=ziel, card_name=body.card_name,
                                  amount=body.amount, remove=body.remove)
     audit.record(actor=caller.actor, action="karte.entfernt" if body.remove else "karte.gegeben",
-                 target=body.user_id, detail=f"{result['gebucht']}x {result['karte']}",
+                 target=ziel, detail=f"{result['gebucht']}x {result['karte']}",
                  client_ip=_ip(request))
     return result
 
 
 @app.post("/api/actions/rarity-group")
-def api_rarity(body: RarityBody, request: Request,
-               caller: auth.Caller = Depends(auth.require_login)):
+async def api_rarity(body: RarityBody, request: Request,
+                     caller: auth.Caller = Depends(auth.require_login)):
+    body.user_id = await _person(body.user_id)
     result = actions.adjust_rarity_group(user_id=body.user_id, rarity=body.rarity,
                                          remove=body.remove)
     audit.record(actor=caller.actor,

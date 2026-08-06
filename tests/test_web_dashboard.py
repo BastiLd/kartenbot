@@ -382,3 +382,56 @@ def test_everyone_und_app_rollen_werden_abgelehnt():
 def test_ohne_bot_mitglied_wird_abgelehnt():
     from services import role_manager
     assert role_manager.role_blocked_reason(_Guild(None), _Rolle("X", 1)) is not None
+
+
+# --------------------------------------------------------------------------
+# Namen: IDs lesbar machen, Namen als Eingabe zulassen
+# --------------------------------------------------------------------------
+def _namen_modul():
+    """Laedt web/app/names.py — oder ueberspringt, wenn die Web-Abhaengigkeiten fehlen.
+
+    Der Bot und die Website haben getrennte Abhaengigkeiten. In der Bot-Umgebung
+    ist httpx nicht installiert; dort werden diese Tests uebersprungen statt
+    fehlzuschlagen. Im Web-Container laufen sie.
+    """
+    import importlib, sys, pathlib
+    import pytest
+    pytest.importorskip("httpx", reason="Web-Abhaengigkeiten nur im Web-Container")
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "web"))
+    return importlib.import_module("app.names")
+
+
+def test_anzeigename_nimmt_den_spezifischsten():
+    n = _namen_modul()
+    # Servername schlaegt globalen Namen schlaegt Benutzernamen.
+    assert n._anzeigename({"nick": "Chef", "global_name": "Basti", "username": "basti1"}) == "Chef"
+    assert n._anzeigename({"global_name": "Basti", "username": "basti1"}) == "Basti"
+    assert n._anzeigename({"username": "basti1"}) == "basti1"
+    assert n._anzeigename({}) == ""
+
+
+def test_anzeigename_ignoriert_leere_felder():
+    n = _namen_modul()
+    # Discord liefert oft null statt gar nichts - das darf nicht gewinnen.
+    assert n._anzeigename({"nick": None, "global_name": "", "username": "basti1"}) == "basti1"
+
+
+def test_zu_id_nimmt_zahlen_direkt():
+    import asyncio
+    n = _namen_modul()
+    assert asyncio.run(n.zu_id("965593518745731200")) == "965593518745731200"
+
+
+def test_zu_id_versteht_discord_erwaehnungen():
+    import asyncio
+    n = _namen_modul()
+    # Wer einen Namen aus Discord kopiert, bekommt <@123> - das soll gehen.
+    assert asyncio.run(n.zu_id("<@965593518745731200>")) == "965593518745731200"
+    assert asyncio.run(n.zu_id("<@!965593518745731200>")) == "965593518745731200"
+
+
+def test_zu_id_bei_leerer_eingabe():
+    import asyncio
+    n = _namen_modul()
+    assert asyncio.run(n.zu_id("")) is None
+    assert asyncio.run(n.zu_id("   ")) is None

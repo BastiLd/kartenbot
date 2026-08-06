@@ -70,7 +70,12 @@ async function api(pfad, optionen = {}) {
   let daten = null;
   try { daten = text ? JSON.parse(text) : null; } catch (_) { daten = null; }
   if (!antwort.ok) {
-    throw new Error((daten && (daten.error || daten.detail)) || `Unerwarteter Fehler (${antwort.status}).`);
+    // Ohne den Pfad ist "Unerwarteter Fehler (500)" nicht nachvollziehbar -
+    // weder für den Benutzer noch für den, der es reparieren soll.
+    const wo = String(pfad).split('?')[0];
+    const roh = (text || '').trim().slice(0, 160);
+    throw new Error((daten && (daten.error || daten.detail))
+      || `Fehler ${antwort.status} bei ${wo}${roh ? ` — ${roh}` : ''}`);
   }
   return daten;
 }
@@ -138,7 +143,68 @@ const STATE = {
   undoSekunden: 10,
   jobTimer: null,
   cache: {},
+  namen: {},          // Discord-ID -> Name, einmal geholt und dann wiederverwendet
 };
+
+/* ------------------------------------------------------------------ Namen -- */
+/* In der Datenbank steht überall nur die ID. Hier wird daraus ein Name, und die
+   ID rutscht klein und grau daneben — da stört sie nicht, ist aber ablesbar,
+   wenn man sie doch mal braucht. */
+
+function merkeNamen(paare) {
+  if (paare) Object.assign(STATE.namen, paare);
+}
+
+/* Fehlende Namen nachladen und die Stellen im Text danach still ersetzen. */
+async function ladeNamenNach(ids) {
+  const offen = [...new Set(ids)].filter((i) => i && !STATE.namen[i]);
+  if (!offen.length) return;
+  try {
+    const d = await api('/api/names', { json: { ids: offen } });
+    merkeNamen(d.namen);
+    // Alles, was schon gezeichnet ist, nachträglich auffrischen.
+    $$('[data-person]').forEach((el) => {
+      const name = STATE.namen[el.dataset.person];
+      if (name) el.innerHTML = personInhalt(el.dataset.person, name);
+    });
+  } catch { /* Ohne Namen bleibt die ID stehen - kein Grund für eine Meldung. */ }
+}
+
+function personInhalt(id, name) {
+  if (!name) return `<span class="p-name mono">${esc(id)}</span>`;
+  return `<span class="p-name">${esc(name)}</span><span class="p-id mono">${esc(id)}</span>`;
+}
+
+/* Eine Person darstellen: Name groß, ID klein daneben. */
+function person(id) {
+  if (!id) return '';
+  return `<span class="person" data-person="${esc(id)}" title="${esc(id)}"
+    >${personInhalt(id, STATE.namen[id])}</span>`;
+}
+
+/* Während des Tippens Namen vorschlagen. Jedes Feld mit list="personenListe"
+   bekommt das automatisch — ausgewählt wird der Name, gesucht wird nach ID
+   und Name gleichermaßen. */
+function bindeNamensvorschlaege(wurzel) {
+  const liste = $('#personenListe', wurzel);
+  if (!liste) return;
+  let warten = null;
+  const fuellen = async (text) => {
+    if (!text || text.length < 2 || /^\d+$/.test(text)) return;
+    try {
+      const d = await api(`/api/names/search?q=${encodeURIComponent(text)}`);
+      liste.innerHTML = d.treffer
+        .map((t) => `<option value="${esc(t.name)}">${esc(t.id)}</option>`).join('');
+      merkeNamen(Object.fromEntries(d.treffer.map((t) => [t.id, t.name])));
+    } catch { /* Vorschläge sind Beiwerk. */ }
+  };
+  $$('input[list="personenListe"]', wurzel).forEach((feld) => {
+    feld.addEventListener('input', () => {
+      clearTimeout(warten);
+      warten = setTimeout(() => fuellen(feld.value.trim()), 200);
+    });
+  });
+}
 
 const TABS = {
   uebersicht:    { titel: 'Übersicht',            hinweis: 'Zustand des Bots und die wichtigsten Zahlen.' },
@@ -314,15 +380,17 @@ function leer(text, icon = '📭') {
 /* ----------------------------------------------------------------- Spieler */
 RENDER.spieler = async (ziel) => {
   const [d, karten] = await Promise.all([api('/api/players'), ladeKarten()]);
+  merkeNamen(d.namen);
   const optionen = karten.map((k) => `<option value="${esc(k.name)}">`).join('');
 
   ziel.innerHTML = `
     <div class="panel">
       <div class="panel-head"><h2>Spieler nachschlagen</h2>
-        <p class="muted">Discord-ID eingeben — du bekommst alles zu dieser Person.</p></div>
+        <p class="muted">Name oder Discord-ID eingeben — du bekommst alles zu dieser Person.</p></div>
       <div class="form-row">
-        <label class="field"><span>Discord-ID</span>
-          <input id="spSuche" inputmode="numeric" placeholder="z. B. 965593518745731152"></label>
+        <label class="field"><span>Name oder Discord-ID</span>
+          <input id="spSuche" list="personenListe" placeholder="z. B. Basti oder 965593518745731152"></label>
+        <datalist id="personenListe"></datalist>
         <div style="display:flex;align-items:flex-end"><button class="btn primary" id="spGo">Anzeigen</button></div>
       </div>
       <div id="spDetail" style="margin-top:20px"></div>
@@ -332,7 +400,8 @@ RENDER.spieler = async (ziel) => {
       <div class="panel-head"><h2>Geben und nehmen</h2>
         <p class="muted">Wirkt sofort in der Datenbank des Bots — genau wie die Befehle im Discord.</p></div>
       <div class="form-row">
-        <label class="field"><span>Discord-ID</span><input id="aktUser" inputmode="numeric"></label>
+        <label class="field"><span>Name oder Discord-ID</span>
+          <input id="aktUser" list="personenListe" placeholder="Name oder ID"></label>
         <label class="field"><span>Was</span>
           <select id="aktWas">
             <option value="infinitydust">Infinitydust</option>
@@ -359,6 +428,11 @@ RENDER.spieler = async (ziel) => {
       ${bestenliste('Meiste Infinitydust', d.top_dust)}
       ${bestenliste('Meiste Units', d.top_units)}
     </div>`;
+
+  // Namen zu allen IDs in den Ranglisten nachladen, die noch fehlen.
+  ladeNamenNach(Object.values(d).flatMap((v) => Array.isArray(v)
+    ? v.map((z) => z && z.user_id).filter(Boolean) : []));
+  bindeNamensvorschlaege(ziel);
 
   // Seltenheiten füllen
   const seltenheiten = [...new Set(karten.map((k) => k.seltenheit).filter(Boolean))];
@@ -456,7 +530,7 @@ function bestenliste(titel, zeilen) {
   return `<div class="panel"><div class="panel-head"><h3>${esc(titel)}</h3></div>
     ${zeilen.length ? zeilen.slice(0, 12).map((z) => `
       <div class="bar-row">
-        <span class="name mono">${esc(z.user_id)}</span>
+        <span class="name">${person(z.user_id)}</span>
         <span class="val">${num(z.wert)}</span>
         <span class="track"><span class="fill" style="width:${(Number(z.wert) || 0) / max * 100}%"></span></span>
       </div>`).join('') : leer('Noch keine Daten.')}
@@ -1140,9 +1214,11 @@ function schalter(guild, flag, label, aktiv) {
 
 /* ----------------------------------------------------------- Einstellungen */
 RENDER.einstellungen = async (ziel) => {
-  const [d, ki] = await Promise.all([
+  const [d, ki, modelle] = await Promise.all([
     api('/api/settings'),
     api('/api/ai/status').catch((e) => ({ ok: false, error: e.message })),
+    // Nur fürs Auswahlfeld. Ist Ollama gerade weg, bleibt es eben ein Textfeld.
+    api('/api/ai/models').then((m) => m.modelle).catch(() => null),
   ]);
   const gruppen = {};
   d.einstellungen.forEach((e) => { (gruppen[e.group] = gruppen[e.group] || []).push(e); });
@@ -1166,7 +1242,7 @@ RENDER.einstellungen = async (ziel) => {
       <div class="panel">
         <div class="panel-head"><h3>${esc(gruppe)}</h3></div>
         <div style="display:grid;gap:18px">
-          ${felder.map((f) => feldHtml(f)).join('')}
+          ${felder.map((f) => feldHtml(f, modelle)).join('')}
         </div>
       </div>`).join('')}
 
@@ -1252,10 +1328,21 @@ RENDER.einstellungen = async (ziel) => {
   });
 };
 
-function feldHtml(f) {
+function feldHtml(f, modelle) {
   const gemeinsam = `data-key="${esc(f.key)}"`;
   let eingabe;
-  if (f.type === 'bool') {
+  if (f.key === 'ollama.model' && modelle && modelle.length) {
+    // Auswahl statt Abtippen: die Namen kommen direkt von Ollama, damit hier
+    // kein Modell landen kann, das gar nicht installiert ist.
+    const bekannt = modelle.some((m) => m.name === f.value);
+    eingabe = `<select ${gemeinsam}>
+      <option value="">— keines (KI-Auswertung aus) —</option>
+      ${modelle.map((m) => `<option value="${esc(m.name)}" ${m.name === f.value ? 'selected' : ''}
+        >${esc(m.name)}${m.parameter_size ? ` · ${esc(m.parameter_size)}` : ''}</option>`).join('')}
+      ${f.value && !bekannt
+        ? `<option value="${esc(f.value)}" selected>${esc(f.value)} (nicht installiert)</option>` : ''}
+    </select>`;
+  } else if (f.type === 'bool') {
     eingabe = `<input type="checkbox" ${gemeinsam} ${f.value === '1' ? 'checked' : ''}>`;
   } else if (f.type === 'choice') {
     eingabe = `<select ${gemeinsam}>${f.choices.map((c) =>
