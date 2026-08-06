@@ -144,6 +144,7 @@ const STATE = {
   jobTimer: null,
   cache: {},
   namen: {},          // Discord-ID -> Name, einmal geholt und dann wiederverwendet
+  rollen: {},         // Rollen-ID -> Name, dito
 };
 
 /* ------------------------------------------------------------------ Namen -- */
@@ -186,6 +187,20 @@ async function waermeNamenAuf(erzwingen = false) {
   } catch {
     _aufgewaermt = null;   // beim nächsten Mal neu versuchen
   }
+}
+
+/* Rollennamen merken, damit im Verlauf nicht nur Nummern stehen. */
+function merkeRollen(rollen) {
+  (rollen || []).forEach((r) => { if (r && r.id) STATE.rollen[r.id] = r.name; });
+}
+
+function rollenName(id) {
+  const name = STATE.rollen[id];
+  return name
+    ? `<strong>${esc(name)}</strong>`
+    // Geloeschte Rollen kennt niemand mehr - dann bleibt die Nummer, damit
+    // der Eintrag nicht sinnlos wird.
+    : `<span class="mono">${esc(id)}</span>`;
 }
 
 function personInhalt(id, name) {
@@ -425,6 +440,12 @@ async function zeichne(tab, options = {}) {
   }
   try {
     await RENDER[tab](ziel, options);
+    // Zentral nach jedem Zeichnen: jedes Personenfeld bekommt seine
+    // Vorschlagsliste, und fehlende Namen werden nachgeholt. So muss kein
+    // Bereich mehr selbst daran denken — auch kuenftige nicht.
+    bindeNamensvorschlaege(ziel);
+    const offen = $$('[data-person]', ziel).map((el) => el.dataset.person);
+    if (offen.length) ladeNamenNach(offen);
   } catch (e) {
     ziel.innerHTML = `<div class="notice bad"><strong>Das hat nicht geklappt.</strong><br>${esc(e.message)}
       <div style="margin-top:12px"><button class="btn sm" id="retry">Noch einmal versuchen</button></div></div>`;
@@ -820,6 +841,9 @@ RENDER.rollen = async (ziel) => {
   const mitglieder = mitgliederInfo.mitglieder || [];
   const rollen = rollenInfo.roles || [];
   const vergebbar = rollen.filter((r) => r.manageable);
+  // Die Rollen sind ohnehin da - also im Verlauf den Namen zeigen statt der
+  // Nummer. Nur wenn eine Rolle inzwischen geloescht wurde, bleibt die ID.
+  merkeRollen(rollen);
 
   ziel.innerHTML = `
     ${!rollenInfo.bot_may_manage_roles ? `<div class="notice bad" style="margin-bottom:20px">
@@ -892,7 +916,8 @@ RENDER.rollen = async (ziel) => {
         <div class="panel-head"><h3>Rechte einer Person prüfen</h3>
           <p class="muted">Was darf jemand auf diesem Server wirklich?</p></div>
         <div class="form-row">
-          <label class="field"><span>Discord-ID</span><input id="permId" inputmode="numeric"></label>
+          <label class="field"><span>Name oder Discord-ID</span>
+            ${personenFeld('permId')}</label>
           <div style="display:flex;align-items:flex-end"><button class="btn" id="permGo">Prüfen</button></div>
         </div>
         <div id="permOut" style="margin-top:14px"></div>
@@ -1009,7 +1034,7 @@ RENDER.rollen = async (ziel) => {
   });
 
   $('#permGo', ziel).addEventListener('click', async () => {
-    const id = $('#permId', ziel).value.trim();
+    const id = personWert($('#permId', ziel));
     if (!id) return;
     const box = $('#permOut', ziel);
     box.innerHTML = '<div class="skeleton"></div>';
@@ -1030,8 +1055,8 @@ RENDER.rollen = async (ziel) => {
       const d = await api(`/api/roles/${gid}/history?limit=60`);
       $('#verlaufListe', ziel).innerHTML = d.verlauf.length ? d.verlauf.map((v) => `
         <div class="bar-row"><span class="name">
-          <span class="mono">${esc(v.user_id)}</span> ·
-          ${v.action === 'add' ? 'bekam' : 'verlor'} Rolle <span class="mono">${esc(v.role_id)}</span>
+          ${person(v.user_id)} ·
+          ${v.action === 'add' ? 'bekam' : 'verlor'} Rolle ${rollenName(v.role_id)}
           ${v.actor ? ` · durch ${esc(v.actor)}` : ''}</span>
           <span class="val">${zeitpunkt(v.created_at)}</span></div>`).join('')
         : leer('Über diese Website wurde hier noch keine Rolle vergeben.');
@@ -1158,7 +1183,7 @@ RENDER.analyse = async (ziel) => {
     $('#pListe', ziel).innerHTML = treffer.length ? treffer.slice(0, 300).map((p) => {
       const s = p.stats || {};
       return `<details class="info-row">
-        <summary><strong>${esc(s.name || p.user_id)}</strong>
+        <summary><strong>${s.name ? esc(s.name) : person(p.user_id)}</strong>
           ${(p.tags || []).map((t) => `<span class="tag accent">${esc(t.label || t)}</span>`).join('')}
           <span class="muted" style="margin-left:auto">${num(s.nachrichten || 0)} Nachr.</span></summary>
         <div class="why">
@@ -1317,7 +1342,7 @@ RENDER.steuerung = async (ziel) => {
     $('#auditListe', ziel).innerHTML = a.eintraege.length ? a.eintraege.map((e) => `
       <div class="bar-row"><span class="name">
         ${e.ok ? '' : '<span class="tag bad">Fehler</span> '}
-        <strong>${esc(e.action)}</strong> ${e.target ? `· ${esc(e.target)}` : ''}
+        <strong>${esc(e.action)}</strong> ${e.target ? `· ${/^\d+$/.test(e.target) ? person(e.target) : esc(e.target)}` : ''}
         ${e.detail ? `· ${esc(e.detail)}` : ''} <span class="muted">(${esc(e.actor || '?')})</span></span>
       <span class="val">${zeitpunkt(e.created_at)}</span></div>`).join('')
       : leer('Noch keine Aktionen protokolliert.');

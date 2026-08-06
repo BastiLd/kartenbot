@@ -407,7 +407,9 @@ async def api_discord_members(guild_id: str, search: str = "", limit: int = 1000
 @app.get("/api/discord/{guild_id}/permissions/{user_id}")
 async def api_discord_permissions(guild_id: str, user_id: str,
                                   _: auth.Caller = Depends(auth.require_login)):
-    return await roles.explain_permissions(guild_id, user_id)
+    # Auch hier darf ein Name stehen. Ohne das ging nur die ID, und Discord
+    # antwortete auf einen Namen mit einem nichtssagenden "Invalid Form Body".
+    return await roles.explain_permissions(guild_id, await _person(user_id))
 
 
 # --------------------------------------------------------------------------
