@@ -75,7 +75,7 @@ OPERATION_BROKEN_TIMELINE_ENCOUNTERS: list[dict[str, Any]] = [
         ],
     },
     {
-        "name": "Umprogrammierter Hulkbuster",
+        "name": "Maestro-Hulkbuster",
         "beschreibung": "Defensive Kampfmaschine vor Maestros Thronsaal.",
         "bild": "https://i.imgur.com/PvK2BHp.png",
         "seltenheit": "Mission",
@@ -146,7 +146,7 @@ def get_operation_broken_timeline_encounters() -> list[dict[str, Any]]:
 
 OPERATION_TECHNISCHER_KOLLAPS_ENCOUNTERS: list[dict[str, Any]] = [
     {
-        "name": "A.I.M.-Laborwache",
+        "name": "A.I.M. Techniker",
         "beschreibung": "Sichert den Eingang zum Rechenzentrum.",
         "bild": "https://i.imgur.com/05Hsl4i.png",
         "seltenheit": "Mission",
@@ -177,7 +177,7 @@ OPERATION_TECHNISCHER_KOLLAPS_ENCOUNTERS: list[dict[str, Any]] = [
         ],
     },
     {
-        "name": "A.I.M.-Wissenschaftler",
+        "name": "A.I.M. Mutagen-Forscher",
         "beschreibung": "Analysiert und schwächt den Gegner.",
         "bild": "https://i.imgur.com/cq5dcDL.png",
         "seltenheit": "Mission",
@@ -208,7 +208,7 @@ OPERATION_TECHNISCHER_KOLLAPS_ENCOUNTERS: list[dict[str, Any]] = [
         ],
     },
     {
-        "name": "Schwerer Kampf-Mech",
+        "name": "Kybernetischer Exo-Suit",
         "beschreibung": "Letzte Verteidigung vor M.O.D.O.K.",
         "bild": "https://i.imgur.com/ASXNdbC.png",
         "seltenheit": "Mission",
@@ -452,7 +452,7 @@ OPERATION_GOLDENER_KAEFIG_ENCOUNTERS: list[dict[str, Any]] = [
         ],
     },
     {
-        "name": "Fisks Enforcer",
+        "name": "Fisk Rechte-Hand",
         "beschreibung": "Persönlicher Leibwächter mit hoher Ausdauer.",
         "bild": "https://i.imgur.com/s38CXtH.png",
         "seltenheit": "Mission",

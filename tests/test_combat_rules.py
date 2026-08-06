@@ -4120,7 +4120,7 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([encounter.get("name") for encounter in encounters], [
             "Ödland-Plünderer",
             "Gamma-Mutant",
-            "Umprogrammierter Hulkbuster",
+            "Maestro-Hulkbuster",
             "Maestro",
         ])
         self.assertEqual(
@@ -4128,7 +4128,7 @@ class MissionBattleViewRegressionTests(unittest.IsolatedAsyncioTestCase):
             {
                 "Ödland-Plünderer": "https://i.imgur.com/YPnvbdW.png",
                 "Gamma-Mutant": "https://i.imgur.com/sJKKeeG.png",
-                "Umprogrammierter Hulkbuster": "https://i.imgur.com/PvK2BHp.png",
+                "Maestro-Hulkbuster": "https://i.imgur.com/PvK2BHp.png",
                 "Maestro": "https://i.imgur.com/FnpMS1O.png",
             },
         )

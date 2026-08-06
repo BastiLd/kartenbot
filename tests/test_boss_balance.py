@@ -55,7 +55,7 @@ class ModokBalanceTests(unittest.TestCase):
         self.assertEqual(_attack(self.boss, "Gehirn-Explosion")["damage"], [25, 25])
 
     def test_lakei3_weakened(self):
-        mech = _find(self.encs, "Schwerer Kampf-Mech")
+        mech = _find(self.encs, "Kybernetischer Exo-Suit")
         self.assertEqual(mech["hp"], 102)
         self.assertEqual(_attack(mech, "Rammstoß")["damage"], [14, 18])
         self.assertEqual(_attack(mech, "Gatling-Kanone")["damage"], [20, 24])
