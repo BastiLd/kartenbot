@@ -548,3 +548,37 @@ td.num, th.num { text-align: right; font-family: var(--mono); }
   .pruefzeile { grid-template-columns: 1.4em 1fr; }
   .pruef-text { grid-column: 2; }
 }
+
+/* ------------------------------------------------------- Personen-Feld --- */
+/* Textfeld mit Ausklapp-Pfeil und Vorschlaegen darunter. */
+.pfeld { position: relative; }
+.pfeld-eingabe { width: 100%; padding-right: 2.4em; }
+.pfeld-pfeil {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  width: 2.2em;
+  display: flex; align-items: center; justify-content: center;
+  background: none; border: 0; cursor: pointer;
+  color: var(--muted); font-size: 1rem; line-height: 1;
+  border-radius: 0 10px 10px 0;
+}
+.pfeld-pfeil:hover { color: var(--text); background: rgba(255, 255, 255, .05); }
+
+.pfeld-liste {
+  position: absolute; z-index: 40; left: 0; right: 0; top: calc(100% + 4px);
+  max-height: 260px; overflow-y: auto;
+  background: var(--panel-2, #182238);
+  border: 1px solid var(--border, #223052);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .45);
+}
+.pfeld-treffer {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 1em;
+  padding: .55em .8em;
+  cursor: pointer;
+}
+.pfeld-treffer:hover, .pfeld-treffer.aktiv { background: rgba(91, 140, 255, .16); }
+.pfeld-treffer .pfeld-name { font-weight: 600; }
+/* Die ID steht klein daneben - sie identifiziert eindeutig, wenn zwei
+   Personen denselben Namen tragen. */
+.pfeld-treffer .pfeld-id { font-size: .74em; color: var(--muted); opacity: .8; }
+.pfeld-leer { padding: .7em .8em; color: var(--muted); font-size: .88em; }

@@ -332,6 +332,23 @@ def api_names_search(q: str = "", _: auth.Caller = Depends(auth.require_login)):
     return {"treffer": names.suche(q)}
 
 
+@app.post("/api/names/aufwaermen")
+async def api_names_aufwaermen(guild_id: str,
+                               _: auth.Caller = Depends(auth.require_login)):
+    """Holt die Mitgliederliste eines Servers und merkt sich alle Namen.
+
+    Das ist mit Abstand der guenstigste Weg: eine einzige Anfrage bringt den
+    ganzen Server. Ohne das muesste jeder Name einzeln nachgeschlagen werden -
+    hunderte Anfragen, die alle auf Discords Anfragebremse zaehlen.
+    """
+    mitglieder = await discordapi.all_members(guild_id, cap=20000)
+    names.merke_mitglieder(mitglieder)
+    with database.read_connection() as con:
+        bekannt = database.scalar(
+            con, "SELECT COUNT(*) FROM web_discord_cache WHERE kind = 'user'")
+    return {"geladen": len(mitglieder), "bekannt": bekannt}
+
+
 @app.get("/api/settings")
 def api_settings(_: auth.Caller = Depends(auth.require_login)):
     return {"einstellungen": settings.describe()}

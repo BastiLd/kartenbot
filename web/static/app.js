@@ -170,6 +170,24 @@ async function ladeNamenNach(ids) {
   } catch { /* Ohne Namen bleibt die ID stehen - kein Grund für eine Meldung. */ }
 }
 
+/* Einmal pro Server die ganze Mitgliederliste holen und alle Namen merken.
+   Danach kennt die Seite jeden Namen, ohne Discord noch einmal zu fragen. */
+let _aufgewaermt = null;
+async function waermeNamenAuf(erzwingen = false) {
+  if (!STATE.guildId) return;
+  if (_aufgewaermt === STATE.guildId && !erzwingen) return;
+  _aufgewaermt = STATE.guildId;
+  try {
+    await api(`/api/names/aufwaermen?guild_id=${encodeURIComponent(STATE.guildId)}`,
+              { method: 'POST' });
+    // Was schon auf dem Bildschirm steht, gleich mit Namen auffrischen.
+    const offen = $$('[data-person]').map((el) => el.dataset.person);
+    if (offen.length) await ladeNamenNach(offen);
+  } catch {
+    _aufgewaermt = null;   // beim nächsten Mal neu versuchen
+  }
+}
+
 function personInhalt(id, name) {
   if (!name) return `<span class="p-name mono">${esc(id)}</span>`;
   return `<span class="p-name">${esc(name)}</span><span class="p-id mono">${esc(id)}</span>`;
@@ -182,28 +200,124 @@ function person(id) {
     >${personInhalt(id, STATE.namen[id])}</span>`;
 }
 
-/* Während des Tippens Namen vorschlagen. Jedes Feld mit list="personenListe"
-   bekommt das automatisch — ausgewählt wird der Name, gesucht wird nach ID
-   und Name gleichermaßen. */
+/* Personenfeld mit Ausklapp-Pfeil und Vorschlagsliste darunter.
+
+   Ein reines Textfeld zwingt dazu, Namen oder gar IDs auswendig zu wissen.
+   Hier steht beim Tippen sofort darunter, wer gemeint sein könnte — und der
+   Pfeil rechts zeigt die Liste auch ohne Eingabe, zum Durchschauen.
+   Bedienbar auch ohne Maus: Pfeiltasten, Enter, Escape. */
+function personenFeld(id, platzhalter = 'Name oder ID') {
+  return `<div class="pfeld" data-pfeld>
+    <input id="${id}" class="pfeld-eingabe" placeholder="${esc(platzhalter)}"
+           autocomplete="off" role="combobox" aria-expanded="false"
+           aria-controls="${id}-liste">
+    <button type="button" class="pfeld-pfeil" tabindex="-1"
+            aria-label="Liste ausklappen">▾</button>
+    <div class="pfeld-liste" id="${id}-liste" role="listbox" hidden></div>
+  </div>`;
+}
+
 function bindeNamensvorschlaege(wurzel) {
-  const liste = $('#personenListe', wurzel);
-  if (!liste) return;
-  let warten = null;
-  const fuellen = async (text) => {
-    if (!text || text.length < 2 || /^\d+$/.test(text)) return;
-    try {
-      const d = await api(`/api/names/search?q=${encodeURIComponent(text)}`);
-      liste.innerHTML = d.treffer
-        .map((t) => `<option value="${esc(t.name)}">${esc(t.id)}</option>`).join('');
-      merkeNamen(Object.fromEntries(d.treffer.map((t) => [t.id, t.name])));
-    } catch { /* Vorschläge sind Beiwerk. */ }
-  };
-  $$('input[list="personenListe"]', wurzel).forEach((feld) => {
-    feld.addEventListener('input', () => {
+  $$('[data-pfeld]', wurzel).forEach((feld) => {
+    const eingabe = $('.pfeld-eingabe', feld);
+    const pfeil = $('.pfeld-pfeil', feld);
+    const liste = $('.pfeld-liste', feld);
+    let treffer = [];
+    let aktiv = -1;
+    let warten = null;
+
+    const zu = () => {
+      liste.hidden = true;
+      eingabe.setAttribute('aria-expanded', 'false');
+      aktiv = -1;
+    };
+
+    const zeichne = () => {
+      if (!treffer.length) {
+        liste.innerHTML = '<div class="pfeld-leer">Niemand gefunden. '
+          + 'Die Discord-ID geht immer.</div>';
+      } else {
+        liste.innerHTML = treffer.map((t, i) => `
+          <div class="pfeld-treffer ${i === aktiv ? 'aktiv' : ''}" role="option"
+               aria-selected="${i === aktiv}" data-i="${i}">
+            <span class="pfeld-name">${esc(t.name)}</span>
+            <span class="pfeld-id mono">${esc(t.id)}</span>
+          </div>`).join('');
+      }
+      liste.hidden = false;
+      eingabe.setAttribute('aria-expanded', 'true');
+    };
+
+    const waehle = (i) => {
+      if (!treffer[i]) return;
+      // Der Name steht im Feld, gearbeitet wird mit der ID - beides geht,
+      // aber die ID ist eindeutig.
+      eingabe.value = treffer[i].name;
+      eingabe.dataset.id = treffer[i].id;
+      merkeNamen({ [treffer[i].id]: treffer[i].name });
+      zu();
+    };
+
+    const suche = async (text) => {
+      try {
+        const d = await api(`/api/names/search?q=${encodeURIComponent(text)}`);
+        treffer = d.treffer;
+        merkeNamen(Object.fromEntries(treffer.map((t) => [t.id, t.name])));
+        aktiv = -1;
+        zeichne();
+      } catch { zu(); }
+    };
+
+    eingabe.addEventListener('input', () => {
+      delete eingabe.dataset.id;           // getippt heißt: Auswahl verworfen
+      const text = eingabe.value.trim();
       clearTimeout(warten);
-      warten = setTimeout(() => fuellen(feld.value.trim()), 200);
+      if (!text) { zu(); return; }
+      warten = setTimeout(() => suche(text), 180);
     });
+
+    // Pfeil zeigt die Liste auch bei leerem Feld - zum Stöbern.
+    pfeil.addEventListener('click', () => {
+      if (!liste.hidden) { zu(); return; }
+      eingabe.focus();
+      suche(eingabe.value.trim());
+    });
+
+    eingabe.addEventListener('keydown', (e) => {
+      if (liste.hidden) {
+        if (e.key === 'ArrowDown') { e.preventDefault(); suche(eingabe.value.trim()); }
+        return;
+      }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        aktiv += e.key === 'ArrowDown' ? 1 : -1;
+        if (aktiv < 0) aktiv = treffer.length - 1;
+        if (aktiv >= treffer.length) aktiv = 0;
+        zeichne();
+        const el = $('.pfeld-treffer.aktiv', liste);
+        if (el) el.scrollIntoView({ block: 'nearest' });
+      } else if (e.key === 'Enter' && aktiv >= 0) {
+        e.preventDefault(); waehle(aktiv);
+      } else if (e.key === 'Escape') {
+        zu();
+      }
+    });
+
+    liste.addEventListener('mousedown', (e) => {
+      // mousedown statt click: sonst schliesst der Fokusverlust die Liste zuerst.
+      const zeile = e.target.closest('[data-i]');
+      if (zeile) { e.preventDefault(); waehle(Number(zeile.dataset.i)); }
+    });
+
+    eingabe.addEventListener('blur', () => setTimeout(zu, 120));
   });
+}
+
+/* Was steht wirklich im Feld? Wurde ein Vorschlag gewählt, ist es die ID -
+   sonst das, was getippt wurde. Das Backend nimmt beides an. */
+function personWert(feld) {
+  if (!feld) return '';
+  return feld.dataset.id || feld.value.trim();
 }
 
 const TABS = {
@@ -389,8 +503,7 @@ RENDER.spieler = async (ziel) => {
         <p class="muted">Name oder Discord-ID eingeben — du bekommst alles zu dieser Person.</p></div>
       <div class="form-row">
         <label class="field"><span>Name oder Discord-ID</span>
-          <input id="spSuche" list="personenListe" placeholder="z. B. Basti oder 965593518745731152"></label>
-        <datalist id="personenListe"></datalist>
+          ${personenFeld('spSuche', 'z. B. Basti oder 965593518745731152')}</label>
         <div style="display:flex;align-items:flex-end"><button class="btn primary" id="spGo">Anzeigen</button></div>
       </div>
       <div id="spDetail" style="margin-top:20px"></div>
@@ -401,7 +514,7 @@ RENDER.spieler = async (ziel) => {
         <p class="muted">Wirkt sofort in der Datenbank des Bots — genau wie die Befehle im Discord.</p></div>
       <div class="form-row">
         <label class="field"><span>Name oder Discord-ID</span>
-          <input id="aktUser" list="personenListe" placeholder="Name oder ID"></label>
+          ${personenFeld('aktUser')}</label>
         <label class="field"><span>Was</span>
           <select id="aktWas">
             <option value="infinitydust">Infinitydust</option>
@@ -449,7 +562,7 @@ RENDER.spieler = async (ziel) => {
   passeAn();
 
   const zeigeSpieler = async () => {
-    const id = $('#spSuche', ziel).value.trim();
+    const id = personWert($('#spSuche', ziel));
     if (!id) return;
     const box = $('#spDetail', ziel);
     box.innerHTML = '<div class="skeleton"></div><div class="skeleton" style="width:60%"></div>';
@@ -460,10 +573,15 @@ RENDER.spieler = async (ziel) => {
     }
   };
   $('#spGo', ziel).addEventListener('click', zeigeSpieler);
-  $('#spSuche', ziel).addEventListener('keydown', (e) => { if (e.key === 'Enter') zeigeSpieler(); });
+  $('#spSuche', ziel).addEventListener('keydown', (e) => {
+    // Nur absenden, wenn gerade KEIN Vorschlag ausgewaehlt wird - sonst
+    // wuerde Enter beides zugleich tun.
+    const liste = e.target.closest('[data-pfeld]')?.querySelector('.pfeld-liste');
+    if (e.key === 'Enter' && (!liste || liste.hidden)) zeigeSpieler();
+  });
 
   const fuehreAus = async (entfernen) => {
-    const user = $('#aktUser', ziel).value.trim();
+    const user = personWert($('#aktUser', ziel));
     const was = wasFeld.value;
     const menge = parseInt($('#aktMenge', ziel).value, 10) || 1;
     if (!user) return toast('Bitte zuerst eine Discord-ID eingeben.', 'bad');
@@ -1470,6 +1588,7 @@ async function ladeServer() {
   }
   sel.value = STATE.guildId;
   localStorage.setItem('kbweb.guild', STATE.guildId);
+  waermeNamenAuf();
 }
 
 async function aktualisiereKopf() {
