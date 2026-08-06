@@ -654,3 +654,84 @@ textarea { width: 100%; resize: vertical; }
   padding-top: 14px;
   border-top: 1px solid var(--border, #223052);
 }
+
+/* ================================================================= Karten ==
+   Kacheln zum Stoebern, Vollbild zum Bearbeiten, Vorschau zum Kontrollieren. */
+
+.ansicht-schalter { display: flex; gap: 6px; }
+
+.kachel-gitter {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 14px;
+}
+.kachel {
+  display: flex; flex-direction: column;
+  background: var(--panel-2, #182238);
+  border: 1px solid var(--border, #223052);
+  border-radius: 14px;
+  overflow: hidden;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+  color: inherit;
+  transition: transform .12s, border-color .12s;
+}
+.kachel:hover, .kachel:focus-visible {
+  transform: translateY(-2px);
+  border-color: var(--accent, #5b8cff);
+}
+.kachel img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
+.kachel-ohne-bild {
+  width: 100%; aspect-ratio: 1;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 2.6rem; opacity: .35;
+}
+.kachel-text { padding: .7em .8em; display: grid; gap: .2em; }
+.kachel-text .muted { font-size: .82em; }
+
+/* Zeile in der Listenansicht - anklickbar wie eine Kachel. */
+.karten-zeile { cursor: pointer; }
+.karten-zeile:hover { background: rgba(91, 140, 255, .08); }
+.karten-zeile .val { font-size: 1.3em; color: var(--muted); }
+
+/* --- Eine Karte gross --- */
+.karte-kopf { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.karte-oben { display: flex; gap: 20px; flex-wrap: wrap; }
+.karte-bild {
+  width: 200px; height: 200px; object-fit: cover;
+  border-radius: 14px; flex: none;
+  border: 1px solid var(--border, #223052);
+}
+.karte-ohne-bild {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 3.5rem; opacity: .3;
+  background: var(--panel-2, #182238);
+}
+.karte-daten { flex: 1 1 260px; min-width: 0; }
+.karte-daten h2 { margin: 0 0 .3em; }
+
+/* --- Vorschau: nachempfunden, wie Discord eine Karte zeigt --- */
+.discord-vorschau { display: flex; border-radius: 6px; overflow: hidden;
+  background: #2b2d31; color: #dbdee1; }
+.dv-balken { width: 4px; background: var(--accent, #5b8cff); flex: none; }
+.dv-inhalt { padding: 14px 16px; flex: 1; min-width: 0; }
+.dv-titel { font-weight: 700; font-size: 1.05rem; margin-bottom: .4em; color: #fff; }
+.dv-text { font-size: .92rem; margin-bottom: .8em; }
+.dv-felder { display: flex; gap: 2.5em; font-size: .86rem; margin-bottom: .8em; }
+.dv-bild { max-width: 100%; border-radius: 6px; margin-top: .4em; }
+.dv-knoepfe { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.dv-knopf {
+  padding: .5em .9em; border-radius: 4px;
+  font-size: .88rem; font-weight: 500; color: #fff;
+}
+/* Die Farben, die Discord fuer Knoepfe benutzt. */
+.dv-red     { background: #da373c; }
+.dv-blurple { background: #5865f2; }
+.dv-green   { background: #248046; }
+.dv-grey, .dv-gray { background: #4e5058; }
+
+@media (max-width: 700px) {
+  .kachel-gitter { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+  .karte-bild { width: 100%; height: auto; aspect-ratio: 1; }
+}

@@ -147,6 +147,8 @@ const STATE = {
   rollen: {},         // Rollen-ID -> Name, dito
   kanaele: {},        // Kanal-ID -> Name, dito
   quellen: { karte: [], rolle: [], mitglied: [], frei: [] },  // fuer die Auswahlfelder
+  kartenAnsicht: localStorage.getItem('kbweb.kartenAnsicht') || 'liste',
+  offeneKarte: null,   // Name der gross gezeigten Karte
 };
 
 /* ------------------------------------------------------------------ Namen -- */
@@ -890,7 +892,13 @@ async function ladeKarten() {
   return _kartenCache;
 }
 
-RENDER.karten = async (ziel) => {
+/* ------------------------------------------------------------------ Karten */
+/* Zwei Ansichten: die Liste wie bisher, und Kacheln zum Stoebern. Ein Klick
+   auf eine Kachel oeffnet die Karte gross - dort wird auch bearbeitet. */
+
+const KNOPFFARBEN = { red: 'Rot', blurple: 'Blau', green: 'Grün', grey: 'Grau' };
+
+RENDER.karten = async (ziel, optionen = {}) => {
   const [karten, geaendert] = await Promise.all([
     ladeKarten(),
     api('/api/karten/aenderungen').then((d) => d.aenderungen).catch(() => ({})),
@@ -898,6 +906,15 @@ RENDER.karten = async (ziel) => {
   setzeQuelle('karte', karten.map((k) => ({ name: k.name, unter: k.seltenheit || '' })));
   const seltenheiten = [...new Set(karten.map((k) => k.seltenheit).filter(Boolean))];
 
+  // Eine einzelne Karte gross? Dann nur die zeichnen.
+  const offen = optionen.karte || STATE.offeneKarte;
+  if (offen) {
+    const karte = karten.find((k) => k.name === offen);
+    if (karte) return zeichneEinzelkarte(ziel, karte, geaendert[karte.name], seltenheiten);
+    STATE.offeneKarte = null;      // Karte gibt es nicht mehr
+  }
+
+  const ansicht = STATE.kartenAnsicht;
   ziel.innerHTML = `
     <div class="panel">
       <div class="panel-head"><h2>Kartenkatalog</h2>
@@ -905,7 +922,13 @@ RENDER.karten = async (ziel) => {
           dem Bot — was hier nicht steht, lässt sich auch nicht vergeben.
           ${Object.keys(geaendert).length
             ? `<br><strong>${Object.keys(geaendert).length}</strong> Karten sind über diese Seite geändert.`
-            : ''}</p></div>
+            : ''}</p>
+        <div class="spacer"></div>
+        <div class="ansicht-schalter">
+          <button class="btn sm ${ansicht === 'liste' ? 'primary' : 'ghost'}" data-ansicht="liste">☰ Liste</button>
+          <button class="btn sm ${ansicht === 'kacheln' ? 'primary' : 'ghost'}" data-ansicht="kacheln">▦ Kacheln</button>
+        </div>
+      </div>
       <div class="form-row">
         <label class="field"><span>Suchen</span>${auswahlFeld('kSuche', 'Name oder Beschreibung', 'karte')}</label>
         <label class="field"><span>Seltenheit</span>
@@ -917,6 +940,12 @@ RENDER.karten = async (ziel) => {
       <div id="kListe" style="margin-top:8px"></div>
     </div>`;
 
+  $$('[data-ansicht]', ziel).forEach((b) => b.addEventListener('click', () => {
+    STATE.kartenAnsicht = b.dataset.ansicht;
+    localStorage.setItem('kbweb.kartenAnsicht', STATE.kartenAnsicht);
+    zeichne('karten');
+  }));
+
   const zeichneListe = () => {
     const suche = $('#kSuche', ziel).value.trim().toLowerCase();
     const seltenheit = $('#kSeltenheit', ziel).value;
@@ -926,83 +955,219 @@ RENDER.karten = async (ziel) => {
       return `${k.name} ${k.beschreibung || ''}`.toLowerCase().includes(suche);
     });
     $('#kAnzahl', ziel).textContent = `${num(treffer.length)} von ${num(karten.length)} Karten`;
-    $('#kListe', ziel).innerHTML = treffer.length ? treffer.map((k) => `
-      <details class="info-row">
-        <summary>
-          <strong>${esc(k.name)}</strong>
-          <span class="tag">${esc(k.seltenheit || '?')}</span>
-          <span class="tag">${num(k.hp)} HP</span>
-          ${k.varianten.length ? `<span class="tag accent">${k.varianten.length} Varianten</span>` : ''}
-        </summary>
-        <div class="why">
-          ${k.beschreibung ? `${esc(k.beschreibung)}<br><br>` : ''}
-          <strong>Angriffe:</strong>
-          ${k.angriffe.length ? `<ul style="margin:6px 0 0;padding-left:18px">
-            ${k.angriffe.map((a) => `<li>${esc(a.name)}${a.schaden ? ` — ${esc(a.schaden)}` : ''}</li>`).join('')}
-          </ul>` : ' keine hinterlegt'}
-          ${k.varianten.length ? `<br><strong>Varianten:</strong> ${k.varianten.map((v) =>
-            `${esc(v.name)}${v.nur_admin ? ' (nur über Vergabe)' : ''}`).join(', ')}` : ''}
 
-          <div class="karten-editor">
-            <div class="form-row">
-              <label class="field"><span>Lebenspunkte</span>
-                <input type="number" min="1" max="10000" data-feld="hp"
-                       value="${esc(k.hp)}"></label>
-              <label class="field"><span>Seltenheit</span>
-                <select data-feld="seltenheit">${seltenheiten.map((s) =>
-                  `<option value="${esc(s)}" ${s === k.seltenheit ? 'selected' : ''}>${esc(s)}</option>`).join('')}
-                </select></label>
+    if (!treffer.length) {
+      $('#kListe', ziel).innerHTML = leer('Keine Karte passt zu dieser Suche.', '🔍');
+      return;
+    }
+
+    $('#kListe', ziel).innerHTML = ansicht === 'kacheln'
+      ? `<div class="kachel-gitter">${treffer.map((k) => `
+          <button class="kachel" data-oeffne="${esc(k.name)}">
+            ${k.bild ? `<img src="${esc(k.bild)}" alt="" loading="lazy">`
+                     : '<div class="kachel-ohne-bild">🃏</div>'}
+            <div class="kachel-text">
+              <strong>${esc(k.name)}</strong>
+              <span class="muted">${esc(k.seltenheit || '?')} · ${num(k.hp)} HP</span>
+              ${geaendert[k.name] ? '<span class="tag accent">geändert</span>' : ''}
             </div>
-            <label class="field" style="margin-top:10px"><span>Beschreibung</span>
-              <textarea rows="2" data-feld="beschreibung">${esc(k.beschreibung || '')}</textarea></label>
-            <label class="field" style="margin-top:10px"><span>Bildadresse</span>
-              <input data-feld="bild" value="${esc(k.bild || '')}"
-                     placeholder="https://..."></label>
-            <div class="form-actions" style="margin-top:12px">
-              <button class="btn primary sm" data-speichern="${esc(k.name)}">Speichern</button>
-              ${geaendert[k.name]
-                ? `<button class="btn ghost sm" data-urspruenglich="${esc(k.name)}">Wieder wie im Bot</button>` : ''}
-            </div>
-            ${geaendert[k.name] ? `<p class="hint">Geändert am ${zeitpunkt(geaendert[k.name].geaendert_am)}${
-              geaendert[k.name].geaendert_von ? ` von ${esc(geaendert[k.name].geaendert_von)}` : ''}.</p>` : ''}
-          </div>
-        </div>
-      </details>`).join('') : leer('Keine Karte passt zu dieser Suche.', '🔍');
+          </button>`).join('')}</div>`
+      : treffer.map((k) => `
+          <div class="bar-row karten-zeile" data-oeffne="${esc(k.name)}" role="button" tabindex="0">
+            <span class="name"><strong>${esc(k.name)}</strong>
+              <span class="muted"> · ${esc(k.seltenheit || '?')} · ${num(k.hp)} HP
+              · ${k.angriffe.length} Angriffe</span>
+              ${geaendert[k.name] ? '<span class="tag accent">geändert</span>' : ''}</span>
+            <span class="val">›</span>
+          </div>`).join('');
 
-    $$('[data-speichern]', ziel).forEach((b) => b.addEventListener('click', async () => {
-      const block = b.closest('.karten-editor');
-      const aenderungen = {};
-      $$('[data-feld]', block).forEach((f) => { aenderungen[f.dataset.feld] = f.value; });
-      try {
-        await api('/api/karten/aendern', { json: { name: b.dataset.speichern, aenderungen } });
-        toast(`„${b.dataset.speichern}“ gespeichert. Der Bot übernimmt es gleich.`, 'ok');
-        _kartenCache = null;
-        zeichne('karten');
-      } catch (e) { fehler(e); }
-    }));
-
-    $$('[data-urspruenglich]', ziel).forEach((b) => b.addEventListener('click', async () => {
-      const ok = await bestaetige({
-        titel: 'Zurück auf den Stand aus dem Bot?',
-        vorschau: '<p>Alle Änderungen an dieser Karte werden verworfen. '
-          + 'Der Verlauf bleibt erhalten.</p>',
-        knopfText: 'Ja, zurücksetzen',
+    $$('[data-oeffne]', ziel).forEach((el) => {
+      const oeffne = () => { STATE.offeneKarte = el.dataset.oeffne; zeichne('karten'); };
+      el.addEventListener('click', oeffne);
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); oeffne(); }
       });
-      if (!ok) return;
-      try {
-        await api('/api/karten/zuruecksetzen', { json: { name: b.dataset.urspruenglich } });
-        toast('Zurückgesetzt.', 'ok');
-        _kartenCache = null;
-        zeichne('karten');
-      } catch (e) { fehler(e); }
-    }));
+    });
   };
   $('#kSuche', ziel).addEventListener('input', zeichneListe);
   $('#kSeltenheit', ziel).addEventListener('change', zeichneListe);
   zeichneListe();
 };
 
-/* -------------------------------------------------------------- Statistik */
+/* Eine Karte gross: Bild, alle Werte, Angriffe bearbeiten, Vorschau. */
+function zeichneEinzelkarte(ziel, k, aenderung, seltenheiten) {
+  ziel.innerHTML = `
+    <div class="panel karte-gross">
+      <div class="karte-kopf">
+        <button class="btn ghost sm" id="kZurueck" aria-label="Zurück zur Übersicht">← Zurück</button>
+        <div class="spacer"></div>
+        <button class="btn sm" id="kVorschau">Vorschau</button>
+      </div>
+
+      <div class="karte-oben">
+        ${k.bild ? `<img class="karte-bild" src="${esc(k.bild)}" alt="">`
+                 : '<div class="karte-bild karte-ohne-bild">🃏</div>'}
+        <div class="karte-daten">
+          <h2>${esc(k.name)}</h2>
+          <p class="muted">${esc(k.seltenheit || '?')} · ${num(k.hp)} Lebenspunkte
+            · ${k.angriffe.length} Angriffe
+            ${k.varianten.length ? ` · ${k.varianten.length} Varianten` : ''}</p>
+          ${k.beschreibung ? `<p>${esc(k.beschreibung)}</p>` : ''}
+          ${aenderung ? `<p class="hint">Geändert am ${zeitpunkt(aenderung.geaendert_am)}${
+            aenderung.geaendert_von ? ` von ${esc(aenderung.geaendert_von)}` : ''}.</p>` : ''}
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>Grunddaten</h3></div>
+      <div class="form-row">
+        <label class="field"><span>Lebenspunkte</span>
+          <input type="number" min="1" max="10000" data-feld="hp" value="${esc(k.hp)}"></label>
+        <label class="field"><span>Seltenheit</span>
+          <select data-feld="seltenheit">${seltenheiten.map((s) =>
+            `<option value="${esc(s)}" ${s === k.seltenheit ? 'selected' : ''}>${esc(s)}</option>`).join('')}
+          </select></label>
+      </div>
+      <label class="field" style="margin-top:10px"><span>Beschreibung</span>
+        <textarea rows="2" data-feld="beschreibung">${esc(k.beschreibung || '')}</textarea></label>
+      <label class="field" style="margin-top:10px"><span>Bildadresse</span>
+        <input data-feld="bild" value="${esc(k.bild || '')}" placeholder="https://..."></label>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>Angriffe</h3>
+        <p class="muted">Die Anzahl lässt sich nicht ändern — nur die vorhandenen bearbeiten.
+          Genau einer muss der Standardangriff sein: der Knopf oben links im Kampf.</p></div>
+      ${k.angriffe.map((a, i) => `
+        <details class="info-row" ${i === 0 ? 'open' : ''} data-angriff="${i}">
+          <summary><strong>${esc(a.name)}</strong>
+            ${a.standard ? '<span class="tag accent">Standard</span>' : ''}
+            ${a.schaden ? `<span class="tag">${esc(a.schaden)}</span>` : ''}</summary>
+          <div class="why">
+            <div class="form-row">
+              <label class="field"><span>Name</span>
+                <input data-a="name" value="${esc(a.name)}"></label>
+              <label class="field"><span>Schaden</span>
+                <input data-a="damage" value="${esc(schadenAlsText(a.schaden))}"
+                       placeholder="z. B. 12 oder 11-15"></label>
+              <label class="field"><span>Abklingzeit (Runden)</span>
+                <input type="number" min="0" data-a="cooldown_turns"
+                       value="${esc(a.abklingzeit ?? '')}"></label>
+            </div>
+            <label class="field" style="margin-top:10px"><span>Beschreibung</span>
+              <input data-a="info" value="${esc(a.info || '')}"></label>
+            <div class="form-row" style="margin-top:10px">
+              <label class="field"><span>Knopffarbe</span>
+                <select data-a="button_style">${Object.entries(KNOPFFARBEN).map(([w, t]) =>
+                  `<option value="${w}" ${w === a.knopf ? 'selected' : ''}>${t}</option>`).join('')}
+                </select></label>
+              <label class="field"><span>Standardangriff</span>
+                <select data-a="is_standard_attack">
+                  <option value="0" ${a.standard ? '' : 'selected'}>nein</option>
+                  <option value="1" ${a.standard ? 'selected' : ''}>ja</option>
+                </select></label>
+            </div>
+            ${a.wirkungen && a.wirkungen.length ? `<p class="hint" style="margin-top:10px">
+              Nebenwirkungen: ${a.wirkungen.map((w) => esc(w)).join(', ')} —
+              die bleiben unverändert erhalten.</p>` : ''}
+          </div>
+        </details>`).join('')}
+      <div class="form-actions" style="margin-top:14px">
+        <button class="btn primary" id="kSpeichern">Alles speichern</button>
+        ${aenderung ? '<button class="btn ghost" id="kZuruecksetzen">Wieder wie im Bot</button>' : ''}
+      </div>
+    </div>`;
+
+  $('#kZurueck', ziel).addEventListener('click', () => {
+    STATE.offeneKarte = null;
+    zeichne('karten');
+  });
+
+  $('#kVorschau', ziel).addEventListener('click', () => zeigeVorschau(k));
+
+  $('#kSpeichern', ziel).addEventListener('click', async () => {
+    const aenderungen = {};
+    $$('[data-feld]', ziel).forEach((f) => { aenderungen[f.dataset.feld] = f.value; });
+    aenderungen.attacks = $$('[data-angriff]', ziel).map((block) => {
+      const eintrag = {};
+      $$('[data-a]', block).forEach((f) => {
+        const feld = f.dataset.a;
+        if (feld === 'is_standard_attack') eintrag[feld] = f.value === '1';
+        else if (feld === 'damage') eintrag[feld] = schadenAusText(f.value);
+        else eintrag[feld] = f.value;
+      });
+      return eintrag;
+    });
+    try {
+      await api('/api/karten/aendern', { json: { name: k.name, aenderungen } });
+      toast(`„${k.name}“ gespeichert. Der Bot übernimmt es gleich.`, 'ok');
+      _kartenCache = null;
+      zeichne('karten');
+    } catch (e) { fehler(e); }
+  });
+
+  const zurueck = $('#kZuruecksetzen', ziel);
+  if (zurueck) zurueck.addEventListener('click', async () => {
+    const ok = await bestaetige({
+      titel: 'Zurück auf den Stand aus dem Bot?',
+      vorschau: '<p>Alle Änderungen an dieser Karte werden verworfen. Der Verlauf bleibt erhalten.</p>',
+      knopfText: 'Ja, zurücksetzen',
+    });
+    if (!ok) return;
+    try {
+      await api('/api/karten/zuruecksetzen', { json: { name: k.name } });
+      toast('Zurückgesetzt.', 'ok');
+      _kartenCache = null;
+      zeichne('karten');
+    } catch (e) { fehler(e); }
+  });
+}
+
+/* [11, 15] wird zu "11-15", 12 bleibt "12". Umkehrung von schadenAusText. */
+function schadenAlsText(wert) {
+  if (Array.isArray(wert)) return `${wert[0]}-${wert[1]}`;
+  return wert === null || wert === undefined ? '' : String(wert);
+}
+
+/* "11-15" wird zu [11, 15], "12" bleibt 12. Die Kartendatei nutzt beides. */
+function schadenAusText(text) {
+  const roh = String(text || '').trim();
+  if (!roh) return '';
+  const bereich = roh.match(/^(\d+)\s*(?:-|–|bis)\s*(\d+)$/);
+  if (bereich) return [Number(bereich[1]), Number(bereich[2])];
+  const zahl = Number(roh);
+  return Number.isFinite(zahl) ? zahl : roh;
+}
+
+/* Zeigt die Karte so, wie der Bot sie im Discord ausgibt. */
+function zeigeVorschau(k) {
+  dialog({
+    titel: 'So sieht die Karte im Discord aus',
+    breit: true,
+    inhalt: `
+      <div class="discord-vorschau">
+        <div class="dv-balken"></div>
+        <div class="dv-inhalt">
+          <div class="dv-titel">${esc(k.name)}</div>
+          ${k.beschreibung ? `<div class="dv-text">${esc(k.beschreibung)}</div>` : ''}
+          <div class="dv-felder">
+            <div><strong>Seltenheit</strong><br>${esc(k.seltenheit || '?')}</div>
+            <div><strong>Lebenspunkte</strong><br>${num(k.hp)}</div>
+          </div>
+          ${k.bild ? `<img class="dv-bild" src="${esc(k.bild)}" alt="">` : ''}
+        </div>
+      </div>
+      <div class="dv-knoepfe">
+        ${k.angriffe.map((a) => `
+          <span class="dv-knopf dv-${esc(a.knopf || 'grey')}">${esc(a.name)}</span>`).join('')}
+      </div>
+      <p class="hint" style="margin-top:12px">Die Knöpfe zeigen die eingestellten Farben.
+        Im Kampf steht der Standardangriff oben links.</p>`,
+    knoepfe: [{ label: 'Schließen', art: 'primary' }],
+  });
+}
+
 RENDER.statistik = async (ziel, options = {}) => {
   const zeitraum = options.zeitraum || '30d';
   const d = await api(`/api/statistics?range=${zeitraum}`);

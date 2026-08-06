@@ -44,9 +44,20 @@ def catalog() -> list[dict]:
             "hp": card.get("hp"),
             "beschreibung": card.get("beschreibung"),
             "bild": card.get("bild"),
+            # Alles, was der Editor zum Bearbeiten braucht. "wirkungen" sind
+            # nur die Namen der Nebenwirkungen — bearbeitet werden sie nicht,
+            # aber man soll sehen, dass es welche gibt.
             "angriffe": [
-                {"name": a.get("name"), "schaden": a.get("damage") or a.get("schaden"),
-                 "info": a.get("info")}
+                {"name": a.get("name"),
+                 "schaden": a.get("damage") or a.get("schaden"),
+                 "info": a.get("info"),
+                 "abklingzeit": a.get("cooldown_turns"),
+                 "knopf": a.get("button_style") or "grey",
+                 "standard": bool(a.get("is_standard_attack")),
+                 "heilung": a.get("heal"),
+                 "selbstschaden": a.get("self_damage"),
+                 "wirkungen": [e.get("type") for e in (a.get("effects") or [])
+                               if isinstance(e, dict) and e.get("type")]}
                 for a in (card.get("attacks") or [])
             ],
             "varianten": [],
