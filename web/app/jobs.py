@@ -26,6 +26,7 @@ KINDS = {
     "member.ban":     "Mitglied sperren",
     "scan.history":   "Server-Verlauf auswerten",
     "guild.sync":     "Serverdaten neu einlesen",
+    "cards.reload":   "Kartenänderungen übernehmen",
 }
 
 

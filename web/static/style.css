@@ -645,3 +645,12 @@ textarea { width: 100%; resize: vertical; }
   #toasts { left: 12px; right: 12px; top: auto; bottom: 12px; }
   #toasts .toast { width: 100%; }
 }
+
+/* ---------------------------------------------------------- Karten-Editor -- */
+/* Setzt sich vom Beschreibungstext darueber ab, damit klar ist: ab hier wird
+   geaendert, nicht nur gelesen. */
+.karten-editor {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border, #223052);
+}

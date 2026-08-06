@@ -191,6 +191,39 @@ async function waermeNamenAuf(erzwingen = false) {
   }
 }
 
+/* Im Protokoll stehen technische Schlüssel wie "papierkorb.zurueckgeholt".
+   Die bleiben so gespeichert — sonst passte der alte Verlauf nicht mehr dazu.
+   Angezeigt wird stattdessen deutscher Text. */
+const AKTION_TEXT = {
+  'waehrung.gegeben': 'Währung gegeben',
+  'waehrung.entfernt': 'Währung weggenommen',
+  'karte.gegeben': 'Karte gegeben',
+  'karte.entfernt': 'Karte weggenommen',
+  'seltenheit.gegeben': 'Seltenheitsgruppe gegeben',
+  'seltenheit.entfernt': 'Seltenheitsgruppe weggenommen',
+  'kanal.freigegeben': 'Kanal freigegeben',
+  'kanal.gesperrt': 'Kanal gesperrt',
+  'spieler.geloescht': 'Spielerdaten gelöscht',
+  'papierkorb.zurueckgeholt': 'aus dem Papierkorb zurückgeholt',
+  'papierkorb.endgueltig_geloescht': 'endgültig gelöscht',
+  'datenbank.gesichert': 'Datenbank gesichert',
+  'einstellungen.geaendert': 'Einstellungen geändert',
+  'besitzer.beansprucht': 'Besitzer eingetragen',
+  'besitzer.zurueckgesetzt': 'Besitzer zurückgesetzt',
+  'auftrag.abgebrochen': 'Auftrag abgebrochen',
+  'login.erfolgreich': 'angemeldet',
+  'login.fehlgeschlagen': 'Anmeldung fehlgeschlagen',
+  'login.fremdes_konto': 'fremdes Konto abgewiesen',
+  'rollen.angewendet': 'Rollen geändert',
+  'schalter.gesetzt': 'Schalter gesetzt',
+};
+
+function aktionText(schluessel) {
+  // Unbekanntes lieber roh zeigen als verschlucken - dann sieht man wenigstens,
+  // dass hier etwas fehlt.
+  return AKTION_TEXT[schluessel] || schluessel;
+}
+
 /* Kanalnamen merken - dieselbe Idee wie bei Rollen. */
 function merkeKanaele(kanaele) {
   (kanaele || []).forEach((c) => { if (c && c.id) STATE.kanaele[c.id] = c.name; });
@@ -858,7 +891,10 @@ async function ladeKarten() {
 }
 
 RENDER.karten = async (ziel) => {
-  const karten = await ladeKarten();
+  const [karten, geaendert] = await Promise.all([
+    ladeKarten(),
+    api('/api/karten/aenderungen').then((d) => d.aenderungen).catch(() => ({})),
+  ]);
   setzeQuelle('karte', karten.map((k) => ({ name: k.name, unter: k.seltenheit || '' })));
   const seltenheiten = [...new Set(karten.map((k) => k.seltenheit).filter(Boolean))];
 
@@ -866,7 +902,10 @@ RENDER.karten = async (ziel) => {
     <div class="panel">
       <div class="panel-head"><h2>Kartenkatalog</h2>
         <p class="muted">${num(karten.length)} Karten aus dem Spiel. Diese Liste kommt direkt aus
-          dem Bot — was hier nicht steht, lässt sich auch nicht vergeben.</p></div>
+          dem Bot — was hier nicht steht, lässt sich auch nicht vergeben.
+          ${Object.keys(geaendert).length
+            ? `<br><strong>${Object.keys(geaendert).length}</strong> Karten sind über diese Seite geändert.`
+            : ''}</p></div>
       <div class="form-row">
         <label class="field"><span>Suchen</span>${auswahlFeld('kSuche', 'Name oder Beschreibung', 'karte')}</label>
         <label class="field"><span>Seltenheit</span>
@@ -903,8 +942,60 @@ RENDER.karten = async (ziel) => {
           </ul>` : ' keine hinterlegt'}
           ${k.varianten.length ? `<br><strong>Varianten:</strong> ${k.varianten.map((v) =>
             `${esc(v.name)}${v.nur_admin ? ' (nur über Vergabe)' : ''}`).join(', ')}` : ''}
+
+          <div class="karten-editor">
+            <div class="form-row">
+              <label class="field"><span>Lebenspunkte</span>
+                <input type="number" min="1" max="10000" data-feld="hp"
+                       value="${esc(k.hp)}"></label>
+              <label class="field"><span>Seltenheit</span>
+                <select data-feld="seltenheit">${seltenheiten.map((s) =>
+                  `<option value="${esc(s)}" ${s === k.seltenheit ? 'selected' : ''}>${esc(s)}</option>`).join('')}
+                </select></label>
+            </div>
+            <label class="field" style="margin-top:10px"><span>Beschreibung</span>
+              <textarea rows="2" data-feld="beschreibung">${esc(k.beschreibung || '')}</textarea></label>
+            <label class="field" style="margin-top:10px"><span>Bildadresse</span>
+              <input data-feld="bild" value="${esc(k.bild || '')}"
+                     placeholder="https://..."></label>
+            <div class="form-actions" style="margin-top:12px">
+              <button class="btn primary sm" data-speichern="${esc(k.name)}">Speichern</button>
+              ${geaendert[k.name]
+                ? `<button class="btn ghost sm" data-urspruenglich="${esc(k.name)}">Wieder wie im Bot</button>` : ''}
+            </div>
+            ${geaendert[k.name] ? `<p class="hint">Geändert am ${zeitpunkt(geaendert[k.name].geaendert_am)}${
+              geaendert[k.name].geaendert_von ? ` von ${esc(geaendert[k.name].geaendert_von)}` : ''}.</p>` : ''}
+          </div>
         </div>
       </details>`).join('') : leer('Keine Karte passt zu dieser Suche.', '🔍');
+
+    $$('[data-speichern]', ziel).forEach((b) => b.addEventListener('click', async () => {
+      const block = b.closest('.karten-editor');
+      const aenderungen = {};
+      $$('[data-feld]', block).forEach((f) => { aenderungen[f.dataset.feld] = f.value; });
+      try {
+        await api('/api/karten/aendern', { json: { name: b.dataset.speichern, aenderungen } });
+        toast(`„${b.dataset.speichern}“ gespeichert. Der Bot übernimmt es gleich.`, 'ok');
+        _kartenCache = null;
+        zeichne('karten');
+      } catch (e) { fehler(e); }
+    }));
+
+    $$('[data-urspruenglich]', ziel).forEach((b) => b.addEventListener('click', async () => {
+      const ok = await bestaetige({
+        titel: 'Zurück auf den Stand aus dem Bot?',
+        vorschau: '<p>Alle Änderungen an dieser Karte werden verworfen. '
+          + 'Der Verlauf bleibt erhalten.</p>',
+        knopfText: 'Ja, zurücksetzen',
+      });
+      if (!ok) return;
+      try {
+        await api('/api/karten/zuruecksetzen', { json: { name: b.dataset.urspruenglich } });
+        toast('Zurückgesetzt.', 'ok');
+        _kartenCache = null;
+        zeichne('karten');
+      } catch (e) { fehler(e); }
+    }));
   };
   $('#kSuche', ziel).addEventListener('input', zeichneListe);
   $('#kSeltenheit', ziel).addEventListener('change', zeichneListe);
@@ -1647,7 +1738,7 @@ RENDER.steuerung = async (ziel) => {
     $('#auditListe', ziel).innerHTML = a.eintraege.length ? a.eintraege.map((e) => `
       <div class="bar-row"><span class="name">
         ${e.ok ? '' : '<span class="tag bad">Fehler</span> '}
-        <strong>${esc(e.action)}</strong> ${e.target ? `· ${/^\d+$/.test(e.target) ? person(e.target) : esc(e.target)}` : ''}
+        <strong>${esc(aktionText(e.action))}</strong> ${e.target ? `· ${/^\d+$/.test(e.target) ? person(e.target) : esc(e.target)}` : ''}
         ${e.detail ? `· ${esc(e.detail)}` : ''} <span class="muted">(${esc(e.actor || '?')})</span></span>
       <span class="val">${zeitpunkt(e.created_at)}</span></div>`).join('')
       : leer('Noch keine Aktionen protokolliert.');

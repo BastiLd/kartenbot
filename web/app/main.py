@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from . import (actions, audit, auth, cards, config, database, discordapi, jobs,
                logparse, names, netguard, ollama, queries, roles, schema,
-               settings, sicherung)
+               karteneditor, settings, sicherung)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -55,7 +55,7 @@ async def _unerwartet(request: Request, exc: Exception):
     logging.exception("Unbehandelter Fehler bei %s %s", request.method, request.url.path)
     return JSONResponse(
         {"error": f"{type(exc).__name__} bei {request.url.path}: {exc}"
-                  f" — der vollstaendige Verlauf steht im Protokoll des Containers."},
+                  f" — der vollständige Verlauf steht im Protokoll des Containers."},
         status_code=500)
 
 
@@ -252,6 +252,52 @@ class SettingsBody(BaseModel):
     changes: dict[str, str]
 
 
+class KarteBody(BaseModel):
+    name: str
+    aenderungen: dict
+
+
+class KartenNameBody(BaseModel):
+    name: str
+
+
+@app.get("/api/karten/aenderungen")
+def api_karten_aenderungen(_: auth.Caller = Depends(auth.require_login)):
+    return {"aenderungen": karteneditor.alle(),
+            "aenderbar": list(karteneditor.AENDERBAR)}
+
+
+@app.post("/api/karten/aendern")
+def api_karte_aendern(body: KarteBody, request: Request,
+                      caller: auth.Caller = Depends(auth.require_critical)):
+    """Eine Karte ändern — wirkt beim Bot, sobald er den Auftrag abholt."""
+    try:
+        sauber = karteneditor.setze(body.name, body.aenderungen, von=caller.actor)
+    except karteneditor.EditorFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    audit.record(actor=caller.actor, action="karte.geaendert", target=body.name,
+                 detail=", ".join(f"{k}={v}" for k, v in sauber.items()),
+                 client_ip=_ip(request))
+    auftrag = jobs.create("cards.reload", None, {}, caller.actor)
+    return {"gespeichert": sauber, "auftrag": auftrag}
+
+
+@app.post("/api/karten/zuruecksetzen")
+def api_karte_zuruecksetzen(body: KartenNameBody, request: Request,
+                            caller: auth.Caller = Depends(auth.require_critical)):
+    if not karteneditor.zuruecksetzen(body.name, von=caller.actor):
+        raise HTTPException(404, f"Für „{body.name}“ ist keine Änderung gespeichert.")
+    audit.record(actor=caller.actor, action="karte.zurueckgesetzt", target=body.name,
+                 client_ip=_ip(request))
+    auftrag = jobs.create("cards.reload", None, {}, caller.actor)
+    return {"zurueckgesetzt": True, "auftrag": auftrag}
+
+
+@app.get("/api/karten/{name}/verlauf")
+def api_karte_verlauf(name: str, _: auth.Caller = Depends(auth.require_login)):
+    return {"verlauf": karteneditor.verlauf(name)}
+
+
 @app.get("/api/papierkorb")
 def api_papierkorb(_: auth.Caller = Depends(auth.require_login)):
     return {"eintraege": sicherung.liste(),
@@ -355,7 +401,7 @@ async def api_selbsttest(_: auth.Caller = Depends(auth.require_login)):
     try:
         with database.read_connection() as con:
             anzahl = database.scalar(con, "SELECT COUNT(*) FROM user_karten")
-        melde("Datenbank lesen", True, f"in Ordnung ({anzahl} Karteneintraege)")
+        melde("Datenbank lesen", True, f"in Ordnung ({anzahl} Karteneinträge)")
     except Exception as exc:  # noqa: BLE001
         melde("Datenbank lesen", False, str(exc),
               "Stimmt KARTENBOT_DIR? Der Ordner mit bot.py und kartenbot.db muss eingebunden sein.")
@@ -374,16 +420,16 @@ async def api_selbsttest(_: auth.Caller = Depends(auth.require_login)):
     if not discordapi.bot_token_available():
         melde("Bot-Token hinterlegt", False, "kein Token gesetzt",
               "BOT_TOKEN in den Umgebungsvariablen des Stacks eintragen und "
-              "„Update the stack“ druecken. Ohne Token bleiben ueberall die IDs stehen.")
+              "„Update the stack“ drücken. Ohne Token bleiben überall die IDs stehen.")
     else:
         melde("Bot-Token hinterlegt", True, "vorhanden")
         # 4. Akzeptiert Discord ihn auch? Nur so weiss man es sicher.
         try:
             ich = await discordapi.bot_user()
             name = ich.get("global_name") or ich.get("username") or "?"
-            melde("Token gueltig bei Discord", True, f"angemeldet als {name}")
+            melde("Token gültig bei Discord", True, f"angemeldet als {name}")
         except Exception as exc:  # noqa: BLE001
-            melde("Token gueltig bei Discord", False, str(exc),
+            melde("Token gültig bei Discord", False, str(exc),
                   "Der Token wird abgelehnt. Tippfehler, Leerzeichen am Rand, "
                   "oder er wurde im Entwicklerportal neu erzeugt?")
 
@@ -393,8 +439,8 @@ async def api_selbsttest(_: auth.Caller = Depends(auth.require_login)):
             gemerkt = database.scalar(
                 con, "SELECT COUNT(*) FROM web_discord_cache WHERE kind = 'user'")
         melde("Bekannte Namen", gemerkt > 0, f"{gemerkt} Namen gemerkt",
-              "" if gemerkt else "Oeffne einmal „Rollen & Mitglieder“ und waehle "
-                                 "deinen Server - danach sind die Namen ueberall bekannt.")
+              "" if gemerkt else "Öffne einmal „Rollen & Mitglieder“ und wähle "
+                                 "deinen Server — danach sind die Namen überall bekannt.")
     except Exception as exc:  # noqa: BLE001
         melde("Bekannte Namen", False, str(exc))
 

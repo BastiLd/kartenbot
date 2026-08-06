@@ -197,7 +197,7 @@ from services.runtime_store import (
 )
 from services.stats_export import build_stats_workbook
 from services.card_grant import grant_cards_to_users
-from services import history_scan, role_manager, web_jobs
+from services import card_store, history_scan, role_manager, web_jobs
 from services.user_data import (
     add_exact_card_variant_once,
     add_card_buff,
@@ -2644,6 +2644,13 @@ async def web_job_loop() -> None:
     except Exception:
         logging.exception("Aufraeumen haengengebliebener Web-Auftraege fehlgeschlagen")
 
+    # Kartenaenderungen aus der Datenbank auflegen. Ohne das waere nach jedem
+    # Neustart wieder der Stand aus karten.py aktiv.
+    try:
+        await card_store.anwenden(RAW_KARTEN)
+    except Exception:
+        logging.exception("Kartenaenderungen konnten nicht angewendet werden")
+
     while not bot.is_closed():
         try:
             await _expire_temporary_roles()
@@ -2668,6 +2675,14 @@ async def _run_web_job(job: dict) -> dict:
     """Führt einen einzelnen Auftrag aus und liefert das Ergebnis zurück."""
     art = job["kind"]
     nutzlast = job.get("payload") or {}
+
+    # Kartenaenderungen betreffen keinen bestimmten Server - deshalb vor der
+    # Pruefung, ob der Bot dort ueberhaupt Mitglied ist.
+    if art == "cards.reload":
+        angepasst = await card_store.anwenden(RAW_KARTEN)
+        return {"angepasst": angepasst,
+                "hinweis": f"{angepasst} Karten neu eingelesen. Die Aenderung wirkt sofort."}
+
     guild = bot.get_guild(int(job["guild_id"])) if job.get("guild_id") else None
     if guild is None:
         raise RuntimeError("Der Bot ist auf diesem Server nicht (mehr) Mitglied.")
