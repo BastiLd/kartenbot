@@ -11,6 +11,7 @@ zusätzlich die passende Netzstufe. Discord-Aktionen laufen je nach Einstellung
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -19,9 +20,9 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import (actions, audit, auth, cards, config, database, discordapi, jobs,
-               logparse, missionen, names, netguard, ollama, queries, roles,
-               schema, karteneditor, settings, sicherung)
+from . import (actions, audit, auth, cards, config, database, discordapi,
+               gegnerversionen, jobs, logparse, missionen, names, netguard,
+               ollama, queries, roles, schema, karteneditor, settings, sicherung)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -219,6 +220,91 @@ async def api_player(user_id: str, _: auth.Caller = Depends(auth.require_login))
 def api_cards(_: auth.Caller = Depends(auth.require_login)):
     return {"verfuegbar": cards.available(), "karten": cards.catalog(),
             "seltenheiten": {k: len(v) for k, v in cards.rarities().items()}}
+
+
+# --------------------------------------------------------------------------
+# Gegner-Versionen
+# --------------------------------------------------------------------------
+class VersionBody(BaseModel):
+    name: str
+    beschreibung: str = ""
+    fehlerquote: float = 0.0
+
+
+class VersionAktivBody(BaseModel):
+    guild_id: str | None = None
+    version_id: int = 0
+
+
+@app.get("/api/gegner-versionen")
+def api_versionen(_: auth.Caller = Depends(auth.require_login)):
+    return {"versionen": gegnerversionen.alle(),
+            "aktiv": gegnerversionen.aktive_zuordnung(),
+            "max_fehlerquote": gegnerversionen.MAX_FEHLERQUOTE}
+
+
+@app.post("/api/gegner-versionen")
+def api_version_anlegen(body: VersionBody, request: Request,
+                        caller: auth.Caller = Depends(auth.require_login)):
+    try:
+        version = gegnerversionen.anlegen(body.name, body.beschreibung, body.fehlerquote)
+    except gegnerversionen.VersionFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    audit.record(actor=caller.actor, action="gegnerversion.angelegt", target=version["name"],
+                 detail=f"Fehlerquote {version['fehlerquote']}", client_ip=_ip(request))
+    return version
+
+
+@app.put("/api/gegner-versionen/{version_id}")
+def api_version_aendern(version_id: int, body: VersionBody, request: Request,
+                        caller: auth.Caller = Depends(auth.require_login)):
+    try:
+        version = gegnerversionen.aendern(version_id, body.name, body.beschreibung,
+                                          body.fehlerquote)
+    except gegnerversionen.VersionFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    audit.record(actor=caller.actor, action="gegnerversion.geaendert", target=version["name"],
+                 detail=f"Fehlerquote {version['fehlerquote']}", client_ip=_ip(request))
+    return version
+
+
+@app.post("/api/gegner-versionen/{version_id}/kopieren")
+def api_version_kopieren(version_id: int, body: VersionBody, request: Request,
+                         caller: auth.Caller = Depends(auth.require_login)):
+    try:
+        version = gegnerversionen.kopieren(version_id, body.name)
+    except gegnerversionen.VersionFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    audit.record(actor=caller.actor, action="gegnerversion.kopiert", target=version["name"],
+                 client_ip=_ip(request))
+    return version
+
+
+@app.delete("/api/gegner-versionen/{version_id}")
+def api_version_loeschen(version_id: int, request: Request,
+                         caller: auth.Caller = Depends(auth.require_login)):
+    try:
+        weg = gegnerversionen.loeschen(version_id)
+    except gegnerversionen.VersionFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not weg:
+        raise HTTPException(404, "Diese Version gibt es nicht (mehr).")
+    audit.record(actor=caller.actor, action="gegnerversion.geloescht",
+                 target=str(version_id), client_ip=_ip(request))
+    return {"geloescht": True}
+
+
+@app.post("/api/gegner-versionen/aktiv")
+def api_version_aktiv(body: VersionAktivBody, request: Request,
+                      caller: auth.Caller = Depends(auth.require_login)):
+    try:
+        ergebnis = gegnerversionen.setze_aktiv(body.guild_id, body.version_id)
+    except gegnerversionen.VersionFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    audit.record(actor=caller.actor, action="gegnerversion.aktiviert",
+                 guild_id=body.guild_id, target=str(body.version_id),
+                 client_ip=_ip(request))
+    return ergebnis
 
 
 @app.get("/api/missionen")
@@ -905,6 +991,9 @@ def api_scan_moderation(guild_id: str, _: auth.Caller = Depends(auth.require_log
 class FindModelBody(BaseModel):
     candidates: list[str] = Field(default_factory=list)
     timeout: float = 90.0
+    # "verstaendnis" prüft das Textverständnis, "kampf" das Lesen einer
+    # Kampflage — zwei verschiedene Fähigkeiten, zwei Modelle.
+    art: str = "verstaendnis"
 
 
 @app.get("/api/ai/status")
@@ -919,8 +1008,36 @@ async def api_ai_models(_: auth.Caller = Depends(auth.require_login)):
 
 @app.post("/api/ai/find-model")
 async def api_ai_find(body: FindModelBody, _: auth.Caller = Depends(auth.require_login)):
+    if body.art not in ("verstaendnis", "kampf"):
+        raise HTTPException(400, "Unbekannte Prüfung. Möglich: verstaendnis, kampf.")
     return await ollama.find_model(body.candidates or None,
-                                   per_model_timeout=min(max(body.timeout, 10.0), 600.0))
+                                   per_model_timeout=min(max(body.timeout, 10.0), 600.0),
+                                   art=body.art)
+
+
+@app.post("/api/karten/testlaeufe/{lauf_id}/beurteilen")
+async def api_testlauf_beurteilen(lauf_id: int, request: Request,
+                                  caller: auth.Caller = Depends(auth.require_login)):
+    """Das Sprachmodell den Testlauf in Worten beurteilen lassen.
+
+    Läuft hier und nicht im Bot: Die Zahlen liegen längst in der Datenbank,
+    und die Anbindung an Ollama steckt ohnehin in der Website.
+    """
+    laeufe = queries.card_testruns(limit=200)
+    lauf = next((l for l in laeufe if int(l["id"]) == int(lauf_id)), None)
+    if not lauf:
+        raise HTTPException(404, "Diesen Testlauf gibt es nicht.")
+    if not (lauf.get("ergebnis") or {}).get("durchgaenge"):
+        raise HTTPException(400, "Dieser Lauf hat kein auswertbares Ergebnis.")
+
+    text, modell = await ollama.beurteile_testlauf(lauf)
+    jetzt = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with database.write_connection() as con:
+        con.execute("UPDATE card_testruns SET ki_text = ?, ki_modell = ?, ki_am = ? "
+                    "WHERE id = ?", (text, modell, jetzt, int(lauf_id)))
+    audit.record(actor=caller.actor, action="testlauf.beurteilt",
+                 target=str(lauf.get("karten_name")), detail=modell, client_ip=_ip(request))
+    return {"text": text, "modell": modell, "am": jetzt}
 
 
 # --------------------------------------------------------------------------

@@ -197,8 +197,8 @@ from services.runtime_store import (
 )
 from services.stats_export import build_stats_workbook
 from services.card_grant import grant_cards_to_users
-from services import (card_store, card_testrun, history_scan, move_log,
-                      role_manager, web_jobs)
+from services import (bot_versions, card_store, card_testrun, history_scan,
+                      move_log, role_manager, web_jobs)
 from services.user_data import (
     add_exact_card_variant_once,
     add_card_buff,
@@ -4952,7 +4952,12 @@ class BattleView(BaseBattleView):
             cooldown_turns = int(attack.get("cooldown_turns", 0) or 0)
             return score, max_damage, -cooldown_turns, -idx
 
-        return max(candidate_indices, key=_candidate_key)
+        bester = max(candidate_indices, key=_candidate_key)
+        # Gegner-Version: Mit ihrer Fehlerquote greift der Bot absichtlich
+        # daneben. Bei "Standard" ist sie 0 - dann wird nicht einmal
+        # gewuerfelt und der Bot spielt bis aufs letzte Bit wie vorher.
+        return bot_versions.waehle_mit_fehlerquote(
+            candidate_indices, bester, float(getattr(self, "_bot_fehlerquote", 0.0) or 0.0))
 
     def get_attack_max_damage(self, attack_damage, damage_buff=0):
         return battle_state.get_attack_max_damage(attack_damage, damage_buff)
@@ -4980,6 +4985,21 @@ class BattleView(BaseBattleView):
         self.player2_max_hp = self.player2_hp
         if self.hp_view is not None:
             self.hp_view.update_hp(self.player1_hp)
+        # Gegner-Version laden - nur bei Kaempfen gegen den Bot, und nur
+        # einmal beim Start. Schlaegt es fehl, bleibt es bei Standard und der
+        # Kampf laeuft wie immer.
+        #
+        # Ohne Server-Id gilt die Einstellung "fuer alle Server". Der View
+        # kennt seine Gilde an dieser Stelle nicht; das serverweise Umstellen
+        # bekommt seinen Weg mit der Auswahl beim Kampfstart (Stufe 5,
+        # Schritt 8).
+        if self.player2_id == 0 and not getattr(self, "_bot_version", None):
+            try:
+                version = await bot_versions.aktive(None)
+                self._bot_version = version
+                self._bot_fehlerquote = float(version.get("fehlerquote") or 0.0)
+            except Exception:
+                logging.exception("Gegner-Version nicht ladbar - es gilt Standard")
         await self.update_attack_buttons()
 
     async def update_attack_buttons(self):

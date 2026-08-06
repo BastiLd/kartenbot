@@ -97,7 +97,27 @@ Uhrzeit. Alles Weitere steckt unter „Mehr Zahlen". Wer es genauer braucht,
 kommt über einen Knopf zum alten Dashboard — die Adresse steht in den
 Einstellungen (`dashboard.url`, derzeit `http://192.168.68.10:7859/`).
 
-560 Tests grün: `.venv/Scripts/python.exe -m pytest -q`
+**Zweites KI-Modell und KI-Beurteilung** (Stufe 5, Schritte 4–5):
+
+- Eigene Einstellung `ollama.model_kampf` mit **eigenem Modell-Finder**. Der
+  prüft etwas anderes als der alte: drei Kampflagen, bei denen jeweils genau
+  eine Antwort richtig ist. Wer zwei davon trifft, gilt als brauchbar — bei
+  einer einzigen Frage käme Raten zu oft durch.
+- Knopf **„Von der KI beurteilen lassen"** unter jedem Testlauf-Ergebnis.
+  Das Ergebnis steht in `card_testruns.ki_text`.
+
+**Gegner-Versionen** (Stufe 5, Schritt 7):
+
+- Anlegen, bearbeiten, kopieren, löschen unter Einstellungen → Gegner-Versionen.
+- „Standard" ist fest eingebaut, hat Fehlerquote 0 und lässt sich nicht
+  löschen. Solange er gilt, spielt der Bot **exakt** wie vorher — bei
+  Fehlerquote 0 wird nicht einmal gewürfelt.
+- Die **Fehlerquote** wirkt schon: Mit ihr greift der Bot absichtlich daneben.
+  Angesetzt in `_choose_bot_attack_index`, an genau einer Stelle.
+- Gewichte und Lernstand sind in der Tabelle vorbereitet, aber noch ohne
+  Wirkung — dort landet später das Gelernte.
+
+582 Tests grün: `.venv/Scripts/python.exe -m pytest -q`
 
 ### Wie die Zug-Mitschrift gebaut ist
 
@@ -139,6 +159,21 @@ Spielers) und ob die Karte kurz vorher geändert wurde (ergibt sich aus
 mitgeschrieben — ihre Auswahl steckt in den Boss-Hooks und ist an jeder
 Stelle anders. Die Spielerzüge in Missionen sind vollständig da.
 
+### Wie die Gegner-Versionen gebaut sind
+
+| Teil | Wo |
+|---|---|
+| Bot-Seite | `services/bot_versions.py` — `aktive()`, `waehle_mit_fehlerquote()` |
+| Website-Seite | `web/app/gegnerversionen.py` — anlegen, ändern, kopieren, löschen |
+| Tabellen | `bot_versions`, `bot_version_aktiv` |
+| Wirkung im Kampf | `bot.py`, Ende von `_choose_bot_attack_index` |
+
+**Neue Spalten in bestehenden Tabellen brauchen eine Nachrüstung.**
+`CREATE TABLE IF NOT EXISTS` legt nichts an, wenn die Tabelle schon steht —
+die Spalte fehlt dann bei jedem, der die Seite vorher benutzt hat. Dafür
+gibt es `_NACHRUESTEN` in `web/app/schema.py` **und** in
+`services/web_jobs.py`; beide Listen müssen zusammenpassen.
+
 ### Wie der Testlauf gebaut ist
 
 | Teil | Wo |
@@ -161,7 +196,39 @@ belegt, dass dabei Zahl für Zahl dasselbe herauskommt wie bei
 
 ## Was als Nächstes ansteht
 
-### Schritt 4: Zweites KI-Modell für den Testlauf
+### Schritt 8: Auswahl der Gegner-Version im Discord
+
+Die Versionen gibt es, und die aktive wirkt schon. Was fehlt: Wer auf „Bot"
+klickt, soll zwischen „Standard" und den gespeicherten Versionen wählen —
+mit der Beschreibung als Hilfe.
+
+Anzusetzen bei `BattleView(` in `bot.py` (~8456): Davor gehört ein View mit
+einem Knopf je Version. Die gewählte Version wird dann auf `_bot_version`
+und `_bot_fehlerquote` gesetzt, statt sie in `init_with_buffs` zu laden.
+
+Damit fällt auch die zweite Lücke weg: Heute gilt immer die Einstellung
+„für alle Server", weil der View seine Gilde beim Laden nicht kennt. Die
+Tabelle `bot_version_aktiv` kann längst pro Server.
+
+### Schritt 9: Lernen aus echten Kämpfen
+
+Die Daten sammeln sich seit dem Einschalten der Mitschrift in
+`battle_moves`. Gelernt werden sollen die **Gewichte** in
+`simulation/strategy.py:evaluate_move` (CONTROL 140, DEFENSE 110, SETUP 85,
+DOT 90). Sie gehören dann in `bot_versions.gewichte_json` — die Spalte ist
+da und wird schon geladen, nur noch nicht benutzt.
+
+Auswertbar ist: In welcher Lage haben Spieler, die den Kampf **gewonnen**
+haben, welche Art von Zug gewählt? Dafür `ausgang = 'gewonnen'` und
+`ist_bot = 0` filtern.
+
+### Schritt 10: KI als Gegner
+
+Zuletzt, weil am teuersten: Jeder Zug eine Anfrage, ein Kampf dauert Minuten
+statt Millisekunden. Nur für einzelne Kontrollkämpfe gedacht, nicht für die
+Massenauswertung.
+
+### Schritt 4: Zweites KI-Modell für den Testlauf — erledigt
 
 Eines fürs **Prüfen** (Server-Analyse, wie bisher), eines für den
 **Testlauf** — mit eigenem Modell-Finder. Der vorhandene testet auf eine

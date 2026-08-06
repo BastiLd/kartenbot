@@ -166,7 +166,10 @@ _TABLES = (
         siegquote          REAL,
         runden_schnitt     REAL,
         ergebnis_json      TEXT,
-        error              TEXT
+        error              TEXT,
+        ki_text            TEXT,
+        ki_modell          TEXT,
+        ki_am              TEXT
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_card_testruns_karte ON card_testruns(karten_name, id)",
@@ -197,6 +200,29 @@ _TABLES = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_battle_moves_session ON battle_moves(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_battle_moves_lernen ON battle_moves(karte, ausgang)",
+    # --- Gegner-Versionen: benannte Einstellungen für den Bot im Kampf.
+    #     Muss zu services/bot_versions.py passen. ---
+    """
+    CREATE TABLE IF NOT EXISTS bot_versions (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        name          TEXT NOT NULL,
+        beschreibung  TEXT NOT NULL DEFAULT '',
+        fehlerquote   REAL NOT NULL DEFAULT 0.0,
+        gewichte_json TEXT NOT NULL DEFAULT '{}',
+        lernstand_json TEXT NOT NULL DEFAULT '{}',
+        erstellt_am   TEXT NOT NULL,
+        geaendert_am  TEXT NOT NULL,
+        ist_standard  INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_versions_name ON bot_versions(name)",
+    """
+    CREATE TABLE IF NOT EXISTS bot_version_aktiv (
+        guild_id   TEXT PRIMARY KEY,
+        version_id INTEGER,
+        gesetzt_am TEXT NOT NULL
+    )
+    """,
     # --- Zwischenspeicher für Namen von Servern, Kanälen, Rollen, Mitgliedern ---
     """
     CREATE TABLE IF NOT EXISTS web_discord_cache (
@@ -211,7 +237,30 @@ _TABLES = (
 )
 
 
+# Spalten, die später zu einer bereits bestehenden Tabelle dazugekommen sind.
+# CREATE TABLE IF NOT EXISTS legt nichts an, wenn die Tabelle schon steht —
+# ohne diese Nachrüstung fehlten die neuen Spalten bei jedem, der die Seite
+# vorher schon einmal benutzt hat.
+_NACHRUESTEN = {
+    "card_testruns": (("ki_text", "TEXT"), ("ki_modell", "TEXT"), ("ki_am", "TEXT")),
+}
+
+
+def _ergaenze_spalten(con: sqlite3.Connection) -> None:
+    for tabelle, spalten in _NACHRUESTEN.items():
+        try:
+            vorhanden = {zeile[1] for zeile in con.execute(f"PRAGMA table_info({tabelle})")}
+        except sqlite3.OperationalError:
+            continue
+        if not vorhanden:
+            continue                    # Tabelle gibt es (noch) nicht
+        for name, typ in spalten:
+            if name not in vorhanden:
+                con.execute(f"ALTER TABLE {tabelle} ADD COLUMN {name} {typ}")
+
+
 def init_schema(con: sqlite3.Connection) -> None:
     for statement in _TABLES:
         con.execute(statement)
+    _ergaenze_spalten(con)
     con.execute("INSERT OR IGNORE INTO web_auth (id) VALUES (1)")

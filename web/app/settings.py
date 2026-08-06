@@ -21,6 +21,14 @@ DEFINITIONS: dict[str, tuple] = {
         "", "text", "KI", "Modell für die Auswertung",
         "Leer lassen und den Modell-Finder benutzen, wenn du unsicher bist.",
     ),
+    "ollama.model_kampf": (
+        "", "text", "KI", "Modell für den Testlauf",
+        "Beurteilt die Ergebnisse eines Testlaufs in Worten. Das braucht etwas "
+        "anderes als die Auswertung: Das Modell muss eine Kampflage lesen und "
+        "eine sinnvolle Entscheidung ableiten können. Der Modell-Finder daneben "
+        "prüft genau das. Leer lassen = es wird das Modell für die Auswertung "
+        "benutzt.",
+    ),
     "ollama.timeout": (
         "120", "int", "KI", "Zeitlimit pro Anfrage (Sekunden)",
         "Auf einer CPU dauern Antworten länger — dann höher stellen.",

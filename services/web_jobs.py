@@ -118,7 +118,10 @@ _SCHEMA = (
         siegquote          REAL,
         runden_schnitt     REAL,
         ergebnis_json      TEXT,
-        error              TEXT
+        error              TEXT,
+        ki_text            TEXT,
+        ki_modell          TEXT,
+        ki_am              TEXT
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_card_testruns_karte ON card_testruns(karten_name, id)",
@@ -131,6 +134,14 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# Spalten, die spaeter zu einer bereits bestehenden Tabelle dazugekommen sind.
+# CREATE TABLE IF NOT EXISTS legt nichts an, wenn die Tabelle schon steht -
+# muss zur Liste in web/app/schema.py passen.
+_NACHRUESTEN = {
+    "card_testruns": (("ki_text", "TEXT"), ("ki_modell", "TEXT"), ("ki_am", "TEXT")),
+}
+
+
 async def ensure_schema() -> None:
     global _schema_ready
     if _schema_ready:
@@ -138,6 +149,12 @@ async def ensure_schema() -> None:
     async with db_context() as db:
         for statement in _SCHEMA:
             await db.execute(statement)
+        for tabelle, spalten in _NACHRUESTEN.items():
+            cursor = await db.execute(f"PRAGMA table_info({tabelle})")
+            vorhanden = {zeile[1] for zeile in await cursor.fetchall()}
+            for name, typ in spalten:
+                if vorhanden and name not in vorhanden:
+                    await db.execute(f"ALTER TABLE {tabelle} ADD COLUMN {name} {typ}")
         await db.commit()
     _schema_ready = True
 

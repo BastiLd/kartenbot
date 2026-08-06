@@ -1188,6 +1188,7 @@ async function zeichneEinzelschurke(ziel, g) {
     </div>`;
 
   bindeBereichsSchalter(ziel);
+  bindeBeurteilen(ziel);
   $('#sZurueck', ziel).addEventListener('click', () => {
     STATE.offenerSchurke = null;
     zeichne('karten');
@@ -1310,6 +1311,7 @@ async function zeichneEinzelkarte(ziel, k, aenderung, seltenheiten) {
 
   $('#kVorschau', ziel).addEventListener('click', () => zeigeVorschau(k));
   $('#kTestlaufGross', ziel).addEventListener('click', () => frageTestlauf(k));
+  bindeBeurteilen(ziel);
 
   // Laeuft gerade schon einer fuer diese Karte? Dann direkt weiterverfolgen -
   // sonst stuende der Fortschritt still, nur weil die Seite neu geladen wurde.
@@ -1491,6 +1493,28 @@ function durchgaengeVon(lauf) {
   return e.durchgaenge || (e.paarungen ? [e] : []);
 }
 
+/* Den Knopf „Von der KI beurteilen lassen" scharf machen.
+   Steht in beiden Einzelansichten - Helden wie Schurken. */
+function bindeBeurteilen(ziel) {
+  const knopf = $('[data-beurteilen]', ziel);
+  if (!knopf) return;
+  knopf.addEventListener('click', async () => {
+    const alt = knopf.textContent;
+    knopf.disabled = true;
+    knopf.textContent = '🤖 Das Modell denkt nach …';
+    try {
+      await api(`/api/karten/testlaeufe/${knopf.dataset.beurteilen}/beurteilen`,
+                { method: 'POST' });
+      toast('Die Beurteilung ist da.', 'ok');
+      zeichne('karten');
+    } catch (e) {
+      fehler(e);
+      knopf.disabled = false;
+      knopf.textContent = alt;
+    }
+  });
+}
+
 /* Das Ergebnis eines Laufs. Ohne Lauf ein Hinweis, sonst je Durchgang
    Einordnung, Kennzahlen und jede einzelne Paarung — und bei zwei
    Durchgaengen oben, was der Unterschied bedeutet. */
@@ -1517,6 +1541,16 @@ function testlaufErgebnis(lauf) {
 
     ${e.vergleich ? `<div class="notice" style="margin-bottom:14px">
       <strong>Bestmöglich gegen menschliches Spiel</strong><br>${esc(e.vergleich.text)}</div>` : ''}
+
+    ${lauf.ki_text ? `<div class="notice ok" style="margin-bottom:14px">
+      <strong>🤖 Beurteilung der KI</strong><br>${esc(lauf.ki_text)}
+      <div class="hint" style="margin-top:8px">${esc(lauf.ki_modell || '')}${
+        lauf.ki_am ? ` · ${esc(zeitpunkt(lauf.ki_am))}` : ''}</div></div>`
+    : `<div style="margin-bottom:14px">
+        <button class="btn sm" data-beurteilen="${lauf.id}">🤖 Von der KI beurteilen lassen</button>
+        <span class="hint" style="margin-left:10px">Das Sprachmodell sagt in Worten,
+          woran es liegt und was zu ändern wäre.</span>
+      </div>`}
 
     ${durchgaenge.map((d) => testlaufDurchgang(d, karte, mehrere)).join('')}
 
@@ -2387,6 +2421,137 @@ function mitschriftStand(m) {
     </div>`;
 }
 
+/* ------------------------------------------------------- Gegner-Versionen */
+/* Anlegen, bearbeiten, kopieren, loeschen - und festlegen, welche gilt.
+   "Standard" ist fest eingebaut: nicht aenderbar, nicht loeschbar. Es muss
+   immer einen Weg zurueck zu "spielt wie immer" geben. */
+async function zeichneVersionen(wurzel) {
+  const box = $('#versionenListe', wurzel);
+  if (!box) return;
+  let d;
+  try {
+    d = await api('/api/gegner-versionen');
+  } catch (e) {
+    box.innerHTML = `<div class="notice bad">${esc(e.message)}</div>`;
+    return;
+  }
+  const aktivFuerAlle = Number(d.aktiv['*'] || 0);
+
+  box.innerHTML = `
+    <label class="field" style="max-width:520px">
+      <span>Welche Version gilt (für alle Server)</span>
+      <select id="vAktiv">
+        ${d.versionen.map((v) => `<option value="${v.id}" ${v.id === aktivFuerAlle ? 'selected' : ''}>
+          ${esc(v.name)}${v.fehlerquote ? ` — Fehlerquote ${v.fehlerquote}` : ''}</option>`).join('')}
+      </select>
+    </label>
+
+    <div style="margin-top:18px">
+      ${d.versionen.map((v) => `
+        <details class="info-row" data-version="${v.id}">
+          <summary><strong>${esc(v.name)}</strong>
+            ${v.ist_standard ? '<span class="tag">fest eingebaut</span>' : ''}
+            ${v.id === aktivFuerAlle ? '<span class="tag accent">gilt gerade</span>' : ''}
+            <span class="muted" style="margin-left:auto">Fehlerquote ${v.fehlerquote}</span></summary>
+          <div class="why">
+            <p>${esc(v.beschreibung || 'Keine Beschreibung.')}</p>
+            ${v.ist_standard ? `<p class="hint">Diese Version lässt sich nicht ändern.
+              Wenn du etwas anderes willst, kopiere sie und ändere die Kopie.</p>
+              <div class="form-actions"><button class="btn sm" data-kopieren="${v.id}">Kopieren</button></div>`
+            : `<div class="form-row">
+                <label class="field"><span>Name</span>
+                  <input data-v="name" value="${esc(v.name)}"></label>
+                <label class="field"><span>Fehlerquote (0 bis ${d.max_fehlerquote})</span>
+                  <input type="number" step="0.05" min="0" max="${d.max_fehlerquote}"
+                         data-v="fehlerquote" value="${v.fehlerquote}"></label>
+              </div>
+              <label class="field" style="margin-top:10px"><span>Beschreibung</span>
+                <textarea rows="2" data-v="beschreibung">${esc(v.beschreibung || '')}</textarea></label>
+              <p class="hint" style="margin-top:6px">Die Beschreibung sieht man später im
+                Discord bei der Auswahl — schreib hin, worauf man sich einlässt.</p>
+              <div class="form-actions">
+                <button class="btn primary sm" data-speichern="${v.id}">Speichern</button>
+                <button class="btn sm" data-kopieren="${v.id}">Kopieren</button>
+                <button class="btn danger sm" data-loeschen="${v.id}">Löschen</button>
+              </div>`}
+          </div>
+        </details>`).join('')}
+    </div>
+
+    <div class="form-row" style="margin-top:16px">
+      <label class="field"><span>Neue Version anlegen</span>
+        <input id="vNeuName" placeholder="z. B. Schwer"></label>
+      <label class="field"><span>Fehlerquote</span>
+        <input id="vNeuQuote" type="number" step="0.05" min="0" max="${d.max_fehlerquote}" value="0"></label>
+    </div>
+    <div class="form-actions">
+      <button class="btn" id="vAnlegen">Anlegen</button>
+    </div>
+    <p class="hint">Fehlerquote 0 = der Bot spielt immer den besten Zug.
+      0,3 = er greift in rund jedem dritten Zug absichtlich daneben.</p>`;
+
+  const neuLaden = () => zeichneVersionen(wurzel);
+
+  $('#vAktiv', box).addEventListener('change', async (e) => {
+    try {
+      await api('/api/gegner-versionen/aktiv', { json: { version_id: Number(e.target.value) } });
+      toast('Gilt ab jetzt. Laufende Kämpfe behalten ihre Einstellung.', 'ok');
+      neuLaden();
+    } catch (err) { fehler(err); }
+  });
+
+  $('#vAnlegen', box).addEventListener('click', async () => {
+    try {
+      await api('/api/gegner-versionen', { json: {
+        name: $('#vNeuName', box).value,
+        fehlerquote: Number($('#vNeuQuote', box).value) || 0,
+      } });
+      toast('Version angelegt.', 'ok');
+      neuLaden();
+    } catch (err) { fehler(err); }
+  });
+
+  $$('[data-speichern]', box).forEach((b) => b.addEventListener('click', async () => {
+    const block = b.closest('[data-version]');
+    try {
+      await api(`/api/gegner-versionen/${b.dataset.speichern}`, {
+        method: 'PUT',
+        json: {
+          name: $('[data-v="name"]', block).value,
+          beschreibung: $('[data-v="beschreibung"]', block).value,
+          fehlerquote: Number($('[data-v="fehlerquote"]', block).value) || 0,
+        },
+      });
+      toast('Gespeichert.', 'ok');
+      neuLaden();
+    } catch (err) { fehler(err); }
+  }));
+
+  $$('[data-kopieren]', box).forEach((b) => b.addEventListener('click', async () => {
+    const name = prompt('Wie soll die Kopie heißen?');
+    if (!name) return;
+    try {
+      await api(`/api/gegner-versionen/${b.dataset.kopieren}/kopieren`, { json: { name } });
+      toast('Kopiert.', 'ok');
+      neuLaden();
+    } catch (err) { fehler(err); }
+  }));
+
+  $$('[data-loeschen]', box).forEach((b) => b.addEventListener('click', async () => {
+    const ok = await bestaetige({
+      titel: 'Diese Version löschen?',
+      vorschau: '<p>Wo sie gerade gilt, spielt der Bot danach wieder wie „Standard“.</p>',
+      knopfText: 'Ja, löschen',
+    });
+    if (!ok) return;
+    try {
+      await api(`/api/gegner-versionen/${b.dataset.loeschen}`, { method: 'DELETE' });
+      toast('Gelöscht.', 'ok');
+      neuLaden();
+    } catch (err) { fehler(err); }
+  }));
+}
+
 RENDER.einstellungen = async (ziel) => {
   const [d, ki, modelle, test, mitschrift] = await Promise.all([
     api('/api/settings'),
@@ -2421,9 +2586,13 @@ RENDER.einstellungen = async (ziel) => {
           Modell: <strong>${esc(ki.model || 'noch keines gewählt')}</strong>.`
         : `Ollama ist nicht erreichbar. ${esc(ki.error || '')}`}
       </div>
+      <p class="muted" style="margin-top:12px">Zwei Modelle, zwei Aufgaben: Das eine
+        wertet Texte aus, das andere liest eine Kampflage und leitet daraus eine
+        Entscheidung ab. Jede Suche prüft genau ihre Aufgabe.</p>
       <div class="form-actions">
         <button class="btn" id="kiModelle">Modelle anzeigen</button>
-        <button class="btn primary" id="kiFinden">Passendes Modell suchen</button>
+        <button class="btn primary" id="kiFinden">Modell für die Auswertung suchen</button>
+        <button class="btn primary" id="kiFindenKampf">Modell für den Testlauf suchen</button>
       </div>
       <div id="kiOut" style="margin-top:14px"></div>
     </div>
@@ -2436,6 +2605,14 @@ RENDER.einstellungen = async (ziel) => {
           ${felder.map((f) => feldHtml(f, modelle)).join('')}
         </div>
       </div>`).join('')}
+
+    <div class="panel" id="versionenPanel">
+      <div class="panel-head"><h3>Gegner-Versionen</h3>
+        <p class="muted">Wie schwer soll der Bot sein? Eine Version ist ein benannter
+          Satz Einstellungen. „Standard" ist fest eingebaut und spielt so gut er kann.</p>
+      </div>
+      <div id="versionenListe"></div>
+    </div>
 
     <div class="form-actions">
       <button class="btn primary" id="setSpeichern">Einstellungen speichern</button>
@@ -2474,21 +2651,28 @@ RENDER.einstellungen = async (ziel) => {
     } catch (e) { box.innerHTML = `<div class="notice bad">${esc(e.message)}</div>`; }
   });
 
-  $('#kiFinden', ziel).addEventListener('click', async () => {
+  /* Beide Finder arbeiten gleich - nur Aufgabe und Zieleinstellung sind andere. */
+  const sucheModell = async (art) => {
+    const kampf = art === 'kampf';
     const box = $('#kiOut', ziel);
-    box.innerHTML = `<div class="notice">Mehrere Modelle werden gleichzeitig mit einer kleinen
-      Testaufgabe geprüft. Das kann ein bis zwei Minuten dauern …</div><div class="skeleton"></div>`;
+    box.innerHTML = `<div class="notice">Mehrere Modelle werden gleichzeitig geprüft
+      ${kampf ? '— jedes muss drei Kampflagen richtig einschätzen' : 'mit einer kleinen Testaufgabe'}.
+      Das kann ein bis zwei Minuten dauern …</div><div class="skeleton"></div>`;
     try {
-      const r = await api('/api/ai/find-model', { json: { timeout: 90 } });
+      const r = await api('/api/ai/find-model', { json: { timeout: 90, art } });
+      const schluessel = kampf ? 'ollama.model_kampf' : 'ollama.model';
       box.innerHTML = `
-        ${r.recommended ? `<div class="notice ok">Empfehlung: <strong>${esc(r.recommended)}</strong>
-          — schnellstes Modell, das die Testaufgabe richtig löst.
+        ${r.recommended ? `<div class="notice ok">Empfehlung für
+          ${kampf ? 'den Testlauf' : 'die Auswertung'}: <strong>${esc(r.recommended)}</strong>
+          — ${kampf ? 'trifft die Entscheidungen und ist dabei am schnellsten'
+                    : 'schnellstes Modell, das die Testaufgabe richtig löst'}.
           <button class="btn sm" id="kiUebernehmen" style="margin-left:10px">Übernehmen</button></div>`
-        : '<div class="notice warn">Kein Modell hat die Testaufgabe bestanden.</div>'}
+        : '<div class="notice warn">Kein Modell hat die Aufgabe bestanden.</div>'}
         <div class="table-wrap" style="margin-top:12px"><table>
           <thead><tr><th>Modell</th><th>Ergebnis</th><th class="num">Dauer</th><th>Antwort</th></tr></thead><tbody>
           ${r.tested.map((t) => `<tr><td class="mono">${esc(t.model)}</td>
-            <td>${t.ok ? '<span class="tag ok">geeignet</span>' : '<span class="tag bad">ungeeignet</span>'}</td>
+            <td>${t.ok ? '<span class="tag ok">geeignet</span>' : '<span class="tag bad">ungeeignet</span>'}
+              ${t.von ? `<span class="muted"> ${t.treffer}/${t.von}</span>` : ''}</td>
             <td class="num">${t.seconds ? `${t.seconds} s` : '—'}</td>
             <td class="muted">${esc((t.answer || t.error || '').slice(0, 70))}</td></tr>`).join('')}
         </tbody></table></div>`;
@@ -2496,14 +2680,18 @@ RENDER.einstellungen = async (ziel) => {
       if (uebernehmen) {
         uebernehmen.addEventListener('click', async () => {
           try {
-            await api('/api/settings', { json: { changes: { 'ollama.model': r.recommended } } });
+            await api('/api/settings', { json: { changes: { [schluessel]: r.recommended } } });
             toast(`Modell „${r.recommended}“ übernommen.`, 'ok');
             zeichne('einstellungen');
           } catch (e) { fehler(e); }
         });
       }
     } catch (e) { box.innerHTML = `<div class="notice bad">${esc(e.message)}</div>`; }
-  });
+  };
+  $('#kiFinden', ziel).addEventListener('click', () => sucheModell('verstaendnis'));
+  $('#kiFindenKampf', ziel).addEventListener('click', () => sucheModell('kampf'));
+
+  zeichneVersionen(ziel);
 
   $('#ownerReset', ziel).addEventListener('click', async () => {
     const ok = await bestaetige({
