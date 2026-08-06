@@ -8,6 +8,11 @@
 # Dann laufen Oberflaeche und Backend unter einer Adresse.
 services:
   kartenbot-web:
+    # Wird aus dem Quellcode gebaut - so funktioniert es auch in Portainer,
+    # wenn der Stack als "Repository" aus GitHub angelegt wird.
+    # Alternative ohne Bauen (fertiges Abbild aus der GitHub-Registry):
+    #   image: ghcr.io/bastild/kartenbot-web:latest
+    # Dann die drei build-Zeilen darunter auskommentieren.
     build:
       context: ..
       dockerfile: web/Dockerfile
@@ -29,12 +34,15 @@ services:
       WEB_TZ: ${WEB_TZ:-Europe/Vienna}
       OLLAMA_URL: ${OLLAMA_URL:-http://192.168.68.10:11434}
     volumes:
-      # Die Datenbank des Bots. Muss beschreibbar sein - die Website bucht
-      # Karten und Waehrung genau wie der Bot selbst.
-      - ../kartenbot.db:/data/kartenbot.db
-      - ../kartenbot.db-wal:/data/kartenbot.db-wal
-      - ../kartenbot.db-shm:/data/kartenbot.db-shm
-      # Die Logdatei wird nur gelesen.
-      - ../bot.log:/data/bot.log:ro
-      # --- Auf ZimaOS stattdessen die echten Pfade eintragen, z. B.: ---
-      # - /DATA/AppData/kartenbot/kartenbot.db:/data/kartenbot.db
+      # Der GANZE Arbeitsordner des Bots wird eingebunden, nicht einzelne
+      # Dateien. Grund: SQLite legt neben kartenbot.db noch -wal und -shm an
+      # und loescht sie wieder, sobald die Datenbank sauber geschlossen wird.
+      # Waeren die einzeln eingebunden, wuerde Docker beim naechsten Start
+      # VERZEICHNISSE mit diesen Namen anlegen - und die Datenbank waere kaputt.
+      #
+      # KARTENBOT_DIR zeigt auf den Ordner, in dem bot.py und kartenbot.db
+      # liegen. Ohne Angabe wird der uebergeordnete Ordner genommen (passt,
+      # wenn web/ direkt im Bot-Ordner liegt).
+      # Auf ZimaOS z. B.:
+      #   KARTENBOT_DIR=/DATA/AppData/homelab-discord-bot-manager/config/servers/local-d2a651fa/workspace
+      - ${KARTENBOT_DIR:-..}:/data
