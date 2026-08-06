@@ -95,33 +95,89 @@ def _quote(treffer: int, gesamt: int) -> float:
     return 0.0 if gesamt <= 0 else round(treffer * 100 / gesamt, 1)
 
 
-def einordnen(siegquote: float, paarungen: list[dict]) -> dict:
+def rolle_von(name: str) -> str:
+    """Held, kleiner Gegner oder Boss.
+
+    Davon hängt ab, was „gut" überhaupt heisst: Ein Boss *soll* die meisten
+    Kämpfe gewinnen, ein Gegner der ersten Welle *soll* zu schaffen sein.
+    Beide an 50 % zu messen wäre Unsinn.
+    """
+    gesucht = str(name or "").strip()
+    try:
+        import mission_enemies                                  # type: ignore
+    except Exception:                                           # noqa: BLE001
+        return "held"
+    for feld in dir(mission_enemies):
+        if not feld.startswith("OPERATION_") or not feld.endswith("_ENCOUNTERS"):
+            continue
+        liste = getattr(mission_enemies, feld, None) or []
+        for position, gegner in enumerate(liste):
+            if str((gegner or {}).get("name") or "").strip() == gesucht:
+                return "boss" if position == len(liste) - 1 else "klein"
+    return "held"
+
+
+# Ab welcher Siegquote welche Stufe gilt, je Rolle:
+# (etwas schwach ab, rund ab, etwas stark ab, zu stark ab)
+#
+# Ein Boss darf und soll die meisten Kämpfe gewinnen, ein Gegner der ersten
+# Wellen soll fallen - sonst kommt niemand durch die Mission. Beide an den
+# 50 % der Helden zu messen wäre Unsinn.
+SCHWELLEN = {
+    "held": (35.0, 43.0, 57.0, 65.0),
+    "klein": (3.0, 10.0, 40.0, 55.0),
+    "boss": (40.0, 55.0, 80.0, 90.0),
+}
+
+
+def einordnen(siegquote: float, paarungen: list[dict], rolle: str = "held") -> dict:
     """Eine Faustregel in Worten — ohne KI, nur aus den Zahlen.
 
-    Bezugspunkt ist 50 %: Über alle Karten gemittelt gewinnt jede Karte
-    definitionsgemäß die Hälfte ihrer Kämpfe. Wer deutlich darüber liegt,
-    ist stärker als das Feld, wer darunter liegt, schwächer.
+    Bei Helden ist der Bezugspunkt 50 %: Über alle Karten gemittelt gewinnt
+    jede definitionsgemäß die Hälfte ihrer Kämpfe. Bei Missionsgegnern ist er
+    ein anderer — siehe ``SCHWELLEN``.
 
     Die Beurteilung durch das Sprachmodell kommt später und ersetzt das hier
     nicht — sie kann sagen *woran* es liegt, diese Einordnung nur *dass*.
     """
-    if siegquote >= 65:
+    schwach, unten, oben, zu_stark = SCHWELLEN.get(rolle, SCHWELLEN["held"])
+
+    if siegquote >= zu_stark:
         stufe, art = "zu stark", "bad"
-        text = ("Diese Karte gewinnt deutlich mehr, als sie sollte. "
-                "Wer sie hat, ist im Vorteil.")
-    elif siegquote >= 57:
+        text = {
+            "held": "Diese Karte gewinnt deutlich mehr, als sie sollte. "
+                    "Wer sie hat, ist im Vorteil.",
+            "klein": "Für einen Gegner der ersten Wellen viel zu stark — "
+                     "an dem bleiben Spieler hängen, bevor die Mission losgeht.",
+            "boss": "Selbst für einen Boss zu stark. Kaum eine Karte hat "
+                    "hier noch eine Chance.",
+        }[rolle]
+    elif siegquote >= oben:
         stufe, art = "etwas stark", "warn"
-        text = "Etwas über dem Feld — auffällig, aber noch kein Ausreißer."
-    elif siegquote >= 43:
+        text = ("Etwas über dem, was für diese Rolle vorgesehen ist — "
+                "auffällig, aber noch kein Ausreißer.")
+    elif siegquote >= unten:
         stufe, art = "rund", "ok"
-        text = "Liegt im Rahmen. Gewinnt ungefähr so oft, wie sie verliert."
-    elif siegquote >= 35:
+        text = {
+            "held": "Liegt im Rahmen. Gewinnt ungefähr so oft, wie sie verliert.",
+            "klein": "Passt für einen Gegner der frühen Wellen: fordernd, "
+                     "aber zu schaffen.",
+            "boss": "Passt für einen Boss: gewinnt meistens, ist aber zu "
+                    "besiegen.",
+        }[rolle]
+    elif siegquote >= schwach:
         stufe, art = "etwas schwach", "warn"
-        text = "Etwas unter dem Feld — spielbar, aber im Nachteil."
+        text = "Etwas unter dem, was für diese Rolle vorgesehen ist."
     else:
         stufe, art = "zu schwach", "bad"
-        text = ("Diese Karte verliert deutlich öfter, als sie sollte. "
-                "Wer sie zieht, hat Pech.")
+        text = {
+            "held": "Diese Karte verliert deutlich öfter, als sie sollte. "
+                    "Wer sie zieht, hat Pech.",
+            "klein": "Fällt praktisch von selbst um — als Gegner kaum "
+                     "spürbar.",
+            "boss": "Für einen Boss zu schwach. Das Ende einer Operation "
+                    "sollte mehr verlangen.",
+        }[rolle]
 
     # Eine Karte kann im Schnitt rund sein und trotzdem taugen, weil sie
     # gegen die Hälfte des Feldes chancenlos ist und die andere Hälfte
@@ -131,19 +187,48 @@ def einordnen(siegquote: float, paarungen: list[dict]) -> dict:
         text += (f" Auffällig: {len(klar)} von {len(paarungen)} Paarungen sind "
                  f"so gut wie entschieden, bevor sie beginnen.")
 
-    return {"stufe": stufe, "art": art, "text": text}
+    return {"stufe": stufe, "art": art, "text": text, "rolle": rolle,
+            "erwartet_von": unten, "erwartet_bis": oben}
+
+
+def missionsgegner() -> list[dict]:
+    """Die Gegner aus den Missionen — Schurken statt Helden.
+
+    Sie sind ganz normale Karten (Name, Lebenspunkte, Angriffe) und kämpfen
+    mit derselben Engine. Deshalb lässt sich auch für einen Boss ausrechnen,
+    wie er gegen die Spielerkarten dasteht.
+    """
+    try:
+        import mission_enemies                                  # type: ignore
+    except Exception:                                           # noqa: BLE001
+        return []
+    heraus: list[dict] = []
+    gesehen: set[str] = set()
+    for feld in dir(mission_enemies):
+        if not feld.startswith("OPERATION_") or not feld.endswith("_ENCOUNTERS"):
+            continue
+        for gegner in getattr(mission_enemies, feld, None) or []:
+            name = str((gegner or {}).get("name") or "").strip()
+            if name and name not in gesehen and gegner.get("attacks"):
+                gesehen.add(name)
+                heraus.append(gegner)
+    return heraus
 
 
 def _finde_karte(karten: list[dict], name: str) -> dict:
+    """Die zu prüfende Karte suchen — erst bei den Helden, dann bei den Schurken."""
     gesucht = str(name or "").strip()
     if not gesucht:
         raise TestlaufFehler("Es wurde keine Karte angegeben.")
     for karte in karten:
         if canonical_hero_name(karte) == gesucht:
             return karte
+    for gegner in missionsgegner():
+        if str(gegner.get("name") or "").strip() == gesucht:
+            return gegner
     raise TestlaufFehler(
-        f"Die Karte „{gesucht}“ ist dem Spiel nicht bekannt. Der Testlauf geht "
-        f"nur mit Grundkarten, nicht mit Varianten.")
+        f"„{gesucht}“ ist dem Spiel nicht bekannt. Der Testlauf geht mit "
+        f"Grundkarten und mit Missionsgegnern, nicht mit Varianten.")
 
 
 async def laufen(karten_name: str, *, kaempfe_je_paarung: int = STANDARD_KAEMPFE,
@@ -177,6 +262,9 @@ async def laufen(karten_name: str, *, kaempfe_je_paarung: int = STANDARD_KAEMPFE
 
     karte = _finde_karte(alle_karten, karten_name)
     name = canonical_hero_name(karte)
+    rolle = rolle_von(name)
+    # Angetreten wird immer gegen die Spielerkarten. Bei einem Missionsgegner
+    # ist genau das die Frage: Wie steht er gegen das, was Spieler mitbringen?
     gegner_liste = [k for k in alle_karten if canonical_hero_name(k) != name]
 
     if seed is None:
@@ -283,7 +371,8 @@ async def laufen(karten_name: str, *, kaempfe_je_paarung: int = STANDARD_KAEMPFE
         "seed": int(seed),
         "dauer_s": round(time.monotonic() - begonnen, 1),
         "abgebrochen": abgebrochen,
-        "einordnung": einordnen(siegquote, paarungen),
+        "rolle": rolle,
+        "einordnung": einordnen(siegquote, paarungen, rolle),
         "paarungen": paarungen,
     }
 
@@ -366,6 +455,7 @@ async def laufen_mehrfach(karten_name: str, *, auswahl: str = STANDARD_AUSWAHL,
 
     return {
         "karte": durchgaenge[0]["karte"],
+        "rolle": durchgaenge[0].get("rolle", "held"),
         "auswahl": auswahl,
         "kaempfe_je_paarung": durchgaenge[0]["kaempfe_je_paarung"],
         "gegner": max(d["gegner"] for d in durchgaenge),

@@ -57,6 +57,12 @@ DEFINITIONS: dict[str, tuple] = {
         ",".join(config.TRUSTED_VPN), "text", "Zugang", "VPN-Bereiche (Tailscale)",
         "Von hier aus ist alles außer den kritischen Aktionen erlaubt.",
     ),
+    "dashboard.url": (
+        "http://192.168.68.10:7859/", "text", "Darstellung", "Adresse der ausführlichen Statistik",
+        "Das alte Kartenbot-Dashboard mit den ausführlichen Auswertungen. "
+        "Steht hier eine Adresse, erscheint auf der Statistikseite ein Knopf dorthin. "
+        "Leer lassen, wenn es die Seite nicht mehr gibt.",
+    ),
     "mitschrift.aktiv": (
         "0", "bool", "Kämpfe", "Züge mitschreiben",
         "Aus = es wird nichts aufgezeichnet. An = der Bot hält bei jedem Zug fest, "

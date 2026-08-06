@@ -76,7 +76,28 @@ brauchen 3, in `bot.py` oder `services/` brauchen 1.
 - **Voreingestellt aus.** Der Schalter steht in den Einstellungen unter
   „Kämpfe"; darüber zeigt die Seite, wie viel schon zusammengekommen ist.
 
-532 Tests grün: `.venv/Scripts/python.exe -m pytest -q`
+**Missionsbereich** (Stufe 5, Punkt G):
+
+- Umschalter oben: grün **Helden** (Karten der Spieler), rot **Schurken**
+  (Missionen und Bosse). Die Wahl bleibt gespeichert.
+- 20 Gegner aus 5 Operationen, filterbar nach Operation und danach, ob Boss
+  oder kleiner Gegner. Bilder werden **über die Nummer im Dateinamen**
+  zugeordnet, nicht über den Namen — die Namen stimmen teils nicht.
+- Missionsgegner lassen sich **auch testen**: Sie sind ganz normale Karten
+  und treten gegen alle Heldenkarten an. Bearbeiten geht nicht, sie stehen
+  fest im Bot.
+- Die Einordnung richtet sich nach der **Rolle**: Ein Boss soll die meisten
+  Kämpfe gewinnen (55–80 %), ein Gegner der frühen Wellen soll fallen
+  (10–40 %). Beide an den 50 % der Helden zu messen wäre Unsinn — Maestro
+  kommt auf 75 % und ist damit genau richtig, nicht „zu stark".
+
+**Statistikseite aufgeräumt**: Oben vier Kennzahlen, dann der Tagesverlauf
+(der fehlte ganz, obwohl er längst berechnet wurde), Helden und Siegquoten,
+Uhrzeit. Alles Weitere steckt unter „Mehr Zahlen". Wer es genauer braucht,
+kommt über einen Knopf zum alten Dashboard — die Adresse steht in den
+Einstellungen (`dashboard.url`, derzeit `http://192.168.68.10:7859/`).
+
+560 Tests grün: `.venv/Scripts/python.exe -m pytest -q`
 
 ### Wie die Zug-Mitschrift gebaut ist
 
@@ -176,9 +197,7 @@ Beim Testlauf selbst wäre als Nächstes sinnvoll: die **Modi** `light` und
 mit dem echten Spielstand), und eine **Gesamtübersicht** über alle Karten.
 `queries.card_testruns()` kann dafür schon ohne Kartennamen abgefragt werden.
 
-Dazu offen: **Missionsbereich** mit Umschalter oben (grün = Karten, rot =
-Missionen), Filter nach Missionen, Bossen, kleinen Gegnern und den
-Dreiergruppen. Bilder liegen bereit.
+Der Missionsbereich (Punkt G) ist fertig — siehe oben.
 
 ---
 

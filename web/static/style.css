@@ -731,6 +731,52 @@ textarea { width: 100%; resize: vertical; }
 .dv-green   { background: #248046; }
 .dv-grey, .dv-gray { background: #4e5058; }
 
+/* --- Umschalter Helden / Schurken --- */
+/* Zwei Welten, deshalb zwei Farben: gruen die Karten der Spieler, rot die
+   Gegner aus den Missionen. Man soll auf einen Blick sehen, wo man ist. */
+.bereich-schalter {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+  margin-bottom: 20px;
+}
+.bereich {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 18px; text-align: left; cursor: pointer;
+  border-radius: var(--r-m); border: 1px solid var(--border);
+  background: var(--panel); color: var(--muted);
+  transition: border-color .15s, background .15s, color .15s;
+}
+.bereich:hover { border-color: var(--border-strong, var(--accent)); }
+.bereich span { display: block; }
+.bereich strong { display: block; font-size: 1.05rem; color: var(--text); }
+.bereich small { font-size: .8rem; }
+.bereich-icon { font-size: 1.9rem; line-height: 1; flex: none; }
+
+.bereich.helden.aktiv {
+  border-color: var(--green);
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+.bereich.helden.aktiv strong { color: var(--green); }
+.bereich.schurken.aktiv {
+  border-color: var(--red);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+}
+.bereich.schurken.aktiv strong { color: var(--red); }
+
+/* Bosse heben sich in der Kachelansicht ab. */
+.kachel.boss { border-color: color-mix(in srgb, var(--red) 50%, transparent); }
+.kachel.boss:hover { border-color: var(--red); }
+
+@media (max-width: 560px) {
+  .bereich-schalter { grid-template-columns: 1fr; }
+  .bereich { padding: 12px 14px; }
+}
+
+/* Ein Knopf, der etwas Grosses ausloest, darf auch gross sein. */
+.btn.gross {
+  padding: .8em 1.6em; font-size: 1rem; font-weight: 600;
+  border-radius: 12px; white-space: nowrap;
+}
+
 /* --- Testlauf --- */
 /* Ueberschrift ueber einem Durchgang, wenn es mehr als einen gibt. */
 .tl-titel {

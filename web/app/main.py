@@ -20,8 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import (actions, audit, auth, cards, config, database, discordapi, jobs,
-               logparse, names, netguard, ollama, queries, roles, schema,
-               karteneditor, settings, sicherung)
+               logparse, missionen, names, netguard, ollama, queries, roles,
+               schema, karteneditor, settings, sicherung)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -221,9 +221,21 @@ def api_cards(_: auth.Caller = Depends(auth.require_login)):
             "seltenheiten": {k: len(v) for k, v in cards.rarities().items()}}
 
 
+@app.get("/api/missionen")
+def api_missionen(_: auth.Caller = Depends(auth.require_login)):
+    """Die Gegner aus den Missionen — Schurken statt Helden."""
+    return {"verfuegbar": missionen.verfuegbar(),
+            "gegner": missionen.katalog(),
+            "operationen": missionen.operationen()}
+
+
 @app.get("/api/statistics")
 def api_statistics(range: str = "30d", _: auth.Caller = Depends(auth.require_login)):
-    return queries.statistics(range if range in queries.RANGES else "30d")
+    daten = queries.statistics(range if range in queries.RANGES else "30d")
+    # Die Adresse der ausfuehrlichen Statistik kommt aus den Einstellungen -
+    # so laesst sie sich aendern, ohne die Oberflaeche neu auszuliefern.
+    daten["dashboard_url"] = settings.get("dashboard.url").strip()
+    return daten
 
 
 @app.get("/api/logs")

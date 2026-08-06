@@ -180,6 +180,10 @@ def player_detail(user_id: str | int) -> dict:
 
 
 # ---------------------------------------------------------------- Statistik --
+KAMPFARTEN = {"fight_pvp": "gegen Mitspieler", "fight_bot": "gegen den Bot",
+              "mission": "Missionen"}
+
+
 def statistics(range_key: str = "30d") -> dict:
     since = range_to_since(range_key)
     with read_connection() as con:
@@ -190,6 +194,14 @@ def statistics(range_key: str = "30d") -> dict:
         einladungen = fetch_all(
             con, "SELECT user_id, invited_count FROM invite_stats "
                  "ORDER BY invited_count DESC LIMIT 15")
+        # Was gerade laeuft - eine Zahl, die man sonst nirgends sieht.
+        laufende = fetch_all(
+            con, "SELECT kind, COUNT(*) AS anzahl FROM active_sessions "
+                 "GROUP BY kind ORDER BY anzahl DESC")
+        # Aus der Zug-Mitschrift: wie lange wird im Schnitt überlegt?
+        zuege = fetch_one(
+            con, "SELECT COUNT(*) AS zuege, AVG(bedenkzeit_ms) AS schnitt, "
+                 "COUNT(DISTINCT session_id) AS kaempfe FROM battle_moves") or {}
 
     pro_tag: Counter = Counter()
     pro_stunde = [0] * 24
@@ -197,20 +209,34 @@ def statistics(range_key: str = "30d") -> dict:
     typen: Counter = Counter()
     helden: Counter = Counter()
     angriffe: Counter = Counter()
+    held_angriff: Counter = Counter()
+    kampfarten: Counter = Counter()
+    rueckmeldungen = {"fehler": 0, "kein_fehler": 0}
     siege: defaultdict = defaultdict(lambda: {"siege": 0, "kaempfe": 0})
 
     for event in events:
         ts = event.get("created_at") or 0
         pro_tag[_day(ts)] += 1
         pro_stunde[datetime.fromtimestamp(ts, TZ).hour] += 1
-        typen[event.get("event_type") or "?"] += 1
+        typ = event.get("event_type") or "?"
+        typen[typ] += 1
         if event.get("command_name"):
             befehle[event["command_name"]] += 1
         if event.get("hero_name"):
             helden[event["hero_name"]] += 1
         if event.get("attack_name"):
             angriffe[event["attack_name"]] += 1
-        if event.get("event_type") == "fight_result":
+        # Derselbe Angriffsname kommt bei mehreren Helden vor - erst die
+        # Kombination sagt, welcher Zug tatsaechlich gespielt wurde.
+        if event.get("hero_name") and event.get("attack_name"):
+            held_angriff[f"{event['hero_name']} — {event['attack_name']}"] += 1
+        if typ == "attack_used" and event.get("session_kind"):
+            kampfarten[event["session_kind"]] += 1
+        elif typ == "fight_feedback_bug":
+            rueckmeldungen["fehler"] += 1
+        elif typ == "fight_feedback_no_bug":
+            rueckmeldungen["kein_fehler"] += 1
+        elif typ == "fight_result":
             data = _payload(event.get("payload_json"))
             gewinner, verlierer = data.get("winner_hero"), data.get("loser_hero")
             if gewinner:
@@ -229,15 +255,28 @@ def statistics(range_key: str = "30d") -> dict:
     return {
         "zeitraum": range_key,
         "ereignisse_gesamt": len(events),
+        "kaempfe_gesamt": typen.get("fight_result", 0),
+        "angriffe_gesamt": typen.get("attack_used", 0),
         "pro_tag": [{"tag": tag, "anzahl": n} for tag, n in sorted(pro_tag.items())],
         "pro_stunde": [{"stunde": f"{h:02d}:00", "anzahl": n} for h, n in enumerate(pro_stunde)],
         "top_befehle": _top(befehle),
         "ereignistypen": _top(typen, 20),
         "top_helden": _top(helden),
         "top_angriffe": _top(angriffe),
+        "top_zuege": _top(held_angriff),
+        "kampfarten": [{"name": KAMPFARTEN.get(k, k), "anzahl": n}
+                       for k, n in kampfarten.most_common()],
+        "rueckmeldungen": rueckmeldungen,
         "siegquote": siegquote,
         "top_karten": karten_top,
         "top_einlader": einladungen,
+        "laufende_sitzungen": [{"name": KAMPFARTEN.get(z.get("kind"), z.get("kind") or "?"),
+                                "anzahl": z.get("anzahl")} for z in laufende],
+        "mitschrift": {
+            "zuege": int(zuege.get("zuege") or 0),
+            "kaempfe": int(zuege.get("kaempfe") or 0),
+            "bedenkzeit_schnitt_s": round((zuege.get("schnitt") or 0) / 1000, 1),
+        },
     }
 
 

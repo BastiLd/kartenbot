@@ -148,7 +148,9 @@ const STATE = {
   kanaele: {},        // Kanal-ID -> Name, dito
   quellen: { karte: [], rolle: [], mitglied: [], frei: [] },  // fuer die Auswahlfelder
   kartenAnsicht: localStorage.getItem('kbweb.kartenAnsicht') || 'liste',
-  offeneKarte: null,   // Name der gross gezeigten Karte
+  kartenBereich: localStorage.getItem('kbweb.kartenBereich') || 'helden',  // helden | schurken
+  offeneKarte: null,    // Name der gross gezeigten Karte
+  offenerSchurke: null, // Name des gross gezeigten Missionsgegners
 };
 
 /* ------------------------------------------------------------------ Namen -- */
@@ -898,7 +900,37 @@ async function ladeKarten() {
 
 const KNOPFFARBEN = { red: 'Rot', blurple: 'Blau', green: 'Grün', grey: 'Grau' };
 
+/* Der Umschalter ganz oben: gruen die Helden, rot die Schurken.
+   Zwei Welten, dieselbe Engine - beide lassen sich testen. */
+function bereichsSchalter() {
+  const b = STATE.kartenBereich;
+  return `
+    <div class="bereich-schalter">
+      <button class="bereich helden ${b === 'helden' ? 'aktiv' : ''}" data-bereich="helden">
+        <span class="bereich-icon">🦸</span>
+        <span><strong>Helden</strong><small>Karten der Spieler</small></span>
+      </button>
+      <button class="bereich schurken ${b === 'schurken' ? 'aktiv' : ''}" data-bereich="schurken">
+        <span class="bereich-icon">🦹</span>
+        <span><strong>Schurken</strong><small>Missionen und Bosse</small></span>
+      </button>
+    </div>`;
+}
+
+function bindeBereichsSchalter(ziel) {
+  $$('[data-bereich]', ziel).forEach((b) => b.addEventListener('click', () => {
+    if (STATE.kartenBereich === b.dataset.bereich) return;
+    STATE.kartenBereich = b.dataset.bereich;
+    localStorage.setItem('kbweb.kartenBereich', STATE.kartenBereich);
+    STATE.offeneKarte = null;
+    STATE.offenerSchurke = null;
+    zeichne('karten');
+  }));
+}
+
 RENDER.karten = async (ziel, optionen = {}) => {
+  if (STATE.kartenBereich === 'schurken') return zeichneSchurken(ziel, optionen);
+
   const [karten, geaendert] = await Promise.all([
     ladeKarten(),
     api('/api/karten/aenderungen').then((d) => d.aenderungen).catch(() => ({})),
@@ -916,6 +948,7 @@ RENDER.karten = async (ziel, optionen = {}) => {
 
   const ansicht = STATE.kartenAnsicht;
   ziel.innerHTML = `
+    ${bereichsSchalter()}
     <div class="panel">
       <div class="panel-head"><h2>Kartenkatalog</h2>
         <p class="muted">${num(karten.length)} Karten aus dem Spiel. Diese Liste kommt direkt aus
@@ -940,6 +973,7 @@ RENDER.karten = async (ziel, optionen = {}) => {
       <div id="kListe" style="margin-top:8px"></div>
     </div>`;
 
+  bindeBereichsSchalter(ziel);
   $$('[data-ansicht]', ziel).forEach((b) => b.addEventListener('click', () => {
     STATE.kartenAnsicht = b.dataset.ansicht;
     localStorage.setItem('kbweb.kartenAnsicht', STATE.kartenAnsicht);
@@ -994,6 +1028,179 @@ RENDER.karten = async (ziel, optionen = {}) => {
   zeichneListe();
 };
 
+/* ---------------------------------------------------------------- Schurken */
+/* Die Gegner aus den Missionen. Jede Operation hat 3 kleine Gegner und einen
+   Boss - und weil sie ganz normale Karten sind, laesst sich auch fuer sie
+   ausrechnen, wie sie gegen die Spielerkarten dastehen. */
+
+let _schurkenCache = null;
+async function ladeSchurken() {
+  if (_schurkenCache) return _schurkenCache;
+  _schurkenCache = await api('/api/missionen');
+  return _schurkenCache;
+}
+
+const ROLLEN = { boss: 'Boss', klein: 'kleiner Gegner' };
+
+async function zeichneSchurken(ziel, optionen = {}) {
+  const d = await ladeSchurken();
+  const gegner = d.gegner || [];
+
+  if (!d.verfuegbar || !gegner.length) {
+    ziel.innerHTML = `${bereichsSchalter()}
+      <div class="panel">${leer('Die Missionsgegner konnten nicht geladen werden. '
+        + 'Ist der Bot-Ordner eingebunden?', '🦹')}</div>`;
+    return bindeBereichsSchalter(ziel);
+  }
+
+  const offen = optionen.schurke || STATE.offenerSchurke;
+  if (offen) {
+    const einer = gegner.find((g) => g.name === offen);
+    if (einer) return zeichneEinzelschurke(ziel, einer);
+    STATE.offenerSchurke = null;
+  }
+
+  ziel.innerHTML = `
+    ${bereichsSchalter()}
+    <div class="panel">
+      <div class="panel-head"><h2>Missionsgegner</h2>
+        <p class="muted">${num(gegner.length)} Gegner aus ${d.operationen.length} Operationen.
+          Jede hat drei kleine Gegner und einen Boss. Auch sie lassen sich testen —
+          dann steht da, wie sie gegen die Karten der Spieler abschneiden.</p>
+      </div>
+      <div class="form-row">
+        <label class="field"><span>Operation</span>
+          <select id="sOperation"><option value="">alle</option>
+            ${d.operationen.map((o) => `<option value="${esc(o.schluessel)}">${esc(o.name)}
+              — Boss: ${esc(o.boss || '?')}</option>`).join('')}
+          </select></label>
+        <label class="field"><span>Art</span>
+          <select id="sRolle"><option value="">alle</option>
+            <option value="boss">nur Bosse</option>
+            <option value="klein">nur kleine Gegner</option>
+          </select></label>
+        <label class="field"><span>Suchen</span>
+          <input id="sSuche" placeholder="Name"></label>
+      </div>
+      <p class="muted" id="sAnzahl" style="margin-top:12px"></p>
+      <div id="sListe" style="margin-top:8px"></div>
+    </div>`;
+
+  bindeBereichsSchalter(ziel);
+
+  const zeichneListe = () => {
+    const op = $('#sOperation', ziel).value;
+    const rolle = $('#sRolle', ziel).value;
+    const suche = $('#sSuche', ziel).value.trim().toLowerCase();
+    const treffer = gegner.filter((g) => {
+      if (op && g.operation !== op) return false;
+      if (rolle && g.rolle !== rolle) return false;
+      if (suche && !`${g.name} ${g.beschreibung || ''}`.toLowerCase().includes(suche)) return false;
+      return true;
+    });
+    $('#sAnzahl', ziel).textContent = `${num(treffer.length)} von ${num(gegner.length)} Gegnern`;
+
+    $('#sListe', ziel).innerHTML = treffer.length
+      ? `<div class="kachel-gitter">${treffer.map((g) => `
+          <button class="kachel ${g.rolle === 'boss' ? 'boss' : ''}" data-schurke="${esc(g.name)}">
+            ${g.bild ? `<img src="${esc(g.bild)}" alt="" loading="lazy">`
+                     : '<div class="kachel-ohne-bild">🦹</div>'}
+            <div class="kachel-text">
+              <strong>${esc(g.name)}</strong>
+              <span class="muted">${esc(g.operation_name)} · ${num(g.hp)} HP</span>
+              <span class="tag ${g.rolle === 'boss' ? 'accent' : ''}">${esc(ROLLEN[g.rolle] || g.rolle)}</span>
+            </div>
+          </button>`).join('')}</div>`
+      : leer('Kein Gegner passt zu dieser Auswahl.', '🔍');
+
+    $$('[data-schurke]', ziel).forEach((el) => el.addEventListener('click', () => {
+      STATE.offenerSchurke = el.dataset.schurke;
+      zeichne('karten');
+    }));
+  };
+  $('#sOperation', ziel).addEventListener('change', zeichneListe);
+  $('#sRolle', ziel).addEventListener('change', zeichneListe);
+  $('#sSuche', ziel).addEventListener('input', zeichneListe);
+  zeichneListe();
+}
+
+/* Ein Missionsgegner gross. Bewusst ohne Editor: Diese Gegner stehen im Bot
+   und lassen sich nicht über die Website ändern - testen aber schon. */
+async function zeichneEinzelschurke(ziel, g) {
+  const laeufe = await api(`/api/karten/${encodeURIComponent(g.name)}/testlaeufe`)
+    .then((d) => d.laeufe || []).catch(() => []);
+
+  ziel.innerHTML = `
+    ${bereichsSchalter()}
+    <div class="panel karte-gross">
+      <div class="karte-kopf">
+        <button class="btn ghost sm" id="sZurueck" aria-label="Zurück zur Übersicht">← Zurück</button>
+        <div class="spacer"></div>
+        <span class="tag ${g.rolle === 'boss' ? 'accent' : ''}">${esc(ROLLEN[g.rolle] || g.rolle)}</span>
+      </div>
+      <div class="karte-oben">
+        ${g.bild ? `<img class="karte-bild" src="${esc(g.bild)}" alt="">`
+                 : '<div class="karte-bild karte-ohne-bild">🦹</div>'}
+        <div class="karte-daten">
+          <h2>${esc(g.name)}</h2>
+          <p class="muted">${esc(g.operation_name)} · ${num(g.hp)} Lebenspunkte
+            · ${g.angriffe.length} Angriffe
+            ${g.passiv.length ? ` · ${g.passiv.length} passive Wirkungen` : ''}</p>
+          ${g.beschreibung ? `<p>${esc(g.beschreibung)}</p>` : ''}
+          <p class="hint">Missionsgegner stehen fest im Bot und lassen sich hier
+            nicht ändern — testen aber schon.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>Testlauf</h3>
+        <p class="muted">Wie schlägt sich dieser Gegner gegen die Karten der Spieler?
+          ${g.rolle === 'boss' ? 'Ein Boss soll die meisten Kämpfe gewinnen — aber zu besiegen sein.'
+                               : 'Ein Gegner der frühen Wellen soll fordern, nicht blockieren.'}</p>
+        <div class="spacer"></div>
+        <button class="btn primary gross" id="sTestlauf">⚔ Testlauf starten</button>
+      </div>
+      <div id="tlStatus"></div>
+      <div id="tlErgebnis">${testlaufErgebnis(letzterBrauchbarerLauf(laeufe))}</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>Angriffe</h3></div>
+      ${g.angriffe.map((a, i) => `
+        <details class="info-row" ${i === 0 ? 'open' : ''}>
+          <summary><strong>${esc(a.name)}</strong>
+            ${a.standard ? '<span class="tag accent">Standard</span>' : ''}
+            ${a.schaden ? `<span class="tag">${esc(schadenAlsText(a.schaden))}</span>` : ''}</summary>
+          <div class="why">
+            ${a.info ? `<p>${esc(a.info)}</p>` : ''}
+            <div class="mono" style="margin-top:8px">
+              Schaden ${esc(schadenAlsText(a.schaden) || '—')}
+              ${a.abklingzeit ? ` · Abklingzeit ${a.abklingzeit} Runden` : ''}
+              ${a.heilung ? ` · heilt ${esc(schadenAlsText(a.heilung))}` : ''}
+            </div>
+            ${a.wirkungen.length ? `<p class="hint" style="margin-top:8px">
+              Nebenwirkungen: ${a.wirkungen.map((w) => esc(w)).join(', ')}</p>` : ''}
+          </div>
+        </details>`).join('')}
+      ${g.passiv.length ? `<p class="hint" style="margin-top:10px">
+        Passive Wirkungen: ${g.passiv.map((p) => esc(p)).join(', ')}</p>` : ''}
+    </div>`;
+
+  bindeBereichsSchalter(ziel);
+  $('#sZurueck', ziel).addEventListener('click', () => {
+    STATE.offenerSchurke = null;
+    zeichne('karten');
+  });
+  $('#sTestlauf', ziel).addEventListener('click', () => frageTestlauf(g));
+
+  api('/api/jobs?limit=50').then((d) => {
+    const offen = (d.laufend || []).find(
+      (j) => j.kind === 'cards.testlauf' && (j.payload || {}).karte === g.name);
+    if (offen) beobachteAuftrag(offen.id, $('#tlStatus', ziel));
+  }).catch(() => {});
+}
+
 /* Eine Karte gross: Bild, alle Werte, Angriffe bearbeiten, Vorschau, Testlauf. */
 async function zeichneEinzelkarte(ziel, k, aenderung, seltenheiten) {
   // Die frueheren Testlaeufe gleich mitladen. Faellt es aus, fehlt nur der
@@ -1006,7 +1213,6 @@ async function zeichneEinzelkarte(ziel, k, aenderung, seltenheiten) {
       <div class="karte-kopf">
         <button class="btn ghost sm" id="kZurueck" aria-label="Zurück zur Übersicht">← Zurück</button>
         <div class="spacer"></div>
-        <button class="btn sm" id="kTestlauf">⚔ Testlauf</button>
         <button class="btn sm" id="kVorschau">Vorschau</button>
       </div>
 
@@ -1030,6 +1236,8 @@ async function zeichneEinzelkarte(ziel, k, aenderung, seltenheiten) {
         <p class="muted">Die Karte tritt gegen alle anderen an — mehrere hundert Kämpfe
           je Paarung. Danach steht schwarz auf weiß, ob sie zu stark, zu schwach oder
           rund ist.</p>
+        <div class="spacer"></div>
+        <button class="btn primary gross" id="kTestlaufGross">⚔ Testlauf starten</button>
       </div>
       <div id="tlStatus"></div>
       <div id="tlErgebnis">${testlaufErgebnis(letzterBrauchbarerLauf(laeufe))}</div>
@@ -1101,7 +1309,7 @@ async function zeichneEinzelkarte(ziel, k, aenderung, seltenheiten) {
   });
 
   $('#kVorschau', ziel).addEventListener('click', () => zeigeVorschau(k));
-  $('#kTestlauf', ziel).addEventListener('click', () => frageTestlauf(k));
+  $('#kTestlaufGross', ziel).addEventListener('click', () => frageTestlauf(k));
 
   // Laeuft gerade schon einer fuer diese Karte? Dann direkt weiterverfolgen -
   // sonst stuende der Fortschritt still, nur weil die Seite neu geladen wurde.
@@ -1203,13 +1411,18 @@ async function frageTestlauf(k) {
     moeglich = await api('/api/karten/testlauf/moeglichkeiten');
   } catch (e) { return fehler(e); }
 
-  const gegner = Math.max(0, (_kartenCache || []).length - 1);
+  // Angetreten wird immer gegen die Spielerkarten. Ein Held tritt gegen alle
+  // anderen an, ein Missionsgegner gegen alle - er ist ja selbst keine.
+  const istSchurke = Boolean(k.rolle);
+  const helden = (await ladeKarten()).length;
+  const gegner = istSchurke ? helden : Math.max(0, helden - 1);
   const standard = moeglich.standard_kaempfe;
 
   dialog({
     titel: `Testlauf für „${k.name}“`,
     inhalt: `
-      <p class="muted">„${esc(k.name)}“ tritt gegen alle ${num(gegner)} anderen Karten an.
+      <p class="muted">„${esc(k.name)}“ tritt gegen ${istSchurke ? 'alle' : 'alle anderen'}
+        ${num(gegner)} ${istSchurke ? 'Heldenkarten' : 'Karten'} an.
         Gerechnet wird im Bot, in kleinen Portionen — er bleibt dabei bedienbar,
         und du musst die Seite nicht offen lassen.</p>
       <div class="form-row" style="margin-top:14px">
@@ -1360,6 +1573,9 @@ RENDER.statistik = async (ziel, options = {}) => {
   const d = await api(`/api/statistics?range=${zeitraum}`);
   const bereiche = { today: 'Heute', '7d': '7 Tage', '30d': '30 Tage', '90d': '90 Tage', all: 'Gesamt' };
 
+  const m = d.mitschrift || {};
+  const laufend = (d.laufende_sitzungen || []).reduce((s, z) => s + (z.anzahl || 0), 0);
+
   ziel.innerHTML = `
     <div class="panel">
       <div class="panel-head"><h2>Zeitraum</h2>
@@ -1369,14 +1585,28 @@ RENDER.statistik = async (ziel, options = {}) => {
             `<button class="btn sm ${k === zeitraum ? 'primary' : 'ghost'}" data-zeit="${k}">${l}</button>`).join('')}
         </div>
       </div>
-      <p class="muted">${num(d.ereignisse_gesamt)} Ereignisse ausgewertet.</p>
+
+      <div class="grid cols-4" style="margin-top:4px">
+        ${stat('Kämpfe', num(d.kaempfe_gesamt), `${num(d.angriffe_gesamt)} Angriffe`)}
+        ${stat('Ereignisse', num(d.ereignisse_gesamt), 'im gewählten Zeitraum')}
+        ${stat('Läuft gerade', num(laufend),
+               laufend ? (d.laufende_sitzungen || []).map((z) => `${z.anzahl}× ${z.name}`).join(', ')
+                       : 'kein offener Kampf')}
+        ${m.zuege ? stat('Ø Bedenkzeit', `${num(m.bedenkzeit_schnitt_s)} s`,
+                         `aus ${num(m.zuege)} mitgeschriebenen Zügen`)
+                  : stat('Ø Bedenkzeit', '—', 'Mitschrift ist aus')}
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>Verlauf</h3>
+        <p class="muted">Ereignisse je Tag — daran sieht man, ob etwas läuft.</p></div>
+      ${(d.pro_tag || []).some((t) => t.anzahl) ? balken(d.pro_tag, 'tag', 'anzahl')
+        : leer('Für diesen Zeitraum gibt es noch nichts.')}
     </div>
 
     <div class="grid cols-2">
-      ${liste('Meistgenutzte Befehle', d.top_befehle, 'name', 'count', 'Noch keine Befehle aufgezeichnet.')}
       ${liste('Beliebteste Helden', d.top_helden, 'name', 'count')}
-      ${liste('Häufigste Angriffe', d.top_angriffe, 'name', 'count')}
-      ${liste('Arten von Ereignissen', d.ereignistypen, 'name', 'count')}
       <div class="panel">
         <div class="panel-head"><h3>Siegquote je Held</h3>
           <p class="muted">Nur Helden mit mindestens 3 Kämpfen.</p></div>
@@ -1387,17 +1617,41 @@ RENDER.statistik = async (ziel, options = {}) => {
             <span class="track"><span class="fill" style="width:${s.quote}%"></span></span>
           </div>`).join('') : leer('Noch keine Kämpfe ausgewertet.')}
       </div>
-      ${liste('Meistbesessene Karten', d.top_karten, 'karten_name', 'anzahl')}
-      ${bestenliste('Wer wirbt am meisten', (d.top_einlader || []).map((e) => ({
-        user_id: e.user_id, wert: e.invited_count })),
-        'Noch hat niemand jemanden geworben.')}
     </div>
 
     <div class="panel">
       <div class="panel-head"><h3>Aktivität nach Uhrzeit</h3></div>
       ${d.pro_stunde.some((s) => s.anzahl) ? balken(d.pro_stunde, 'stunde', 'anzahl')
         : leer('Noch keine Aktivität aufgezeichnet.')}
-    </div>`;
+    </div>
+
+    <details class="info-row" style="margin-top:4px">
+      <summary><strong>Mehr Zahlen</strong>
+        <span class="muted" style="margin-left:auto">Befehle, Angriffe, Karten, Werbung</span></summary>
+      <div class="why">
+        <div class="grid cols-2" style="margin-top:8px">
+          ${liste('Meistgenutzte Befehle', d.top_befehle, 'name', 'count', 'Noch keine Befehle aufgezeichnet.')}
+          ${liste('Häufigste Züge', d.top_zuege, 'name', 'count')}
+          ${liste('Meistbesessene Karten', d.top_karten, 'karten_name', 'anzahl')}
+          ${bestenliste('Wer wirbt am meisten', (d.top_einlader || []).map((e) => ({
+            user_id: e.user_id, wert: e.invited_count })),
+            'Noch hat niemand jemanden geworben.')}
+          ${(d.kampfarten || []).length ? liste('Kampfarten', d.kampfarten, 'name', 'anzahl') : ''}
+          ${liste('Arten von Ereignissen', d.ereignistypen, 'name', 'count')}
+        </div>
+      </div>
+    </details>
+
+    ${d.dashboard_url ? `
+      <div class="panel">
+        <div class="panel-head"><h3>Noch genauer nachsehen</h3>
+          <p class="muted">Das ausführliche Dashboard hat alles im Detail: Kampfverlauf,
+            Einladungen, Prüfprotokolle, laufende Sitzungen.</p>
+          <div class="spacer"></div>
+          <a class="btn primary" href="${esc(d.dashboard_url)}" target="_blank" rel="noopener">
+            Ausführliche Statistik öffnen ↗</a>
+        </div>
+      </div>` : ''}`;
 
   $$('[data-zeit]', ziel).forEach((b) =>
     b.addEventListener('click', () => zeichne('statistik', { zeitraum: b.dataset.zeit })));

@@ -325,8 +325,13 @@ def pruefe_testlauf(name: str, spielweise: str, kaempfe_je_paarung: int) -> dict
     """
     modul = _testlauf_modul()
     karte = str(name or "").strip()
+    # Helden und Schurken: Missionsgegner sind ganz normale Karten und
+    # kaempfen mit derselben Engine.
     if not any(k.get("name") == karte for k in cards.catalog()):
-        raise EditorFehler(f"Die Karte „{karte}“ gibt es nicht.")
+        from . import missionen
+        if karte not in missionen.namen():
+            raise EditorFehler(f"„{karte}“ gibt es weder bei den Helden "
+                               f"noch bei den Schurken.")
     if spielweise not in modul.AUSWAHL:
         raise EditorFehler(f"Die Spielweise „{spielweise}“ gibt es nicht. "
                            f"Möglich: {', '.join(modul.AUSWAHL)}")
