@@ -90,7 +90,38 @@ belegt, dass dabei Zahl für Zahl dasselbe herauskommt wie bei
 
 ## Was als Nächstes ansteht
 
-### Schritt 4: Zweites KI-Modell für den Testlauf (das wäre der Auftrag)
+### Zug-Mitschrift (als Nächstes gewünscht) — Vorarbeit ist gemacht
+
+Plan-Punkt 6. **Wichtig zu wissen, das kostet sonst Zeit:** `CombatRunner`
+wird **nur von der Simulation** benutzt, nicht vom echten Kampf. Wer dort
+mitschreibt, bekommt kein einziges echtes Spiel zu fassen.
+
+Im echten Spiel fällt ein Zug an genau drei Stellen in `bot.py`:
+
+| Stelle | Zeile | Was |
+|---|---|---|
+| `BattleView.execute_attack` | ~5138 | Mensch gegen Mensch und Mensch gegen Bot |
+| `BattleView.execute_bot_attack` | ~6419 | der Zug des Bots |
+| `MissionBattleView.execute_attack` | ~13377 | Missionen und Bosse |
+
+Alles Nötige liegt dort schon bereit: `player1_hp`/`player2_hp`,
+`active_effects`, `attack_cooldowns`, `round_counter`, `session_id`,
+`session_kind`, `current_turn` und die Karten. Der Aufruf gehört jeweils
+hinter `_safe_defer_interaction` — da steht die Lage vor dem Zug fest und
+der gewählte Angriff ist bekannt.
+
+**Die Bedenkzeit ist der einzige Knackpunkt.** Sie braucht einen
+Zeitstempel, wann jemand an die Reihe kam, und `current_turn` wird an
+vielen Stellen umgesetzt. Statt alle zu suchen: `current_turn` in
+`BaseBattleView` zu einer Property machen, deren Setter die Zeit merkt.
+Dann muss kein einziger Aufrufer angefasst werden — dasselbe Muster wie
+`player1_hp`, das es dort schon gibt.
+
+Der Rest ist risikoarm: eigene Tabelle, eigenes Modul unter `services/`,
+Aufruf in try/except, damit ein Fehler beim Mitschreiben niemals einen
+laufenden Kampf stört, und ein Schalter zum Abstellen.
+
+### Schritt 4: Zweites KI-Modell für den Testlauf
 
 Eines fürs **Prüfen** (Server-Analyse, wie bisher), eines für den
 **Testlauf** — mit eigenem Modell-Finder. Der vorhandene testet auf eine
