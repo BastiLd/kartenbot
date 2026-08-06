@@ -145,6 +145,7 @@ const STATE = {
   cache: {},
   namen: {},          // Discord-ID -> Name, einmal geholt und dann wiederverwendet
   rollen: {},         // Rollen-ID -> Name, dito
+  quellen: { karte: [], rolle: [], mitglied: [], frei: [] },  // fuer die Auswahlfelder
 };
 
 /* ------------------------------------------------------------------ Namen -- */
@@ -221,8 +222,8 @@ function person(id) {
    Hier steht beim Tippen sofort darunter, wer gemeint sein könnte — und der
    Pfeil rechts zeigt die Liste auch ohne Eingabe, zum Durchschauen.
    Bedienbar auch ohne Maus: Pfeiltasten, Enter, Escape. */
-function personenFeld(id, platzhalter = 'Name oder ID') {
-  return `<div class="pfeld" data-pfeld>
+function auswahlFeld(id, platzhalter = 'Name oder ID', quelle = 'person') {
+  return `<div class="pfeld" data-pfeld data-quelle="${esc(quelle)}">
     <input id="${id}" class="pfeld-eingabe" placeholder="${esc(platzhalter)}"
            autocomplete="off" role="combobox" aria-expanded="false"
            aria-controls="${id}-liste">
@@ -232,8 +233,43 @@ function personenFeld(id, platzhalter = 'Name oder ID') {
   </div>`;
 }
 
+/* Alter Name, damit bestehende Aufrufe weiter gehen. */
+function personenFeld(id, platzhalter = 'Name oder ID') {
+  return auswahlFeld(id, platzhalter, 'person');
+}
+
+/* Woher die Vorschlaege kommen. Personen werden beim Server gesucht, alles
+   andere steht schon auf der Seite und wird hier nur gefiltert. */
+const QUELLEN = {
+  person: async (text) => {
+    if (!text) return [];
+    const d = await api(`/api/names/search?q=${encodeURIComponent(text)}`);
+    merkeNamen(Object.fromEntries(d.treffer.map((t) => [t.id, t.name])));
+    return d.treffer;
+  },
+  karte: (text) => filtere(STATE.quellen.karte, text),
+  rolle: (text) => filtere(STATE.quellen.rolle, text),
+  mitglied: (text) => filtere(STATE.quellen.mitglied, text),
+  frei: (text) => filtere(STATE.quellen.frei, text),
+};
+
+/* Ohne Eingabe die ganze Liste - der Pfeil soll ja zum Stoebern taugen. */
+function filtere(liste, text) {
+  const alle = liste || [];
+  const k = (text || '').toLowerCase();
+  if (!k) return alle.slice(0, 50);
+  return alle.filter((e) => `${e.name} ${e.id || ''}`.toLowerCase().includes(k)).slice(0, 50);
+}
+
+function setzeQuelle(art, eintraege) {
+  STATE.quellen[art] = eintraege || [];
+}
+
 function bindeNamensvorschlaege(wurzel) {
   $$('[data-pfeld]', wurzel).forEach((feld) => {
+    if (feld.dataset.gebunden) return;        // nicht doppelt binden
+    feld.dataset.gebunden = '1';
+    const art = feld.dataset.quelle || 'person';
     const eingabe = $('.pfeld-eingabe', feld);
     const pfeil = $('.pfeld-pfeil', feld);
     const liste = $('.pfeld-liste', feld);
@@ -247,16 +283,16 @@ function bindeNamensvorschlaege(wurzel) {
       aktiv = -1;
     };
 
-    const zeichne = () => {
+    const zeichneListe = () => {
       if (!treffer.length) {
-        liste.innerHTML = '<div class="pfeld-leer">Niemand gefunden. '
-          + 'Die Discord-ID geht immer.</div>';
+        liste.innerHTML = '<div class="pfeld-leer">Nichts gefunden.</div>';
       } else {
         liste.innerHTML = treffer.map((t, i) => `
           <div class="pfeld-treffer ${i === aktiv ? 'aktiv' : ''}" role="option"
                aria-selected="${i === aktiv}" data-i="${i}">
             <span class="pfeld-name">${esc(t.name)}</span>
-            <span class="pfeld-id mono">${esc(t.id)}</span>
+            ${t.unter ? `<span class="pfeld-id">${esc(t.unter)}</span>`
+                      : t.id ? `<span class="pfeld-id mono">${esc(t.id)}</span>` : ''}
           </div>`).join('');
       }
       liste.hidden = false;
@@ -264,34 +300,33 @@ function bindeNamensvorschlaege(wurzel) {
     };
 
     const waehle = (i) => {
-      if (!treffer[i]) return;
-      // Der Name steht im Feld, gearbeitet wird mit der ID - beides geht,
-      // aber die ID ist eindeutig.
-      eingabe.value = treffer[i].name;
-      eingabe.dataset.id = treffer[i].id;
-      merkeNamen({ [treffer[i].id]: treffer[i].name });
+      const t = treffer[i];
+      if (!t) return;
+      eingabe.value = t.name;
+      if (t.id) eingabe.dataset.id = t.id; else delete eingabe.dataset.id;
+      if (art === 'person' && t.id) merkeNamen({ [t.id]: t.name });
       zu();
+      // Suchfelder filtern eine Liste darunter - die muss jetzt nachziehen.
+      eingabe.dispatchEvent(new Event('input', { bubbles: true }));
+      eingabe.dispatchEvent(new Event('change', { bubbles: true }));
     };
 
     const suche = async (text) => {
       try {
-        const d = await api(`/api/names/search?q=${encodeURIComponent(text)}`);
-        treffer = d.treffer;
-        merkeNamen(Object.fromEntries(treffer.map((t) => [t.id, t.name])));
+        treffer = await QUELLEN[art](text);
         aktiv = -1;
-        zeichne();
+        zeichneListe();
       } catch { zu(); }
     };
 
     eingabe.addEventListener('input', () => {
-      delete eingabe.dataset.id;           // getippt heißt: Auswahl verworfen
+      delete eingabe.dataset.id;
       const text = eingabe.value.trim();
       clearTimeout(warten);
-      if (!text) { zu(); return; }
-      warten = setTimeout(() => suche(text), 180);
+      if (!text && art === 'person') { zu(); return; }
+      warten = setTimeout(() => suche(text), art === 'person' ? 180 : 0);
     });
 
-    // Pfeil zeigt die Liste auch bei leerem Feld - zum Stöbern.
     pfeil.addEventListener('click', () => {
       if (!liste.hidden) { zu(); return; }
       eingabe.focus();
@@ -308,7 +343,7 @@ function bindeNamensvorschlaege(wurzel) {
         aktiv += e.key === 'ArrowDown' ? 1 : -1;
         if (aktiv < 0) aktiv = treffer.length - 1;
         if (aktiv >= treffer.length) aktiv = 0;
-        zeichne();
+        zeichneListe();
         const el = $('.pfeld-treffer.aktiv', liste);
         if (el) el.scrollIntoView({ block: 'nearest' });
       } else if (e.key === 'Enter' && aktiv >= 0) {
@@ -319,7 +354,6 @@ function bindeNamensvorschlaege(wurzel) {
     });
 
     liste.addEventListener('mousedown', (e) => {
-      // mousedown statt click: sonst schliesst der Fokusverlust die Liste zuerst.
       const zeile = e.target.closest('[data-i]');
       if (zeile) { e.preventDefault(); waehle(Number(zeile.dataset.i)); }
     });
@@ -328,7 +362,7 @@ function bindeNamensvorschlaege(wurzel) {
   });
 }
 
-/* Was steht wirklich im Feld? Wurde ein Vorschlag gewählt, ist es die ID -
+/* Was steht wirklich im Feld? Wurde ein Vorschlag gewaehlt, ist es die ID -
    sonst das, was getippt wurde. Das Backend nimmt beides an. */
 function personWert(feld) {
   if (!feld) return '';
@@ -516,7 +550,7 @@ function leer(text, icon = '📭') {
 RENDER.spieler = async (ziel) => {
   const [d, karten] = await Promise.all([api('/api/players'), ladeKarten()]);
   merkeNamen(d.namen);
-  const optionen = karten.map((k) => `<option value="${esc(k.name)}">`).join('');
+  setzeQuelle('karte', karten.map((k) => ({ name: k.name, unter: k.seltenheit || '' })));
 
   ziel.innerHTML = `
     <div class="panel">
@@ -544,8 +578,7 @@ RENDER.spieler = async (ziel) => {
             <option value="gruppe">Alle Karten einer Seltenheit</option>
           </select></label>
         <label class="field" id="aktKarteWrap" hidden><span>Karte</span>
-          <input id="aktKarte" list="kartenListe" placeholder="Name eingeben">
-          <datalist id="kartenListe">${optionen}</datalist></label>
+          ${auswahlFeld('aktKarte', 'Name eingeben', 'karte')}</label>
         <label class="field" id="aktGruppeWrap" hidden><span>Seltenheit</span>
           <select id="aktGruppe"></select></label>
         <label class="field" id="aktMengeWrap"><span>Menge</span>
@@ -708,6 +741,7 @@ async function ladeKarten() {
 
 RENDER.karten = async (ziel) => {
   const karten = await ladeKarten();
+  setzeQuelle('karte', karten.map((k) => ({ name: k.name, unter: k.seltenheit || '' })));
   const seltenheiten = [...new Set(karten.map((k) => k.seltenheit).filter(Boolean))];
 
   ziel.innerHTML = `
@@ -716,7 +750,7 @@ RENDER.karten = async (ziel) => {
         <p class="muted">${num(karten.length)} Karten aus dem Spiel. Diese Liste kommt direkt aus
           dem Bot — was hier nicht steht, lässt sich auch nicht vergeben.</p></div>
       <div class="form-row">
-        <label class="field"><span>Suchen</span><input id="kSuche" placeholder="Name oder Beschreibung"></label>
+        <label class="field"><span>Suchen</span>${auswahlFeld('kSuche', 'Name oder Beschreibung', 'karte')}</label>
         <label class="field"><span>Seltenheit</span>
           <select id="kSeltenheit"><option value="">alle</option>
             ${seltenheiten.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join('')}
@@ -844,6 +878,9 @@ RENDER.rollen = async (ziel) => {
   // Die Rollen sind ohnehin da - also im Verlauf den Namen zeigen statt der
   // Nummer. Nur wenn eine Rolle inzwischen geloescht wurde, bleibt die ID.
   merkeRollen(rollen);
+  setzeQuelle('rolle', rollen.map((r) => ({ id: r.id, name: r.name,
+    unter: r.manageable ? '' : 'kann der Bot nicht setzen' })));
+  setzeQuelle('mitglied', mitglieder.map((m) => ({ id: m.id, name: m.name })));
 
   ziel.innerHTML = `
     ${!rollenInfo.bot_may_manage_roles ? `<div class="notice bad" style="margin-bottom:20px">
@@ -861,7 +898,7 @@ RENDER.rollen = async (ziel) => {
           <h3>1. Wer</h3>
           <label class="field" style="margin:10px 0">
             <span>Mitglieder suchen</span>
-            <input id="mSuche" placeholder="Name oder ID">
+            ${auswahlFeld('mSuche', 'Name oder ID', 'mitglied')}
           </label>
           <div class="pick-list" id="mListe"></div>
           <p class="muted" style="margin-top:8px;font-size:.82rem">
@@ -876,7 +913,7 @@ RENDER.rollen = async (ziel) => {
         <div>
           <h3>2. Welche Rolle</h3>
           <label class="field" style="margin:10px 0">
-            <span>Rollen suchen</span><input id="rSuche" placeholder="Rollenname">
+            <span>Rollen suchen</span>${auswahlFeld('rSuche', 'Rollenname', 'rolle')}
           </label>
           <div class="pick-list" id="rListe"></div>
         </div>
@@ -1145,10 +1182,14 @@ RENDER.analyse = async (ziel) => {
 
     <div class="panel">
       <div class="panel-head"><h2>Ergebnisse</h2>
-        <p class="muted">${num(profile.profile.length)} Mitglieder ausgewertet.</p>
+        <p class="muted">${num(profile.profile.length)} Mitglieder ausgewertet.
+          ${setzeQuelle('frei', profile.profile.map((p) => ({
+            id: p.user_id,
+            name: (p.stats && p.stats.name) || STATE.namen[p.user_id] || p.user_id,
+            unter: (p.tags || []).map((t) => t.label || t).join(', '),
+          }))) || ''}</p>
         <div class="spacer"></div>
-        <input id="pSuche" placeholder="Name oder Einordnung suchen" style="max-width:240px"
-               class="field">
+        <div style="max-width:260px;width:100%">${auswahlFeld('pSuche', 'Name oder Einordnung suchen', 'frei')}</div>
       </div>
       <div id="pListe"></div>
     </div>
