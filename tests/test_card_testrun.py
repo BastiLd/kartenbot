@@ -237,6 +237,119 @@ def test_zu_wenige_karten_werden_abgelehnt():
 
 
 # --------------------------------------------------------------------------
+# Mehrere Spielweisen nacheinander
+# --------------------------------------------------------------------------
+def _mehrfach(name: str, **kwargs):
+    kwargs.setdefault("kaempfe_je_paarung", 2)
+    kwargs.setdefault("seed", 7)
+    if "karten" not in kwargs:
+        kwargs["karten"] = _karten()
+    return asyncio.run(card_testrun.laufen_mehrfach(name, **kwargs))
+
+
+def test_beides_rechnet_zwei_durchgaenge():
+    ergebnis = _mehrfach(canonical_hero_name(_karten()[0]), auswahl="beides")
+
+    assert [d["spielweise"] for d in ergebnis["durchgaenge"]] == ["optimal", "average"]
+    # Die Gesamtzahlen sind die Summe beider Durchgaenge.
+    assert ergebnis["kaempfe"] == sum(d["kaempfe"] for d in ergebnis["durchgaenge"])
+    assert ergebnis["siege"] == sum(d["siege"] for d in ergebnis["durchgaenge"])
+
+
+def test_einzelne_spielweise_ergibt_einen_durchgang():
+    ergebnis = _mehrfach(canonical_hero_name(_karten()[0]), auswahl="optimal")
+
+    assert len(ergebnis["durchgaenge"]) == 1
+    assert ergebnis["vergleich"] is None
+
+
+def test_beide_durchgaenge_bekommen_denselben_startwert():
+    """Damit jeder für sich nachrechenbar bleibt und es nur eine Zahl gibt."""
+    ergebnis = _mehrfach(canonical_hero_name(_karten()[0]), auswahl="beides", seed=123)
+
+    assert ergebnis["seed"] == 123
+    assert all(d["seed"] == 123 for d in ergebnis["durchgaenge"])
+
+
+def test_der_einzeldurchgang_stimmt_mit_dem_einzellauf_ueberein():
+    karten = _karten()
+    name = canonical_hero_name(karten[0])
+    einzeln = _lauf(name, karten=karten, spielweise="average", seed=55)
+    aus_beiden = _mehrfach(name, karten=karten, auswahl="beides", seed=55)
+    zweiter = aus_beiden["durchgaenge"][1]
+
+    assert zweiter["spielweise"] == "average"
+    assert zweiter["paarungen"] == einzeln["paarungen"]
+
+
+def test_fortschritt_zaehlt_ueber_beide_durchgaenge_durch():
+    gemeldet = []
+
+    async def fortschritt(erledigt, gesamt, stufe=None):
+        gemeldet.append((erledigt, gesamt))
+
+    karten = _karten()
+    _mehrfach(canonical_hero_name(karten[0]), karten=karten, auswahl="beides",
+              progress=fortschritt)
+
+    gegner = len(karten) - 1
+    # Gesamt ist immer die Zahl beider Durchgaenge zusammen, und der Balken
+    # faellt zwischendrin nie zurueck.
+    assert all(gesamt == gegner * 2 for _, gesamt in gemeldet)
+    assert gemeldet == sorted(gemeldet, key=lambda x: x[0])
+    assert gemeldet[-1][0] == gegner * 2
+
+
+def test_abbruch_im_ersten_durchgang_laesst_den_zweiten_aus():
+    async def sofort():
+        return True
+
+    ergebnis = _mehrfach(canonical_hero_name(_karten()[0]), auswahl="beides",
+                         cancelled=sofort)
+
+    assert ergebnis["abgebrochen"] is True
+    assert len(ergebnis["durchgaenge"]) == 1
+
+
+def test_unbekannte_auswahl_wird_abgelehnt():
+    with pytest.raises(card_testrun.TestlaufFehler, match="Spielweise"):
+        _mehrfach(canonical_hero_name(_karten()[0]), auswahl="dreimal")
+
+
+@pytest.mark.parametrize("perfekt,menschlich,erwartet", [
+    (80.0, 40.0, "belohnt"),          # nur bei perfektem Spiel stark
+    (40.0, 80.0, "Verzeiht Fehler"),  # andersherum
+    (50.0, 52.0, "ähnlich"),          # kein nennenswerter Unterschied
+])
+def test_vergleich_sagt_was_der_unterschied_bedeutet(perfekt, menschlich, erwartet):
+    durchgaenge = [
+        {"spielweise": "optimal", "siegquote": perfekt, "kaempfe": 100},
+        {"spielweise": "average", "siegquote": menschlich, "kaempfe": 100},
+    ]
+    vergleich = card_testrun.vergleiche(durchgaenge)
+
+    assert erwartet in vergleich["text"]
+    assert vergleich["abstand"] == round(perfekt - menschlich, 1)
+
+
+def test_ohne_zweiten_durchgang_gibt_es_keinen_vergleich():
+    assert card_testrun.vergleiche([{"spielweise": "optimal", "siegquote": 50.0,
+                                     "kaempfe": 100}]) is None
+    # Ein abgebrochener Durchgang ohne Kaempfe taugt nicht zum Vergleichen.
+    assert card_testrun.vergleiche([
+        {"spielweise": "optimal", "siegquote": 50.0, "kaempfe": 100},
+        {"spielweise": "average", "siegquote": 0.0, "kaempfe": 0},
+    ]) is None
+
+
+def test_voreinstellung_ist_beides():
+    assert card_testrun.STANDARD_AUSWAHL == "beides"
+    assert card_testrun.AUSWAHL["beides"]["spielweisen"] == ("optimal", "average")
+    # Jede Auswahl braucht einen Text fuer die Oberflaeche.
+    assert all(d["text"].strip() for d in card_testrun.AUSWAHL.values())
+
+
+# --------------------------------------------------------------------------
 # Einordnung in Worten
 # --------------------------------------------------------------------------
 @pytest.mark.parametrize("quote,stufe", [

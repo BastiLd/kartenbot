@@ -307,7 +307,10 @@ def testlauf_moeglichkeiten() -> dict:
     """Was sich einstellen lässt — für die Oberfläche."""
     modul = _testlauf_modul()
     return {
-        "spielweisen": [{"wert": w, "text": t} for w, t in modul.SPIELWEISEN.items()],
+        "spielweisen": [{"wert": w, "text": d["text"],
+                         "durchgaenge": len(d["spielweisen"])}
+                        for w, d in modul.AUSWAHL.items()],
+        "standard_spielweise": modul.STANDARD_AUSWAHL,
         "kampfzahlen": list(modul.KAMPFZAHLEN),
         "standard_kaempfe": modul.STANDARD_KAEMPFE,
     }
@@ -324,9 +327,9 @@ def pruefe_testlauf(name: str, spielweise: str, kaempfe_je_paarung: int) -> dict
     karte = str(name or "").strip()
     if not any(k.get("name") == karte for k in cards.catalog()):
         raise EditorFehler(f"Die Karte „{karte}“ gibt es nicht.")
-    if spielweise not in modul.SPIELWEISEN:
+    if spielweise not in modul.AUSWAHL:
         raise EditorFehler(f"Die Spielweise „{spielweise}“ gibt es nicht. "
-                           f"Möglich: {', '.join(modul.SPIELWEISEN)}")
+                           f"Möglich: {', '.join(modul.AUSWAHL)}")
     try:
         zahl = int(kaempfe_je_paarung)
     except (TypeError, ValueError):

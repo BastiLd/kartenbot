@@ -731,7 +731,17 @@ textarea { width: 100%; resize: vertical; }
 .dv-green   { background: #248046; }
 .dv-grey, .dv-gray { background: #4e5058; }
 
-/* --- Testlauf: eine Zeile je Paarung, Balken zeigt die Siegquote --- */
+/* --- Testlauf --- */
+/* Ueberschrift ueber einem Durchgang, wenn es mehr als einen gibt. */
+.tl-titel {
+  margin: 22px 0 10px; padding-top: 16px;
+  border-top: 1px solid var(--border-soft);
+  font-size: .95rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .05em;
+}
+.tl-titel:first-child { margin-top: 4px; padding-top: 0; border-top: 0; }
+
+/* Eine Zeile je Paarung, der Balken zeigt die Siegquote. */
 .tl-paar {
   display: grid;
   grid-template-columns: minmax(90px, 1.4fr) minmax(60px, 3fr) 3.6em 3.4em;

@@ -303,7 +303,7 @@ def api_karte_verlauf(name: str, _: auth.Caller = Depends(auth.require_login)):
 # --------------------------------------------------------------------------
 class TestlaufBody(BaseModel):
     name: str
-    spielweise: str = "optimal"
+    spielweise: str = "beides"
     kaempfe_je_paarung: int = 200
 
 

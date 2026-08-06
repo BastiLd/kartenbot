@@ -38,9 +38,34 @@ from simulation.loader import canonical_hero_name, load_base_runtime_cards
 # Wie gespielt wird. Die Namen sind die der Engine, der Text ist für die
 # Oberfläche.
 SPIELWEISEN = {
-    "optimal": "Bestmöglich — beide spielen jeden Zug so gut es geht",
-    "average": "Wie Menschen — mit Fehlern, wie sie im Spiel vorkommen",
+    "optimal": "bestmöglich",
+    "average": "wie Menschen, mit Fehlern",
 }
+
+# Was sich im Testlauf-Fenster auswählen lässt. „Beides" rechnet zwei
+# Durchgänge hintereinander — das ist die Voreinstellung, weil erst der
+# Vergleich zeigt, ob eine Karte nur bei perfektem Spiel stark ist. Eine
+# Karte, die alles gewinnt, solange kein Fehler passiert, ist im Discord
+# etwas ganz anderes als eine, die auch Fehler verzeiht.
+AUSWAHL = {
+    "beides": {
+        "text": "Beides nacheinander — zeigt, ob eine Karte nur bei perfektem Spiel stark ist",
+        "spielweisen": ("optimal", "average"),
+    },
+    "optimal": {
+        "text": "Nur bestmöglich — beide spielen jeden Zug so gut es geht",
+        "spielweisen": ("optimal",),
+    },
+    "average": {
+        "text": "Nur wie Menschen — mit Fehlern, wie sie im Spiel vorkommen",
+        "spielweisen": ("average",),
+    },
+}
+STANDARD_AUSWAHL = "beides"
+
+# Ab diesem Abstand in Prozentpunkten lohnt es, den Unterschied zwischen den
+# beiden Durchgängen zu erwähnen. Darunter ist es Rauschen.
+VERGLEICH_SCHWELLE = 8.0
 
 # Auswahl für die Oberfläche. Alle Werte sind gerade, damit beide Seiten
 # gleich oft anfangen (wer beginnt, hat einen Vorteil).
@@ -260,4 +285,99 @@ async def laufen(karten_name: str, *, kaempfe_je_paarung: int = STANDARD_KAEMPFE
         "abgebrochen": abgebrochen,
         "einordnung": einordnen(siegquote, paarungen),
         "paarungen": paarungen,
+    }
+
+
+def vergleiche(durchgaenge: list[dict]) -> dict | None:
+    """Was der Unterschied zwischen zwei Spielweisen bedeutet.
+
+    Das ist der eigentliche Grund, beides zu rechnen: Eine Karte, die alles
+    gewinnt, solange kein Fehler passiert, ist im Spiel etwas ganz anderes
+    als eine, die auch Fehler verzeiht. In einer einzelnen Siegquote steht
+    das nicht drin.
+    """
+    nach_weise = {d["spielweise"]: d for d in durchgaenge if d.get("kaempfe")}
+    if len(nach_weise) < 2:
+        return None
+    perfekt = nach_weise["optimal"]["siegquote"]
+    menschlich = nach_weise["average"]["siegquote"]
+    abstand = round(perfekt - menschlich, 1)
+
+    if abs(abstand) < VERGLEICH_SCHWELLE:
+        text = (f"Die Karte spielt sich in beiden Fällen ähnlich "
+                f"({perfekt} % gegenüber {menschlich} %). Wie gut jemand spielt, "
+                f"ändert an ihrer Stärke wenig.")
+    elif abstand > 0:
+        text = (f"Bei perfektem Spiel deutlich stärker: {perfekt} % gegenüber "
+                f"{menschlich} %, wenn Fehler passieren. Diese Karte belohnt, "
+                f"wer sie beherrscht — in der Hand von Anfängern bringt sie "
+                f"weniger, als die Zahlen zunächst vermuten lassen.")
+    else:
+        text = (f"Verzeiht Fehler: {menschlich} % mit Fehlern gegenüber "
+                f"{perfekt} % bei perfektem Spiel. Sie ist damit gerade für "
+                f"die stark, die noch nicht jeden Zug abwägen.")
+
+    return {"abstand": abstand, "optimal": perfekt, "average": menschlich, "text": text}
+
+
+async def laufen_mehrfach(karten_name: str, *, auswahl: str = STANDARD_AUSWAHL,
+                          kaempfe_je_paarung: int = STANDARD_KAEMPFE,
+                          fehlerquote: float = DEFAULT_AVERAGE_MISTAKE_RATE,
+                          seed: int | None = None, karten: list[dict] | None = None,
+                          progress=None, cancelled=None) -> dict:
+    """Einen Testlauf über eine oder mehrere Spielweisen.
+
+    Beide Durchgänge bekommen denselben Startwert. Sie werden dadurch nicht
+    identisch — die Spielweisen wählen andere Züge —, aber jeder für sich
+    bleibt nachrechenbar, und es gibt nur eine Zahl zu merken.
+    """
+    if auswahl not in AUSWAHL:
+        raise TestlaufFehler(f"Die Spielweise „{auswahl}“ gibt es nicht. "
+                             f"Möglich: {', '.join(AUSWAHL)}")
+    spielweisen = AUSWAHL[auswahl]["spielweisen"]
+    if seed is None:
+        seed = random.randrange(0, 2**31)
+
+    begonnen = time.monotonic()
+    durchgaenge: list[dict] = []
+
+    for nummer, spielweise in enumerate(spielweisen):
+        async def teilfortschritt(erledigt, gesamt, stufe=None, _n=nummer):
+            # Über alle Durchgänge durchzählen, sonst spränge der Balken beim
+            # zweiten wieder auf null zurück.
+            if progress:
+                zusatz = f" [Durchgang {_n + 1} von {len(spielweisen)}]" \
+                    if len(spielweisen) > 1 else ""
+                await progress(_n * gesamt + erledigt, gesamt * len(spielweisen),
+                               f"{stufe}{zusatz}" if stufe else None)
+
+        durchgaenge.append(await laufen(
+            karten_name, kaempfe_je_paarung=kaempfe_je_paarung, spielweise=spielweise,
+            fehlerquote=fehlerquote, seed=seed, karten=karten,
+            progress=teilfortschritt if progress else None, cancelled=cancelled))
+        if durchgaenge[-1]["abgebrochen"]:
+            break
+
+    kaempfe = sum(d["kaempfe"] for d in durchgaenge)
+    siege = sum(d["siege"] for d in durchgaenge)
+    niederlagen = sum(d["niederlagen"] for d in durchgaenge)
+    unentschieden = sum(d["unentschieden"] for d in durchgaenge)
+    runden = sum(d["runden_schnitt"] * d["kaempfe"] for d in durchgaenge)
+
+    return {
+        "karte": durchgaenge[0]["karte"],
+        "auswahl": auswahl,
+        "kaempfe_je_paarung": durchgaenge[0]["kaempfe_je_paarung"],
+        "gegner": max(d["gegner"] for d in durchgaenge),
+        "kaempfe": kaempfe,
+        "siege": siege,
+        "niederlagen": niederlagen,
+        "unentschieden": unentschieden,
+        "siegquote": _quote(siege, kaempfe),
+        "runden_schnitt": round(runden / kaempfe, 1) if kaempfe else 0.0,
+        "seed": int(seed),
+        "dauer_s": round(time.monotonic() - begonnen, 1),
+        "abgebrochen": any(d["abgebrochen"] for d in durchgaenge),
+        "vergleich": vergleiche(durchgaenge),
+        "durchgaenge": durchgaenge,
     }

@@ -60,15 +60,19 @@ brauchen 3, in `bot.py` oder `services/` brauchen 1.
 - Gegnernamen an die Kartenbilder angeglichen, Bilder aufbereitet unter
   `web/static/missionen/`
 - **Testlauf**: eine Karte gegen alle anderen, mit Siegquote, Rundenzahl,
-  jeder einzelnen Paarung und einer Einordnung in Worten
+  jeder einzelnen Paarung und einer Einordnung in Worten. Voreingestellt
+  laufen **zwei Durchgänge** — einmal bestmöglich gespielt, einmal mit
+  Fehlern. Erst der Vergleich zeigt, ob eine Karte nur bei perfektem Spiel
+  stark ist. (Iron-Man etwa: 10,9 % bestmöglich, 21,2 % mit Fehlern — er
+  lebt davon, dass Gegner Fehler machen.)
 
-490 Tests grün: `.venv/Scripts/python.exe -m pytest -q`
+502 Tests grün: `.venv/Scripts/python.exe -m pytest -q`
 
 ### Wie der Testlauf gebaut ist
 
 | Teil | Wo |
 |---|---|
-| Rechnen | `services/card_testrun.py` — nutzt `simulate_duel` aus `simulation/` |
+| Rechnen | `services/card_testrun.py` — `laufen()` je Spielweise, `laufen_mehrfach()` klammert die Durchgänge; nutzt `simulate_duel` aus `simulation/` |
 | Auftrag | Art `cards.testlauf`, in `web/app/jobs.py` und `bot.py` (`_run_card_testrun`) |
 | Ergebnis | Tabelle `card_testruns` — Kennzahlen als Spalten, Paarungen in `ergebnis_json` |
 | Prüfung der Eingaben | `web/app/karteneditor.py` (`pruefe_testlauf`) |

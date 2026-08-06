@@ -2793,7 +2793,7 @@ async def _run_card_testrun(job: dict, nutzlast: dict) -> dict:
         return await web_jobs.is_cancelled(job["id"])
 
     name = str(nutzlast.get("karte") or "").strip()
-    spielweise = str(nutzlast.get("spielweise") or "optimal")
+    spielweise = str(nutzlast.get("spielweise") or card_testrun.STANDARD_AUSWAHL)
     kaempfe = int(nutzlast.get("kaempfe_je_paarung") or card_testrun.STANDARD_KAEMPFE)
 
     # Sicherheitshalber den gespeicherten Kartenstand auflegen. Normalerweise
@@ -2807,8 +2807,8 @@ async def _run_card_testrun(job: dict, nutzlast: dict) -> dict:
 
     lauf_id = await web_jobs.start_card_testrun(name, job["id"], spielweise, kaempfe)
     try:
-        ergebnis = await card_testrun.laufen(
-            name, kaempfe_je_paarung=kaempfe, spielweise=spielweise,
+        ergebnis = await card_testrun.laufen_mehrfach(
+            name, kaempfe_je_paarung=kaempfe, auswahl=spielweise,
             progress=fortschritt, cancelled=abgebrochen)
     except Exception as exc:  # noqa: BLE001
         await web_jobs.finish_card_testrun(lauf_id, "failed", error=str(exc)[:1000])
@@ -2820,7 +2820,11 @@ async def _run_card_testrun(job: dict, nutzlast: dict) -> dict:
     # Die einzelnen Paarungen stehen in der Datenbank - im Auftragsergebnis
     # reicht die Zusammenfassung, sonst wird die Zeile unnoetig gross.
     return {"testlauf_id": lauf_id,
-            **{k: v for k, v in ergebnis.items() if k != "paarungen"}}
+            **{k: v for k, v in ergebnis.items() if k != "durchgaenge"},
+            "durchgaenge": [{"spielweise": d["spielweise"],
+                             "siegquote": d["siegquote"],
+                             "stufe": d["einordnung"]["stufe"]}
+                            for d in ergebnis["durchgaenge"]]}
 
 
 async def _expire_temporary_roles() -> None:

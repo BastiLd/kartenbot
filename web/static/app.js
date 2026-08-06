@@ -1220,7 +1220,8 @@ async function frageTestlauf(k) {
           </select></label>
         <label class="field"><span>Spielweise</span>
           <select id="tlSpielweise">
-            ${moeglich.spielweisen.map((s) => `<option value="${esc(s.wert)}">${esc(s.text)}</option>`).join('')}
+            ${moeglich.spielweisen.map((s) => `<option value="${esc(s.wert)}"
+              ${s.wert === moeglich.standard_spielweise ? 'selected' : ''}>${esc(s.text)}</option>`).join('')}
           </select></label>
       </div>
       <div class="notice" style="margin-top:14px" id="tlUmfang"></div>
@@ -1250,11 +1251,15 @@ async function frageTestlauf(k) {
 
   const zeigeUmfang = () => {
     const je = Number($('#tlKaempfe').value);
-    $('#tlUmfang').innerHTML = `Das sind <strong>${num(gegner * je)} Kämpfe</strong>
-      (${num(gegner)} Paarungen × ${num(je)}). Je nach Auslastung des Servers
-      dauert das einige Minuten. Du kannst jederzeit abbrechen.`;
+    const gewaehlt = moeglich.spielweisen.find((s) => s.wert === $('#tlSpielweise').value);
+    const runden = (gewaehlt && gewaehlt.durchgaenge) || 1;
+    $('#tlUmfang').innerHTML = `Das sind <strong>${num(gegner * je * runden)} Kämpfe</strong>
+      (${num(gegner)} Paarungen × ${num(je)}${runden > 1 ? ` × ${runden} Durchgänge` : ''}).
+      Je nach Auslastung des Servers dauert das einige Minuten.
+      Du kannst jederzeit abbrechen.`;
   };
   $('#tlKaempfe').addEventListener('change', zeigeUmfang);
+  $('#tlSpielweise').addEventListener('change', zeigeUmfang);
   zeigeUmfang();
 }
 
@@ -1263,11 +1268,19 @@ async function frageTestlauf(k) {
    ohne eine einzige fertige Paarung. Die duerfte das letzte richtige Ergebnis
    nicht verdecken - deshalb gewinnt der neueste Lauf, der etwas zu sagen hat. */
 function letzterBrauchbarerLauf(laeufe) {
-  return (laeufe || []).find((l) => (l.ergebnis || {}).paarungen?.length) || (laeufe || [])[0];
+  return (laeufe || []).find((l) => durchgaengeVon(l).some((d) => d.paarungen?.length))
+    || (laeufe || [])[0];
 }
 
-/* Das Ergebnis eines Laufs. Ohne Lauf ein Hinweis, sonst Kennzahlen,
-   Einordnung und jede einzelne Paarung. */
+/* Ein Lauf kann mehrere Durchgaenge haben - einen je Spielweise. */
+function durchgaengeVon(lauf) {
+  const e = (lauf || {}).ergebnis || {};
+  return e.durchgaenge || (e.paarungen ? [e] : []);
+}
+
+/* Das Ergebnis eines Laufs. Ohne Lauf ein Hinweis, sonst je Durchgang
+   Einordnung, Kennzahlen und jede einzelne Paarung — und bei zwei
+   Durchgaengen oben, was der Unterschied bedeutet. */
 function testlaufErgebnis(lauf) {
   if (!lauf) {
     return leer('Für diese Karte gab es noch keinen Testlauf. Der Knopf oben startet einen.', '⚔');
@@ -1281,37 +1294,48 @@ function testlaufErgebnis(lauf) {
   }
 
   const e = lauf.ergebnis || {};
-  const paarungen = e.paarungen || [];
-  const ordnung = e.einordnung || {};
-  const abgebrochen = lauf.status === 'cancelled';
+  const durchgaenge = durchgaengeVon(lauf);
+  const karte = e.karte || lauf.karten_name;
+  const mehrere = durchgaenge.length > 1;
 
   return `
-    ${abgebrochen ? `<div class="notice warn" style="margin-bottom:14px">
-      Dieser Lauf wurde abgebrochen. Ausgewertet sind nur die
-      ${num(paarungen.length)} fertigen Paarungen.</div>` : ''}
+    ${lauf.status === 'cancelled' ? `<div class="notice warn" style="margin-bottom:14px">
+      Dieser Lauf wurde abgebrochen. Ausgewertet ist nur, was bis dahin fertig war.</div>` : ''}
+
+    ${e.vergleich ? `<div class="notice" style="margin-bottom:14px">
+      <strong>Bestmöglich gegen menschliches Spiel</strong><br>${esc(e.vergleich.text)}</div>` : ''}
+
+    ${durchgaenge.map((d) => testlaufDurchgang(d, karte, mehrere)).join('')}
+
+    <p class="hint" style="margin-top:12px">
+      ${esc(zeitpunkt(lauf.finished_at || lauf.started_at))}
+      ${e.dauer_s ? ` · gerechnet in ${num(Math.round(e.dauer_s))} Sekunden` : ''}
+      ${e.seed ? ` · Startwert ${e.seed}` : ''}</p>`;
+}
+
+/* Ein einzelner Durchgang: eine Spielweise, alle Gegner. */
+function testlaufDurchgang(d, karte, mitUeberschrift) {
+  const ordnung = d.einordnung || {};
+  const paarungen = d.paarungen || [];
+
+  return `
+    ${mitUeberschrift ? `<h4 class="tl-titel">${esc(TL_SPIELWEISEN[d.spielweise] || d.spielweise)}</h4>` : ''}
 
     ${ordnung.stufe ? `<div class="notice ${esc(ordnung.art || '')}">
       <strong>Einordnung: ${esc(ordnung.stufe)}</strong><br>${esc(ordnung.text)}</div>` : ''}
 
     <div class="grid cols-4" style="margin-top:14px">
-      ${stat('Siegquote', `${num(e.siegquote ?? lauf.siegquote ?? 0)} %`,
-             `${num(e.siege ?? lauf.siege)} Siege, ${num(e.niederlagen ?? lauf.niederlagen)} Niederlagen`,
-             (e.siegquote ?? 0) >= 43 && (e.siegquote ?? 0) <= 57 ? 'good' : '')}
-      ${stat('Kämpfe', num(e.kaempfe ?? lauf.kaempfe_gesamt),
-             `${num(paarungen.length)} Gegner × ${num(lauf.kaempfe_je_paarung)}`)}
-      ${stat('Ø Runden', num(e.runden_schnitt ?? lauf.runden_schnitt ?? 0),
-             'je Kampf, beide Seiten zusammen')}
-      ${stat('Unentschieden', num(e.unentschieden ?? lauf.unentschieden),
-             e.unentschieden ? 'Kämpfe ohne Sieger' : 'keine')}
+      ${stat('Siegquote', `${num(d.siegquote ?? 0)} %`,
+             `${num(d.siege)} Siege, ${num(d.niederlagen)} Niederlagen`,
+             (d.siegquote ?? 0) >= 43 && (d.siegquote ?? 0) <= 57 ? 'good' : '')}
+      ${stat('Kämpfe', num(d.kaempfe),
+             `${num(paarungen.length)} Gegner × ${num(d.kaempfe_je_paarung)}`)}
+      ${stat('Ø Runden', num(d.runden_schnitt ?? 0), 'je Kampf, beide Seiten zusammen')}
+      ${stat('Unentschieden', num(d.unentschieden),
+             d.unentschieden ? 'Kämpfe ohne Sieger' : 'keine')}
     </div>
 
-    <p class="hint" style="margin-top:12px">
-      ${esc(zeitpunkt(lauf.finished_at || lauf.started_at))} ·
-      Spielweise: ${esc(TL_SPIELWEISEN[lauf.spielweise] || lauf.spielweise)}
-      ${e.dauer_s ? ` · gerechnet in ${num(Math.round(e.dauer_s))} Sekunden` : ''}
-      ${e.seed ? ` · Startwert ${e.seed}` : ''}</p>
-
-    ${paarungen.length ? `<details class="info-row" open style="margin-top:14px">
+    ${paarungen.length ? `<details class="info-row" ${mitUeberschrift ? '' : 'open'} style="margin-top:14px">
       <summary><strong>Alle ${num(paarungen.length)} Paarungen</strong>
         <span class="muted" style="margin-left:auto">schwerste Gegner zuerst</span></summary>
       <div class="why">
@@ -1323,13 +1347,13 @@ function testlaufErgebnis(lauf) {
             <span class="tl-quote">${num(p.siegquote)} %</span>
             <span class="tl-runden muted">${num(p.runden_schnitt)} R.</span>
           </div>`).join('')}
-        <p class="hint" style="margin-top:10px">Der Balken zeigt, wie oft „${esc(e.karte || lauf.karten_name)}“
+        <p class="hint" style="margin-top:10px">Der Balken zeigt, wie oft „${esc(karte)}“
           gegen diesen Gegner gewinnt. 50 % heißt: ausgeglichen.</p>
       </div>
     </details>` : ''}`;
 }
 
-const TL_SPIELWEISEN = { optimal: 'bestmöglich', average: 'wie Menschen, mit Fehlern' };
+const TL_SPIELWEISEN = { optimal: 'Bestmöglich gespielt', average: 'Wie Menschen, mit Fehlern' };
 
 RENDER.statistik = async (ziel, options = {}) => {
   const zeitraum = options.zeitraum || '30d';
