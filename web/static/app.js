@@ -1517,10 +1517,84 @@ RENDER.steuerung = async (ziel) => {
     </div>
 
     <div class="panel">
+      <div class="panel-head"><h3>Datenbank</h3>
+        <p class="muted">Kopie ziehen, bevor du etwas Größeres vorhast.</p></div>
+      <div id="dbZustand"><div class="skeleton" style="width:45%"></div></div>
+      <div class="form-actions" style="margin-top:12px">
+        <a class="btn" href="/api/datenbank/sicherung" download>Kopie herunterladen</a>
+        <a class="btn ghost" href="/api/bericht.csv?bereich=spieler" download>Spieler als CSV</a>
+        <a class="btn ghost" href="/api/bericht.csv?bereich=protokoll" download>Protokoll als CSV</a>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>Papierkorb</h3>
+        <p class="muted">Gelöschtes bleibt hier liegen und lässt sich zurückholen.</p></div>
+      <div id="papierkorbListe"><div class="skeleton"></div></div>
+    </div>
+
+    <div class="panel">
       <div class="panel-head"><h3>Protokoll der Website</h3>
         <p class="muted">Jede Aktion, die hier ausgelöst wurde.</p></div>
       <div id="auditListe"><div class="skeleton"></div></div>
     </div>`;
+
+  // Zustand der Datenbank
+  api('/api/datenbank/pruefen').then((p) => {
+    $('#dbZustand', ziel).innerHTML = `
+      <div class="notice ${p.in_ordnung ? 'ok' : 'bad'}">
+        ${p.in_ordnung
+          ? `Die Datenbank ist in Ordnung — ${p.tabellen} Tabellen, ${bytes(p.groesse)}.`
+          : `Die Prüfung meldet: <strong>${esc(p.ergebnis)}</strong>
+             ${p.verwaiste_verweise ? `<br>${p.verwaiste_verweise} verwaiste Verweise.` : ''}`}
+      </div>`;
+  }).catch((e) => { $('#dbZustand', ziel).innerHTML = `<div class="notice bad">${esc(e.message)}</div>`; });
+
+  // Papierkorb
+  const ladePapierkorb = async () => {
+    const box = $('#papierkorbListe', ziel);
+    try {
+      const d = await api('/api/papierkorb');
+      box.innerHTML = d.eintraege.length ? d.eintraege.map((e) => `
+        <div class="bar-row"><span class="name">
+          <strong>${esc(e.titel)}</strong>
+          <span class="muted"> · ${e.anzahl} ${e.anzahl === 1 ? 'Eintrag' : 'Einträge'}
+          ${e.actor ? ` · durch ${esc(e.actor)}` : ''}</span>
+          ${e.zurueckgeholt_am ? '<span class="tag ok">zurückgeholt</span>' : ''}
+        </span>
+        <span class="val" style="display:flex;gap:6px;align-items:center">
+          <span class="muted">${zeitpunkt(e.erstellt_am)}</span>
+          ${e.zurueckgeholt_am ? '' :
+            `<button class="btn sm" data-zurueck="${e.id}">Zurückholen</button>`}
+          <button class="btn sm danger" data-weg="${e.id}">Endgültig weg</button>
+        </span></div>`).join('')
+        : leer(`Nichts im Papierkorb. Gelöschtes bleibt ${d.aufbewahrung_tage} Tage liegen.`);
+
+      $$('[data-zurueck]', box).forEach((b) => b.addEventListener('click', async () => {
+        try {
+          const r = await api(`/api/papierkorb/${b.dataset.zurueck}/zurueckholen`, { method: 'POST' });
+          toast(`${r.gesamt} ${r.gesamt === 1 ? 'Eintrag' : 'Einträge'} zurückgeholt.`, 'ok');
+          if (r.fehler && r.fehler.length) toast(`Teilweise fehlgeschlagen: ${esc(r.fehler[0])}`, 'bad');
+          ladePapierkorb();
+        } catch (e) { fehler(e); }
+      }));
+
+      $$('[data-weg]', box).forEach((b) => b.addEventListener('click', async () => {
+        const ok = await bestaetige({
+          titel: 'Endgültig löschen?',
+          warnung: 'Danach ist es wirklich weg — es gibt keinen zweiten Papierkorb.',
+          knopfText: 'Ja, endgültig löschen',
+        });
+        if (!ok) return;
+        try {
+          await api(`/api/papierkorb/${b.dataset.weg}`, { method: 'DELETE' });
+          toast('Endgültig gelöscht.', '');
+          ladePapierkorb();
+        } catch (e) { fehler(e); }
+      }));
+    } catch (e) { box.innerHTML = `<div class="notice bad">${esc(e.message)}</div>`; }
+  };
+  ladePapierkorb();
 
   merkeKanaele(kanaele);
 

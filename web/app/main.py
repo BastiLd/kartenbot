@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from . import (actions, audit, auth, cards, config, database, discordapi, jobs,
                logparse, names, netguard, ollama, queries, roles, schema,
-               settings)
+               settings, sicherung)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -250,6 +250,91 @@ def api_audit(limit: int = 100, guild_id: str | None = None,
 # --------------------------------------------------------------------------
 class SettingsBody(BaseModel):
     changes: dict[str, str]
+
+
+@app.get("/api/papierkorb")
+def api_papierkorb(_: auth.Caller = Depends(auth.require_login)):
+    return {"eintraege": sicherung.liste(),
+            "aufbewahrung_tage": sicherung.AUFBEWAHRUNG_TAGE}
+
+
+@app.post("/api/papierkorb/{eintrag_id}/zurueckholen")
+def api_papierkorb_zurueck(eintrag_id: int, request: Request,
+                           caller: auth.Caller = Depends(auth.require_critical)):
+    try:
+        ergebnis = sicherung.hole_zurueck(eintrag_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    audit.record(actor=caller.actor, action="papierkorb.zurueckgeholt",
+                 target=str(eintrag_id), detail=f"{ergebnis['gesamt']} Zeilen",
+                 client_ip=_ip(request))
+    return ergebnis
+
+
+@app.delete("/api/papierkorb/{eintrag_id}")
+def api_papierkorb_weg(eintrag_id: int, request: Request,
+                       caller: auth.Caller = Depends(auth.require_critical)):
+    weg = sicherung.wirf_weg(eintrag_id)
+    audit.record(actor=caller.actor, action="papierkorb.endgueltig_geloescht",
+                 target=str(eintrag_id), client_ip=_ip(request), ok=weg)
+    return {"geloescht": weg}
+
+
+@app.get("/api/datenbank/pruefen")
+def api_db_pruefen(_: auth.Caller = Depends(auth.require_login)):
+    return sicherung.pruefe_datenbank()
+
+
+@app.get("/api/datenbank/sicherung")
+def api_db_sicherung(request: Request,
+                     caller: auth.Caller = Depends(auth.require_critical)):
+    """Eine Kopie der Datenbank zum Herunterladen.
+
+    Nur aus dem Heimnetz: Die Datei enthaelt alles, was der Bot ueber alle
+    Spieler weiss.
+    """
+    pfad = sicherung.erstelle_kopie()
+    audit.record(actor=caller.actor, action="datenbank.gesichert",
+                 detail=f"{pfad.stat().st_size} Bytes", client_ip=_ip(request))
+    return FileResponse(pfad, filename=pfad.name, media_type="application/octet-stream")
+
+
+@app.get("/api/bericht.csv")
+def api_bericht(bereich: str = "spieler",
+                caller: auth.Caller = Depends(auth.require_login)):
+    """Zahlen als CSV zum Herunterladen — oeffnet sich direkt in Excel.
+
+    Bewusst CSV und nicht xlsx: Das braucht keine zusaetzliche Bibliothek,
+    laesst sich ueberall oeffnen, und der Inhalt bleibt lesbar, auch in zehn
+    Jahren.
+    """
+    import csv
+    import io
+
+    puffer = io.StringIO()
+    schreiber = csv.writer(puffer, delimiter=";")     # Semikolon: so erwartet es Excel hier
+
+    if bereich == "spieler":
+        daten = queries.players(limit=1000)
+        schreiber.writerow(["Liste", "Discord-ID", "Wert"])
+        for liste_name, schluessel in (("Karten", "top_karten"), ("Infinitydust", "top_dust"),
+                                       ("Units", "top_units")):
+            for zeile in daten.get(schluessel, []):
+                schreiber.writerow([liste_name, zeile.get("user_id"), zeile.get("wert")])
+    elif bereich == "protokoll":
+        schreiber.writerow(["Zeitpunkt", "Wer", "Aktion", "Ziel", "Einzelheit", "Erfolgreich"])
+        for e in audit.recent(limit=1000):
+            schreiber.writerow([e.get("created_at"), e.get("actor"), e.get("action"),
+                                e.get("target"), e.get("detail"),
+                                "ja" if e.get("ok") else "nein"])
+    else:
+        raise HTTPException(400, "Unbekannter Bereich. Möglich: spieler, protokoll.")
+
+    # BOM voranstellen, sonst zeigt Excel Umlaute als Buchstabensalat.
+    inhalt = "﻿" + puffer.getvalue()
+    return Response(
+        content=inhalt, media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="kartenbot-{bereich}.csv"'})
 
 
 @app.get("/api/selbsttest")
@@ -561,7 +646,7 @@ def api_channel(body: ChannelBody, request: Request,
 @app.post("/api/actions/player/delete")
 def api_player_delete(body: UserBody, request: Request,
                       caller: auth.Caller = Depends(auth.require_critical)):
-    result = actions.delete_player(body.user_id)
+    result = actions.delete_player(body.user_id, actor=caller.actor)
     audit.record(actor=caller.actor, action="spieler.geloescht", target=body.user_id,
                  detail=f"{result['gesamt']} Zeilen", client_ip=_ip(request))
     return result

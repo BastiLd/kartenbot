@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
-from . import cards, database, schema
+from . import cards, database, schema, sicherung
 
 MAX_AMOUNT = 1_000_000     # Schutz vor Vertippern ("10000000 statt 100")
 
@@ -231,15 +231,29 @@ _USER_TABLES = (
 )
 
 
-def delete_player(user_id) -> dict:
+def delete_player(user_id, *, actor: str = "") -> dict:
+    """Alle Daten einer Person entfernen — aber erst in den Papierkorb legen.
+
+    Vorher war Loeschen endgueltig. Ein Vertipper in der ID, und die Sammlung
+    von jemand anderem war weg, ohne Weg zurueck. Jetzt liegt alles 30 Tage
+    im Papierkorb und laesst sich mit einem Klick zurueckholen.
+    """
     uid = _check_user(user_id)
     geloescht = {}
     with database.write_connection() as con:
+        gesichert = sicherung.sammle_zeilen(con, _USER_TABLES, uid)
         for table, column in _USER_TABLES:
             try:
                 cursor = con.execute(f"DELETE FROM {table} WHERE {column} = ?", (uid,))
                 geloescht[table] = cursor.rowcount
             except Exception:                                       # noqa: BLE001
                 geloescht[table] = 0
+
+    papierkorb_id = sicherung.lege_ab(
+        art="spieler-geloescht",
+        titel=f"Spielerdaten von {uid} gelöscht",
+        betrifft=str(uid), daten=gesichert, actor=actor)
+
     return {"user_id": str(uid), "geloescht": geloescht,
-            "gesamt": sum(v for v in geloescht.values() if v > 0)}
+            "gesamt": sum(v for v in geloescht.values() if v > 0),
+            "papierkorb_id": papierkorb_id}
