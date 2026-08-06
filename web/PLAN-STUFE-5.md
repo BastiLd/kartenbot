@@ -167,22 +167,31 @@ Bilder gibt es zusätzlich für Doc Ock, Hela, Taskmaster und Red Skull —
 diese Missionen existieren im Bot noch nicht. Sie werden erst angezeigt,
 wenn es sie gibt.
 
-## Was beim Zuordnen der Bilder auffiel
+## Zuordnung der Bilder — gelöst
 
-**Die Namen stimmen nicht überall überein.** Automatisch zuordnen geht
-deshalb nur teilweise:
+Die Namen in den Dateien sind teils falsch, die **Nummer im Dateinamen ist
+aber verlässlich**: 1 bis 3 sind die kleinen Gegner in der Reihenfolge des
+Codes, 4 ist der Boss. Danach wird zugeordnet, nicht nach dem Namen.
 
-- **GRUENER_TERROR** und **HEXENFEUER**: alle vier Namen passen. Hier geht es
-  automatisch.
-- **BROKEN_TIMELINE**: Code sagt „Umprogrammierter Hulkbuster", das Bild
-  heißt „Maestro-Hulkbuster".
-- **GOLDENER_KAEFIG**: Code sagt „Fisks Enforcer", dazu gibt es kein Bild —
-  stattdessen liegt „Korrupte SWAT-Einheit" doppelt vor.
-- **TECHNISCHER_KOLLAPS**: **alle drei** kleinen Gegner heißen anders.
-  Code: A.I.M.-Laborwache, A.I.M.-Wissenschaftler, Schwerer Kampf-Mech.
-  Bilder: A.I.M. Techniker, A.I.M. Mutagen-Forscher, Kybernetischer Exo-Suit.
+Der Blick auf die Kartenbilder hat es bestätigt:
 
-**Folge:** Es braucht eine Zuordnung von Hand — je Gegner ein Bild wählen.
+- **Goldener Käfig**: Die Datei `Korrupte SWAT-Einheit (King Pin 3).png`
+  zeigt auf der Karte „FISK RECHTE-HAND" — das ist *Fisks Enforcer*, nicht
+  die SWAT-Einheit. Nur der Dateiname ist falsch. Das vermeintlich fehlende
+  Bild gibt es also doch.
+- **Technischer Kollaps**: Alle drei kleinen Gegner heißen anders, stehen
+  aber in derselben Reihenfolge — Techniker zu Laborwache, Mutagen-Forscher
+  zu Wissenschaftler, Exo-Suit zu Kampf-Mech.
+- **Broken Timeline**: „Maestro-Hulkbuster" ist der „Umprogrammierte
+  Hulkbuster" des Codes. Maestros Bild heißt `Maestro.png` ohne Nummer — es
+  bleibt als einziges übrig und ist damit eindeutig der Boss.
+- **Grüner Terror** und **Hexenfeuer**: Namen und Nummern passen ohnehin.
+
+**Folge:** Die Zuordnung läuft automatisch über die Nummer. Auf der Website
+lässt sie sich trotzdem je Gegner ändern, falls doch etwas verrutscht — und
+zur Kontrolle wird jedes Bild neben dem Namen aus dem Code gezeigt.
+
+Der alte Vorbehalt gilt nicht mehr: Es braucht **keine** Zuordnung von Hand.
 Das ist ohnehin die bessere Lösung als raten, und es ist einmalige Arbeit.
 Wo die Namen passen, wird vorbelegt.
 
