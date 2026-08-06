@@ -521,3 +521,30 @@ td.num, th.num { text-align: right; font-family: var(--mono); }
 @media (max-width: 640px) {
   .person .p-id { display: none; }
 }
+
+/* ------------------------------------------------------------- Selbsttest -- */
+.pruefliste { display: grid; gap: 2px; }
+.pruefzeile {
+  display: grid;
+  grid-template-columns: 1.4em minmax(11em, auto) 1fr;
+  gap: .7em; align-items: baseline;
+  padding: .45em 0;
+}
+.pruef-zeichen { font-weight: 700; text-align: center; }
+.pruef-zeichen.ok  { color: var(--gut, #34d399); }
+.pruef-zeichen.bad { color: var(--schlecht, #f87171); }
+.pruef-name { font-weight: 600; }
+.pruef-text { word-break: break-word; }
+/* Der Hinweis steht unter der Zeile, eingerueckt bis unter den Namen. */
+.pruef-hinweis {
+  grid-column: 1 / -1;
+  margin: -.2em 0 .6em calc(1.4em + .7em);
+  padding-left: .8em;
+  border-left: 2px solid var(--rand, #223052);
+  color: var(--muted);
+  font-size: .86em;
+}
+@media (max-width: 640px) {
+  .pruefzeile { grid-template-columns: 1.4em 1fr; }
+  .pruef-text { grid-column: 2; }
+}

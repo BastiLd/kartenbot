@@ -10,6 +10,7 @@ zusätzlich die passende Netzstufe. Discord-Aktionen laufen je nach Einstellung
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -41,6 +42,23 @@ def _startup() -> None:
 # --------------------------------------------------------------------------
 # Fehler in verständlicher Form
 # --------------------------------------------------------------------------
+@app.exception_handler(Exception)
+async def _unerwartet(request: Request, exc: Exception):
+    """Letzte Auffanglinie: ein Fehler muss sich selbst erklaeren koennen.
+
+    Vorher kam bei einem unbehandelten Fehler nur ein nacktes 500 ohne Inhalt
+    an. Auf dem Bildschirm stand dann "Internal Server Error" - was niemandem
+    weiterhilft, weder beim Benutzen noch beim Reparieren. Jetzt landet der
+    vollstaendige Verlauf im Protokoll des Containers, und in der Oberflaeche
+    steht wenigstens, welche Art von Fehler wo aufgetreten ist.
+    """
+    logging.exception("Unbehandelter Fehler bei %s %s", request.method, request.url.path)
+    return JSONResponse(
+        {"error": f"{type(exc).__name__} bei {request.url.path}: {exc}"
+                  f" — der vollstaendige Verlauf steht im Protokoll des Containers."},
+        status_code=500)
+
+
 @app.exception_handler(database.WebDBError)
 async def _db_error(_request: Request, exc: database.WebDBError):
     return JSONResponse({"error": str(exc)}, status_code=503)
@@ -232,6 +250,71 @@ def api_audit(limit: int = 100, guild_id: str | None = None,
 # --------------------------------------------------------------------------
 class SettingsBody(BaseModel):
     changes: dict[str, str]
+
+
+@app.get("/api/selbsttest")
+async def api_selbsttest(_: auth.Caller = Depends(auth.require_login)):
+    """Prueft der Reihe nach, was zum Betrieb noetig ist.
+
+    Gedacht als erste Anlaufstelle, wenn etwas nicht geht: statt zu raten,
+    warum keine Namen erscheinen, steht hier schwarz auf weiss, ob der
+    Bot-Token vorhanden ist, ob er von Discord auch akzeptiert wird und ob
+    die Datenbank beschreibbar ist.
+    """
+    ergebnis = []
+
+    def melde(name: str, ok: bool, text: str, hinweis: str = ""):
+        ergebnis.append({"name": name, "ok": ok, "text": text, "hinweis": hinweis})
+
+    # 1. Datenbank lesen
+    try:
+        with database.read_connection() as con:
+            anzahl = database.scalar(con, "SELECT COUNT(*) FROM user_karten")
+        melde("Datenbank lesen", True, f"in Ordnung ({anzahl} Karteneintraege)")
+    except Exception as exc:  # noqa: BLE001
+        melde("Datenbank lesen", False, str(exc),
+              "Stimmt KARTENBOT_DIR? Der Ordner mit bot.py und kartenbot.db muss eingebunden sein.")
+
+    # 2. Datenbank schreiben - genau das, woran das Speichern von Einstellungen haengt
+    try:
+        with database.write_connection() as con:
+            con.execute("CREATE TABLE IF NOT EXISTS web_schreibtest (x INTEGER)")
+            con.execute("DROP TABLE web_schreibtest")
+        melde("Datenbank beschreiben", True, "in Ordnung")
+    except Exception as exc:  # noqa: BLE001
+        melde("Datenbank beschreiben", False, str(exc),
+              "Ohne Schreibrecht lassen sich weder Einstellungen speichern noch Karten vergeben.")
+
+    # 3. Bot-Token vorhanden?
+    if not discordapi.bot_token_available():
+        melde("Bot-Token hinterlegt", False, "kein Token gesetzt",
+              "BOT_TOKEN in den Umgebungsvariablen des Stacks eintragen und "
+              "„Update the stack“ druecken. Ohne Token bleiben ueberall die IDs stehen.")
+    else:
+        melde("Bot-Token hinterlegt", True, "vorhanden")
+        # 4. Akzeptiert Discord ihn auch? Nur so weiss man es sicher.
+        try:
+            ich = await discordapi.bot_user()
+            name = ich.get("global_name") or ich.get("username") or "?"
+            melde("Token gueltig bei Discord", True, f"angemeldet als {name}")
+        except Exception as exc:  # noqa: BLE001
+            melde("Token gueltig bei Discord", False, str(exc),
+                  "Der Token wird abgelehnt. Tippfehler, Leerzeichen am Rand, "
+                  "oder er wurde im Entwicklerportal neu erzeugt?")
+
+    # 5. Namen im Zwischenspeicher
+    try:
+        with database.read_connection() as con:
+            gemerkt = database.scalar(
+                con, "SELECT COUNT(*) FROM web_discord_cache WHERE kind = 'user'")
+        melde("Bekannte Namen", gemerkt > 0, f"{gemerkt} Namen gemerkt",
+              "" if gemerkt else "Oeffne einmal „Rollen & Mitglieder“ und waehle "
+                                 "deinen Server - danach sind die Namen ueberall bekannt.")
+    except Exception as exc:  # noqa: BLE001
+        melde("Bekannte Namen", False, str(exc))
+
+    return {"pruefungen": ergebnis,
+            "alles_gut": all(p["ok"] for p in ergebnis)}
 
 
 class NamesBody(BaseModel):

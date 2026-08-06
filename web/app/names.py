@@ -26,6 +26,17 @@ def _jetzt() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def ist_gueltige_id(text: str) -> bool:
+    """Sieht das ueberhaupt nach einer Discord-ID aus?
+
+    Discord-IDs sind vorzeichenlose 64-Bit-Zahlen. Wer eine laengere Zahl
+    eingibt, bekommt sonst weiter unten einen Ueberlauf aus SQLite um die
+    Ohren gehauen - ein Absturz, wo eine freundliche Meldung gehoert.
+    """
+    text = (text or "").strip()
+    return text.isdigit() and 0 < int(text) < 2 ** 63
+
+
 def _anzeigename(daten: dict) -> str:
     """Was der Mensch sehen soll.
 
@@ -116,7 +127,7 @@ async def _hole_von_discord(ids: list[str]) -> dict[str, str]:
 
 async def aufloesen(ids: list[str], nachladen: bool = True) -> dict[str, str]:
     """IDs zu Namen. Unbekanntes bleibt schlicht weg — der Aufrufer zeigt dann die ID."""
-    eindeutig = [str(i) for i in dict.fromkeys(ids) if str(i).isdigit()]
+    eindeutig = [str(i) for i in dict.fromkeys(ids) if ist_gueltige_id(str(i))]
     if not eindeutig:
         return {}
     treffer = _lies_zwischenspeicher(eindeutig)
@@ -170,11 +181,13 @@ async def zu_id(eingabe: str) -> str | None:
     if not eingabe:
         return None
     if eingabe.isdigit():
-        return eingabe
+        # Zu grosse Zahlen sind keine Discord-ID - lieber sauber ablehnen als
+        # weiter unten mit einem Ueberlauf abzustuerzen.
+        return eingabe if ist_gueltige_id(eingabe) else None
     # <@123> und <@!123> aus Discord kopiert
     roh = eingabe.strip("<@!>")
     if roh.isdigit():
-        return roh
+        return roh if ist_gueltige_id(roh) else None
     treffer = suche(eingabe, grenze=5)
     genau = [t for t in treffer if t["name"].lower() == eingabe.lower()]
     if len(genau) == 1:

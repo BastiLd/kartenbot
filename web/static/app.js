@@ -1214,16 +1214,31 @@ function schalter(guild, flag, label, aktiv) {
 
 /* ----------------------------------------------------------- Einstellungen */
 RENDER.einstellungen = async (ziel) => {
-  const [d, ki, modelle] = await Promise.all([
+  const [d, ki, modelle, test] = await Promise.all([
     api('/api/settings'),
     api('/api/ai/status').catch((e) => ({ ok: false, error: e.message })),
     // Nur fürs Auswahlfeld. Ist Ollama gerade weg, bleibt es eben ein Textfeld.
     api('/api/ai/models').then((m) => m.modelle).catch(() => null),
+    api('/api/selbsttest').catch((e) => ({ pruefungen: [], fehler: e.message })),
   ]);
   const gruppen = {};
   d.einstellungen.forEach((e) => { (gruppen[e.group] = gruppen[e.group] || []).push(e); });
 
   ziel.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h2>Selbsttest</h2>
+        <p class="muted">Was funktioniert gerade, und was nicht.</p></div>
+      ${(test.pruefungen || []).length ? `<div class="pruefliste">
+        ${test.pruefungen.map((p) => `
+          <div class="pruefzeile">
+            <span class="pruef-zeichen ${p.ok ? 'ok' : 'bad'}">${p.ok ? '✓' : '✕'}</span>
+            <span class="pruef-name">${esc(p.name)}</span>
+            <span class="pruef-text ${p.ok ? 'muted' : ''}">${esc(p.text)}</span>
+          </div>
+          ${p.hinweis ? `<div class="pruef-hinweis">${esc(p.hinweis)}</div>` : ''}`).join('')}
+      </div>` : `<div class="notice bad">Selbsttest nicht möglich: ${esc(test.fehler || '')}</div>`}
+    </div>
+
     <div class="panel">
       <div class="panel-head"><h2>KI-Verbindung</h2></div>
       <div class="notice ${ki.ok ? 'ok' : 'warn'}">
