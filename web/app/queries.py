@@ -328,6 +328,25 @@ def mod_events(guild_id: str, limit: int = 200) -> list[dict]:
             (str(guild_id), int(limit)))
 
 
+def card_testruns(karten_name: str | None = None, limit: int = 10) -> list[dict]:
+    """Testläufe, neueste zuerst.
+
+    Ohne Kartennamen kommen die letzten Läufe über alle Karten — das ist die
+    Grundlage für eine spätere Gesamtübersicht.
+    """
+    sql = "SELECT * FROM card_testruns"
+    params: tuple = ()
+    if karten_name:
+        sql += " WHERE karten_name = ?"
+        params = (str(karten_name),)
+    sql += " ORDER BY id DESC LIMIT ?"
+    with read_connection() as con:
+        rows = fetch_all(con, sql, params + (int(limit),))
+    for row in rows:
+        row["ergebnis"] = _payload(row.pop("ergebnis_json", None))
+    return rows
+
+
 def role_history(guild_id: str, limit: int = 200) -> list[dict]:
     with read_connection() as con:
         return fetch_all(

@@ -731,7 +731,32 @@ textarea { width: 100%; resize: vertical; }
 .dv-green   { background: #248046; }
 .dv-grey, .dv-gray { background: #4e5058; }
 
+/* --- Testlauf: eine Zeile je Paarung, Balken zeigt die Siegquote --- */
+.tl-paar {
+  display: grid;
+  grid-template-columns: minmax(90px, 1.4fr) minmax(60px, 3fr) 3.6em 3.4em;
+  align-items: center; gap: 10px;
+  padding: 3px 0;
+}
+.tl-gegner {
+  color: var(--text); font-size: .88rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 50 % ist die Mitte - der Strich macht sichtbar, wo "ausgeglichen" liegt. */
+.tl-balken { position: relative; }
+.tl-balken::after {
+  content: ""; position: absolute; left: 50%; top: 0; bottom: 0;
+  width: 1px; background: var(--muted); opacity: .55;
+}
+.tl-balken.gut > i { background: var(--green); }
+.tl-balken.schlecht > i { background: var(--red); }
+.tl-quote { font-variant-numeric: tabular-nums; font-size: .84rem; text-align: right; }
+.tl-runden { font-variant-numeric: tabular-nums; font-size: .78rem; text-align: right; }
+
 @media (max-width: 700px) {
   .kachel-gitter { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
   .karte-bild { width: 100%; height: auto; aspect-ratio: 1; }
+  /* Auf dem Handy ist fuer die Rundenzahl kein Platz mehr. */
+  .tl-paar { grid-template-columns: minmax(80px, 1.3fr) minmax(50px, 2fr) 3.6em; }
+  .tl-runden { display: none; }
 }

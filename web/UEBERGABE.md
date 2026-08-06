@@ -1,6 +1,6 @@
 # Übergabe — Kartenbot Web
 
-Stand: 6. August 2026, Version 1.1.0. Diese Datei ist für eine neue Sitzung
+Stand: 6. August 2026, Version 1.2.0. Diese Datei ist für eine neue Sitzung
 gedacht: Sie sagt, wo alles liegt, was fertig ist, was als Nächstes ansteht
 und welche Fallen es gibt.
 
@@ -53,27 +53,48 @@ brauchen 3, in `bot.py` oder `services/` brauchen 1.
 - Papierkorb (30 Tage), Datenbank-Sicherung, CSV-Bericht, Selbsttest
 - Karten-Editor inklusive Angriffe, Kachelansicht, Vollbild, Vorschau
 
-**Stufe 5, Schritte 1–2** ([PLAN-STUFE-5.md](PLAN-STUFE-5.md)):
+**Stufe 5, Schritte 1–3** ([PLAN-STUFE-5.md](PLAN-STUFE-5.md)):
 
 - Angriffe bearbeiten mit echter Prüfung durch `card_validation.py`
 - Kacheln, Vollbild mit Zurück-Pfeil, Discord-Vorschau
 - Gegnernamen an die Kartenbilder angeglichen, Bilder aufbereitet unter
   `web/static/missionen/`
+- **Testlauf**: eine Karte gegen alle anderen, mit Siegquote, Rundenzahl,
+  jeder einzelnen Paarung und einer Einordnung in Worten
 
-454 Tests grün: `.venv/Scripts/python.exe -m pytest -q`
+490 Tests grün: `.venv/Scripts/python.exe -m pytest -q`
+
+### Wie der Testlauf gebaut ist
+
+| Teil | Wo |
+|---|---|
+| Rechnen | `services/card_testrun.py` — nutzt `simulate_duel` aus `simulation/` |
+| Auftrag | Art `cards.testlauf`, in `web/app/jobs.py` und `bot.py` (`_run_card_testrun`) |
+| Ergebnis | Tabelle `card_testruns` — Kennzahlen als Spalten, Paarungen in `ergebnis_json` |
+| Prüfung der Eingaben | `web/app/karteneditor.py` (`pruefe_testlauf`) |
+| Oberfläche | `web/static/app.js` — Panel „Testlauf" in der Einzelkartenansicht |
+
+**Warum die Duelle einzeln aufgerufen werden** statt über `simulate_matchup`:
+Der Bot hat nur einen Faden. Zwischen zwei Duellen wird kurz abgegeben, sonst
+stünde das Spiel minutenlang still. Das schützt nebenbei den globalen
+Zufallsgenerator — `simulate_duel` setzt ihn auf einen festen Startwert und
+stellt ihn danach wieder her, und dazwischen wird nie abgegeben. Ein Test
+belegt, dass dabei Zahl für Zahl dasselbe herauskommt wie bei
+`simulate_matchup`.
 
 ---
 
 ## Was als Nächstes ansteht
 
-### Schritt 3: Testlauf (das ist der Auftrag)
+### Schritt 4: Zweites KI-Modell für den Testlauf (das wäre der Auftrag)
 
-Wie stark ist eine Karte wirklich? Die Simulation lässt sie gegen alle
-anderen antreten und liefert Siegquote, Rundenzahl und die Paarungen, die
-auffallen.
+Eines fürs **Prüfen** (Server-Analyse, wie bisher), eines für den
+**Testlauf** — mit eigenem Modell-Finder. Der vorhandene testet auf eine
+Verständnisaufgabe; der neue muss eine Kampflage lesen und eine sinnvolle
+Entscheidung treffen können. Also eigene Testaufgabe, eigene Bewertung.
+Anzusetzen bei `web/app/ollama.py` (`find_model`) und den Einstellungen.
 
-**Die halbe Arbeit ist schon da.** Unter `simulation/` liegt eine fertige
-Engine (797 Zeilen):
+Die Engine dafür steht bereit:
 
 ```
 simulation/engine.py    simulate_duel, simulate_matchup,
@@ -85,23 +106,21 @@ simulation/modes.py     apply_mode_to_cards
 simulation/loader.py    Karten laden
 ```
 
-Zu bauen:
-1. Auftragsart `cards.testlauf` in `web/app/jobs.py` (KINDS) **und** in
-   `bot.py` in `_run_web_job` — der Bot rechnet, nicht die Website.
-2. Fortschritt melden über `web_jobs.update_progress`, Abbruch über
-   `is_cancelled` — beides gibt es schon, siehe `scan.history`.
-3. Ergebnis in einer neuen Tabelle ablegen, Muster: `scan_runs`.
-4. In der Kartenansicht ein Knopf „Testlauf" mit Fortschritt und Ergebnis.
-
 ### Danach
 
-4. Zweites KI-Modell für den Testlauf, mit eigenem Modell-Finder
-5. KI beurteilt die Ergebnisse in Worten
+5. KI beurteilt die Testlauf-Ergebnisse in Worten (braucht 4). Die Zahlen
+   liegen fertig in `card_testruns.ergebnis_json`; die regelbasierte
+   Einordnung (`card_testrun.einordnen`) bleibt als Rückfall daneben stehen.
 6. **Zug-Mitschrift** — sollte früh kommen, siehe unten
 7. Gegner-Versionen („Standard", „Schwer") auf der Website
 8. Auswahl im Discord beim Kampfstart
 9. Lernen aus echten Kämpfen
 10. KI als Gegner (zuletzt, sehr langsam)
+
+Beim Testlauf selbst wäre als Nächstes sinnvoll: die **Modi** `light` und
+`max` aus `simulation/modes.py` zuschaltbar machen (heute rechnet er immer
+mit dem echten Spielstand), und eine **Gesamtübersicht** über alle Karten.
+`queries.card_testruns()` kann dafür schon ohne Kartennamen abgefragt werden.
 
 Dazu offen: **Missionsbereich** mit Umschalter oben (grün = Karten, rot =
 Missionen), Filter nach Missionen, Bossen, kleinen Gegnern und den
@@ -135,6 +154,12 @@ denken.
 
 **Die Bot-Datenbank hat nur eine Schreibverbindung.** Massenaktionen laufen
 deshalb der Reihe nach, nicht gleichzeitig.
+
+**Aufträge laufen einer nach dem anderen.** `web_job_loop` holt immer nur
+einen. Ein Testlauf rechnet Minuten, ein Verlaufs-Scan Stunden — solange
+bleibt alles andere (Rollen vergeben, Kartenänderung übernehmen) in der
+Warteschlange stehen. Das sieht aus, als täte die Website nichts. Ein Blick
+in die Auftragsliste zeigt, woran es liegt.
 
 **Lange Shell-Zeichenketten mit Umlauten und Anführungszeichen** scheitern am
 Zitieren. Für größere Textblöcke die Datei-Werkzeuge nehmen, nicht `bash`

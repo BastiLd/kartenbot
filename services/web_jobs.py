@@ -100,6 +100,28 @@ _SCHEMA = (
         PRIMARY KEY (guild_id, user_id)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS card_testruns (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        karten_name        TEXT NOT NULL,
+        job_id             INTEGER,
+        started_at         TEXT NOT NULL,
+        finished_at        TEXT,
+        status             TEXT NOT NULL DEFAULT 'running',
+        spielweise         TEXT NOT NULL DEFAULT 'optimal',
+        kaempfe_je_paarung INTEGER NOT NULL DEFAULT 0,
+        seed               INTEGER,
+        kaempfe_gesamt     INTEGER NOT NULL DEFAULT 0,
+        siege              INTEGER NOT NULL DEFAULT 0,
+        niederlagen        INTEGER NOT NULL DEFAULT 0,
+        unentschieden      INTEGER NOT NULL DEFAULT 0,
+        siegquote          REAL,
+        runden_schnitt     REAL,
+        ergebnis_json      TEXT,
+        error              TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_card_testruns_karte ON card_testruns(karten_name, id)",
 )
 
 _schema_ready = False
@@ -167,6 +189,11 @@ async def reset_orphaned() -> int:
         # Oberfläche dauerhaft einen Lauf an, der nie zu Ende geht.
         await db.execute(
             "UPDATE scan_runs SET status = 'failed', finished_at = ?, error = ? "
+            "WHERE status = 'running'", (_now(), hinweis))
+        # Dasselbe fuer Testlaeufe - sie dauern Minuten und werden von einem
+        # Neustart entsprechend haeufig mittendrin erwischt.
+        await db.execute(
+            "UPDATE card_testruns SET status = 'failed', finished_at = ?, error = ? "
             "WHERE status = 'running'", (_now(), hinweis))
         await db.commit()
     if anzahl:
@@ -309,6 +336,42 @@ async def save_member_profiles(guild_id, run_id: int, profiles: list[dict]) -> N
               json.dumps(p.get("stats", {}), ensure_ascii=False),
               json.dumps(p.get("tags", []), ensure_ascii=False),
               p.get("ai_summary")) for p in profiles])
+        await db.commit()
+
+
+async def start_card_testrun(karten_name: str, job_id: int, spielweise: str,
+                             kaempfe_je_paarung: int) -> int:
+    await ensure_schema()
+    async with db_context() as db:
+        cursor = await db.execute(
+            "INSERT INTO card_testruns (karten_name, job_id, started_at, status, "
+            "spielweise, kaempfe_je_paarung) VALUES (?, ?, ?, 'running', ?, ?)",
+            (str(karten_name), int(job_id), _now(), str(spielweise),
+             int(kaempfe_je_paarung)))
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def finish_card_testrun(run_id: int, status: str, *, ergebnis: dict | None = None,
+                              error: str | None = None) -> None:
+    """Ergebnis eines Testlaufs festhalten.
+
+    Die Kennzahlen stehen doppelt: einmal als eigene Spalten, damit sich eine
+    Liste ohne Auspacken sortieren laesst, und einmal vollstaendig in
+    ``ergebnis_json`` — dort stecken auch die einzelnen Paarungen.
+    """
+    daten = ergebnis or {}
+    async with db_context() as db:
+        await db.execute(
+            "UPDATE card_testruns SET status = ?, finished_at = ?, seed = ?, "
+            "kaempfe_gesamt = ?, siege = ?, niederlagen = ?, unentschieden = ?, "
+            "siegquote = ?, runden_schnitt = ?, ergebnis_json = ?, error = ? WHERE id = ?",
+            (status, _now(), daten.get("seed"), int(daten.get("kaempfe") or 0),
+             int(daten.get("siege") or 0), int(daten.get("niederlagen") or 0),
+             int(daten.get("unentschieden") or 0), daten.get("siegquote"),
+             daten.get("runden_schnitt"),
+             json.dumps(daten, ensure_ascii=False) if ergebnis is not None else None,
+             error, int(run_id)))
         await db.commit()
 
 

@@ -284,6 +284,59 @@ def zuruecksetzen(name: str, *, von: str = "") -> bool:
     return True
 
 
+# --------------------------------------------------------------------------
+# Testlauf
+# --------------------------------------------------------------------------
+def _testlauf_modul():
+    """Die Testlauf-Logik des Bots.
+
+    Die erlaubten Werte stehen dort und werden von dort geholt, damit es nur
+    eine Wahrheit gibt. Gerechnet wird ohnehin im Bot — ohne dessen Ordner
+    gäbe es gar keine Karten, deshalb hier ein klarer Abbruch statt einer
+    zweiten Liste, die irgendwann auseinanderläuft.
+    """
+    try:
+        from services import card_testrun
+    except ImportError:
+        raise EditorFehler("Für den Testlauf fehlt der Kartenordner des Bots. "
+                           "Stimmt KARTENBOT_DIR?") from None
+    return card_testrun
+
+
+def testlauf_moeglichkeiten() -> dict:
+    """Was sich einstellen lässt — für die Oberfläche."""
+    modul = _testlauf_modul()
+    return {
+        "spielweisen": [{"wert": w, "text": t} for w, t in modul.SPIELWEISEN.items()],
+        "kampfzahlen": list(modul.KAMPFZAHLEN),
+        "standard_kaempfe": modul.STANDARD_KAEMPFE,
+    }
+
+
+def pruefe_testlauf(name: str, spielweise: str, kaempfe_je_paarung: int) -> dict:
+    """Eingaben abnehmen, bevor ein Auftrag angelegt wird.
+
+    Der Bot prüft dasselbe noch einmal — er muss das, weil er Aufträge auch
+    von anderswo bekommen könnte. Hier geht es darum, einen Fehler sofort zu
+    melden statt erst, wenn der Auftrag drankommt.
+    """
+    modul = _testlauf_modul()
+    karte = str(name or "").strip()
+    if not any(k.get("name") == karte for k in cards.catalog()):
+        raise EditorFehler(f"Die Karte „{karte}“ gibt es nicht.")
+    if spielweise not in modul.SPIELWEISEN:
+        raise EditorFehler(f"Die Spielweise „{spielweise}“ gibt es nicht. "
+                           f"Möglich: {', '.join(modul.SPIELWEISEN)}")
+    try:
+        zahl = int(kaempfe_je_paarung)
+    except (TypeError, ValueError):
+        raise EditorFehler("Die Zahl der Kämpfe muss eine ganze Zahl sein.") from None
+    if zahl not in modul.KAMPFZAHLEN:
+        raise EditorFehler(f"So viele Kämpfe sind nicht vorgesehen. Möglich: "
+                           f"{', '.join(str(z) for z in modul.KAMPFZAHLEN)}")
+    return {"karte": karte, "spielweise": spielweise, "kaempfe_je_paarung": zahl}
+
+
 def verlauf(name: str, limit: int = 20) -> list[dict]:
     with database.read_connection() as con:
         try:

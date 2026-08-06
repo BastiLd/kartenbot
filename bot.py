@@ -197,7 +197,7 @@ from services.runtime_store import (
 )
 from services.stats_export import build_stats_workbook
 from services.card_grant import grant_cards_to_users
-from services import card_store, history_scan, role_manager, web_jobs
+from services import card_store, card_testrun, history_scan, role_manager, web_jobs
 from services.user_data import (
     add_exact_card_variant_once,
     add_card_buff,
@@ -2683,6 +2683,9 @@ async def _run_web_job(job: dict) -> dict:
         return {"angepasst": angepasst,
                 "hinweis": f"{angepasst} Karten neu eingelesen. Die Aenderung wirkt sofort."}
 
+    if art == "cards.testlauf":
+        return await _run_card_testrun(job, nutzlast)
+
     guild = bot.get_guild(int(job["guild_id"])) if job.get("guild_id") else None
     if guild is None:
         raise RuntimeError("Der Bot ist auf diesem Server nicht (mehr) Mitglied.")
@@ -2771,6 +2774,53 @@ async def _run_history_scan(job: dict, guild, nutzlast: dict, fortschritt, abgeb
     # die Zusammenfassung, sonst wird die Zeile unnötig groß.
     return {"scan_run_id": lauf_id, "abgebrochen": ergebnis["abgebrochen"],
             **ergebnis["zusammenfassung"]}
+
+
+async def _run_card_testrun(job: dict, nutzlast: dict) -> dict:
+    """Testlauf einer Karte gegen alle anderen.
+
+    Betrifft keinen bestimmten Server — Karten gehoeren zum Spiel, nicht zu
+    einer Gilde. Deshalb laeuft das hier wie ``cards.reload`` ohne Guild.
+
+    Gerechnet wird bewusst im Bot und nicht auf der Website: Nur hier liegen
+    die Karten mit allen Aenderungen, und nur hier laesst sich die Rechnung so
+    portionieren, dass das Spiel nebenher weiterlaeuft.
+    """
+    async def fortschritt(erledigt, gesamt, stufe=None):
+        await web_jobs.update_progress(job["id"], erledigt, gesamt, stufe)
+
+    async def abgebrochen() -> bool:
+        return await web_jobs.is_cancelled(job["id"])
+
+    name = str(nutzlast.get("karte") or "").strip()
+    spielweise = str(nutzlast.get("spielweise") or "optimal")
+    kaempfe = int(nutzlast.get("kaempfe_je_paarung") or card_testrun.STANDARD_KAEMPFE)
+
+    # Sicherheitshalber den gespeicherten Kartenstand auflegen. Normalerweise
+    # ist er das schon, weil jede Aenderung einen cards.reload-Auftrag anlegt,
+    # der vor diesem hier drankommt - aber wenn der einmal fehlschlaegt, soll
+    # der Testlauf trotzdem mit den richtigen Werten rechnen.
+    try:
+        await card_store.anwenden(RAW_KARTEN)
+    except Exception:
+        logging.exception("Kartenaenderungen vor dem Testlauf nicht anwendbar")
+
+    lauf_id = await web_jobs.start_card_testrun(name, job["id"], spielweise, kaempfe)
+    try:
+        ergebnis = await card_testrun.laufen(
+            name, kaempfe_je_paarung=kaempfe, spielweise=spielweise,
+            progress=fortschritt, cancelled=abgebrochen)
+    except Exception as exc:  # noqa: BLE001
+        await web_jobs.finish_card_testrun(lauf_id, "failed", error=str(exc)[:1000])
+        raise
+
+    await web_jobs.finish_card_testrun(
+        lauf_id, "cancelled" if ergebnis["abgebrochen"] else "done", ergebnis=ergebnis)
+
+    # Die einzelnen Paarungen stehen in der Datenbank - im Auftragsergebnis
+    # reicht die Zusammenfassung, sonst wird die Zeile unnoetig gross.
+    return {"testlauf_id": lauf_id,
+            **{k: v for k, v in ergebnis.items() if k != "paarungen"}}
 
 
 async def _expire_temporary_roles() -> None:

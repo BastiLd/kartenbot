@@ -994,13 +994,19 @@ RENDER.karten = async (ziel, optionen = {}) => {
   zeichneListe();
 };
 
-/* Eine Karte gross: Bild, alle Werte, Angriffe bearbeiten, Vorschau. */
-function zeichneEinzelkarte(ziel, k, aenderung, seltenheiten) {
+/* Eine Karte gross: Bild, alle Werte, Angriffe bearbeiten, Vorschau, Testlauf. */
+async function zeichneEinzelkarte(ziel, k, aenderung, seltenheiten) {
+  // Die frueheren Testlaeufe gleich mitladen. Faellt es aus, fehlt nur der
+  // Ergebnisteil - die Karte selbst muss trotzdem bearbeitbar bleiben.
+  const laeufe = await api(`/api/karten/${encodeURIComponent(k.name)}/testlaeufe`)
+    .then((d) => d.laeufe || []).catch(() => []);
+
   ziel.innerHTML = `
     <div class="panel karte-gross">
       <div class="karte-kopf">
         <button class="btn ghost sm" id="kZurueck" aria-label="Zurück zur Übersicht">← Zurück</button>
         <div class="spacer"></div>
+        <button class="btn sm" id="kTestlauf">⚔ Testlauf</button>
         <button class="btn sm" id="kVorschau">Vorschau</button>
       </div>
 
@@ -1017,6 +1023,16 @@ function zeichneEinzelkarte(ziel, k, aenderung, seltenheiten) {
             aenderung.geaendert_von ? ` von ${esc(aenderung.geaendert_von)}` : ''}.</p>` : ''}
         </div>
       </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>Testlauf</h3>
+        <p class="muted">Die Karte tritt gegen alle anderen an — mehrere hundert Kämpfe
+          je Paarung. Danach steht schwarz auf weiß, ob sie zu stark, zu schwach oder
+          rund ist.</p>
+      </div>
+      <div id="tlStatus"></div>
+      <div id="tlErgebnis">${testlaufErgebnis(letzterBrauchbarerLauf(laeufe))}</div>
     </div>
 
     <div class="panel">
@@ -1085,6 +1101,15 @@ function zeichneEinzelkarte(ziel, k, aenderung, seltenheiten) {
   });
 
   $('#kVorschau', ziel).addEventListener('click', () => zeigeVorschau(k));
+  $('#kTestlauf', ziel).addEventListener('click', () => frageTestlauf(k));
+
+  // Laeuft gerade schon einer fuer diese Karte? Dann direkt weiterverfolgen -
+  // sonst stuende der Fortschritt still, nur weil die Seite neu geladen wurde.
+  api('/api/jobs?limit=50').then((d) => {
+    const offen = (d.laufend || []).find(
+      (j) => j.kind === 'cards.testlauf' && (j.payload || {}).karte === k.name);
+    if (offen) beobachteAuftrag(offen.id, $('#tlStatus', ziel));
+  }).catch(() => {});
 
   $('#kSpeichern', ziel).addEventListener('click', async () => {
     const aenderungen = {};
@@ -1167,6 +1192,144 @@ function zeigeVorschau(k) {
     knoepfe: [{ label: 'Schließen', art: 'primary' }],
   });
 }
+
+/* ---------------------------------------------------------------- Testlauf */
+/* Der Bot rechnet, die Seite fragt nur nach und zeigt das Ergebnis. Ein Lauf
+   dauert Minuten - deshalb Fortschritt und Abbruch wie beim Verlaufs-Scan. */
+
+async function frageTestlauf(k) {
+  let moeglich;
+  try {
+    moeglich = await api('/api/karten/testlauf/moeglichkeiten');
+  } catch (e) { return fehler(e); }
+
+  const gegner = Math.max(0, (_kartenCache || []).length - 1);
+  const standard = moeglich.standard_kaempfe;
+
+  dialog({
+    titel: `Testlauf für „${k.name}“`,
+    inhalt: `
+      <p class="muted">„${esc(k.name)}“ tritt gegen alle ${num(gegner)} anderen Karten an.
+        Gerechnet wird im Bot, in kleinen Portionen — er bleibt dabei bedienbar,
+        und du musst die Seite nicht offen lassen.</p>
+      <div class="form-row" style="margin-top:14px">
+        <label class="field"><span>Kämpfe je Paarung</span>
+          <select id="tlKaempfe">
+            ${moeglich.kampfzahlen.map((z) => `<option value="${z}" ${z === standard ? 'selected' : ''}>
+              ${num(z)}${z === standard ? ' (empfohlen)' : ''}</option>`).join('')}
+          </select></label>
+        <label class="field"><span>Spielweise</span>
+          <select id="tlSpielweise">
+            ${moeglich.spielweisen.map((s) => `<option value="${esc(s.wert)}">${esc(s.text)}</option>`).join('')}
+          </select></label>
+      </div>
+      <div class="notice" style="margin-top:14px" id="tlUmfang"></div>
+      <p class="hint" style="margin-top:10px">Gerechnet wird auf Kopien — an der Karte und
+        an der Datenbank ändert der Testlauf nichts.</p>`,
+    knoepfe: [
+      { label: 'Abbrechen', art: 'ghost' },
+      {
+        label: 'Testlauf starten',
+        art: 'primary',
+        run: async (zu) => {
+          const koerper = {
+            name: k.name,
+            kaempfe_je_paarung: Number($('#tlKaempfe').value),
+            spielweise: $('#tlSpielweise').value,
+          };
+          zu();
+          try {
+            const auftrag = await api('/api/karten/testlauf', { json: koerper });
+            toast('Testlauf gestartet.', 'ok');
+            beobachteAuftrag(auftrag.id, $('#tlStatus'));
+          } catch (e) { fehler(e); }
+        },
+      },
+    ],
+  });
+
+  const zeigeUmfang = () => {
+    const je = Number($('#tlKaempfe').value);
+    $('#tlUmfang').innerHTML = `Das sind <strong>${num(gegner * je)} Kämpfe</strong>
+      (${num(gegner)} Paarungen × ${num(je)}). Je nach Auslastung des Servers
+      dauert das einige Minuten. Du kannst jederzeit abbrechen.`;
+  };
+  $('#tlKaempfe').addEventListener('change', zeigeUmfang);
+  zeigeUmfang();
+}
+
+/* Welcher Lauf gezeigt wird.
+   Wer einen Testlauf gleich nach dem Start abbricht, hinterlaesst eine Zeile
+   ohne eine einzige fertige Paarung. Die duerfte das letzte richtige Ergebnis
+   nicht verdecken - deshalb gewinnt der neueste Lauf, der etwas zu sagen hat. */
+function letzterBrauchbarerLauf(laeufe) {
+  return (laeufe || []).find((l) => (l.ergebnis || {}).paarungen?.length) || (laeufe || [])[0];
+}
+
+/* Das Ergebnis eines Laufs. Ohne Lauf ein Hinweis, sonst Kennzahlen,
+   Einordnung und jede einzelne Paarung. */
+function testlaufErgebnis(lauf) {
+  if (!lauf) {
+    return leer('Für diese Karte gab es noch keinen Testlauf. Der Knopf oben startet einen.', '⚔');
+  }
+  if (lauf.status === 'running') {
+    return `<div class="notice">Ein Testlauf läuft gerade — der Fortschritt erscheint oben.</div>`;
+  }
+  if (lauf.status === 'failed') {
+    return `<div class="notice bad"><strong>Der letzte Testlauf ist fehlgeschlagen.</strong>
+      ${lauf.error ? `<br>${esc(lauf.error)}` : ''}</div>`;
+  }
+
+  const e = lauf.ergebnis || {};
+  const paarungen = e.paarungen || [];
+  const ordnung = e.einordnung || {};
+  const abgebrochen = lauf.status === 'cancelled';
+
+  return `
+    ${abgebrochen ? `<div class="notice warn" style="margin-bottom:14px">
+      Dieser Lauf wurde abgebrochen. Ausgewertet sind nur die
+      ${num(paarungen.length)} fertigen Paarungen.</div>` : ''}
+
+    ${ordnung.stufe ? `<div class="notice ${esc(ordnung.art || '')}">
+      <strong>Einordnung: ${esc(ordnung.stufe)}</strong><br>${esc(ordnung.text)}</div>` : ''}
+
+    <div class="grid cols-4" style="margin-top:14px">
+      ${stat('Siegquote', `${num(e.siegquote ?? lauf.siegquote ?? 0)} %`,
+             `${num(e.siege ?? lauf.siege)} Siege, ${num(e.niederlagen ?? lauf.niederlagen)} Niederlagen`,
+             (e.siegquote ?? 0) >= 43 && (e.siegquote ?? 0) <= 57 ? 'good' : '')}
+      ${stat('Kämpfe', num(e.kaempfe ?? lauf.kaempfe_gesamt),
+             `${num(paarungen.length)} Gegner × ${num(lauf.kaempfe_je_paarung)}`)}
+      ${stat('Ø Runden', num(e.runden_schnitt ?? lauf.runden_schnitt ?? 0),
+             'je Kampf, beide Seiten zusammen')}
+      ${stat('Unentschieden', num(e.unentschieden ?? lauf.unentschieden),
+             e.unentschieden ? 'Kämpfe ohne Sieger' : 'keine')}
+    </div>
+
+    <p class="hint" style="margin-top:12px">
+      ${esc(zeitpunkt(lauf.finished_at || lauf.started_at))} ·
+      Spielweise: ${esc(TL_SPIELWEISEN[lauf.spielweise] || lauf.spielweise)}
+      ${e.dauer_s ? ` · gerechnet in ${num(Math.round(e.dauer_s))} Sekunden` : ''}
+      ${e.seed ? ` · Startwert ${e.seed}` : ''}</p>
+
+    ${paarungen.length ? `<details class="info-row" open style="margin-top:14px">
+      <summary><strong>Alle ${num(paarungen.length)} Paarungen</strong>
+        <span class="muted" style="margin-left:auto">schwerste Gegner zuerst</span></summary>
+      <div class="why">
+        ${paarungen.map((p) => `
+          <div class="tl-paar">
+            <span class="tl-gegner">${esc(p.gegner)}</span>
+            <div class="progress tl-balken ${p.siegquote >= 80 ? 'gut' : p.siegquote <= 20 ? 'schlecht' : ''}">
+              <i style="width:${Math.max(0, Math.min(100, p.siegquote))}%"></i></div>
+            <span class="tl-quote">${num(p.siegquote)} %</span>
+            <span class="tl-runden muted">${num(p.runden_schnitt)} R.</span>
+          </div>`).join('')}
+        <p class="hint" style="margin-top:10px">Der Balken zeigt, wie oft „${esc(e.karte || lauf.karten_name)}“
+          gegen diesen Gegner gewinnt. 50 % heißt: ausgeglichen.</p>
+      </div>
+    </details>` : ''}`;
+}
+
+const TL_SPIELWEISEN = { optimal: 'bestmöglich', average: 'wie Menschen, mit Fehlern' };
 
 RENDER.statistik = async (ziel, options = {}) => {
   const zeitraum = options.zeitraum || '30d';
@@ -1693,6 +1856,13 @@ function beobachteAuftrag(id, box) {
         if (job.status === 'done') {
           toast('Auftrag fertig.', 'ok');
           if (STATE.tab === 'analyse') zeichne('analyse', { leise: true });
+        }
+        // Nach einem Testlauf die Karte neu zeichnen - dann steht das Ergebnis
+        // dort, wo eben noch der Fortschritt war. Auch nach einem Abbruch,
+        // denn auch der hinterlaesst ein Teilergebnis.
+        if (STATE.tab === 'karten' && job.kind === 'cards.testlauf'
+            && ['done', 'cancelled'].includes(job.status)) {
+          zeichne('karten', { leise: true });
         }
       }
     }

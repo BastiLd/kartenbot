@@ -27,6 +27,7 @@ KINDS = {
     "scan.history":   "Server-Verlauf auswerten",
     "guild.sync":     "Serverdaten neu einlesen",
     "cards.reload":   "Kartenänderungen übernehmen",
+    "cards.testlauf": "Testlauf einer Karte",
 }
 
 

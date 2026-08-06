@@ -145,6 +145,31 @@ _TABLES = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_role_grants_guild ON role_grants(guild_id, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_role_grants_expiry ON role_grants(expires_at)",
+    # --- Testlauf: eine Karte gegen alle anderen.
+    #     Gerechnet wird im Bot, hier steht nur das Ergebnis. Die Kennzahlen
+    #     stehen als eigene Spalten, die Paarungen in ergebnis_json. ---
+    """
+    CREATE TABLE IF NOT EXISTS card_testruns (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        karten_name        TEXT NOT NULL,
+        job_id             INTEGER,
+        started_at         TEXT NOT NULL,
+        finished_at        TEXT,
+        status             TEXT NOT NULL DEFAULT 'running',
+        spielweise         TEXT NOT NULL DEFAULT 'optimal',
+        kaempfe_je_paarung INTEGER NOT NULL DEFAULT 0,
+        seed               INTEGER,
+        kaempfe_gesamt     INTEGER NOT NULL DEFAULT 0,
+        siege              INTEGER NOT NULL DEFAULT 0,
+        niederlagen        INTEGER NOT NULL DEFAULT 0,
+        unentschieden      INTEGER NOT NULL DEFAULT 0,
+        siegquote          REAL,
+        runden_schnitt     REAL,
+        ergebnis_json      TEXT,
+        error              TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_card_testruns_karte ON card_testruns(karten_name, id)",
     # --- Zwischenspeicher für Namen von Servern, Kanälen, Rollen, Mitgliedern ---
     """
     CREATE TABLE IF NOT EXISTS web_discord_cache (

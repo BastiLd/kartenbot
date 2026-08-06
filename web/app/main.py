@@ -298,6 +298,62 @@ def api_karte_verlauf(name: str, _: auth.Caller = Depends(auth.require_login)):
     return {"verlauf": karteneditor.verlauf(name)}
 
 
+# --------------------------------------------------------------------------
+# Testlauf: eine Karte gegen alle anderen
+# --------------------------------------------------------------------------
+class TestlaufBody(BaseModel):
+    name: str
+    spielweise: str = "optimal"
+    kaempfe_je_paarung: int = 200
+
+
+@app.get("/api/karten/testlauf/moeglichkeiten")
+def api_testlauf_moeglichkeiten(_: auth.Caller = Depends(auth.require_login)):
+    try:
+        return karteneditor.testlauf_moeglichkeiten()
+    except karteneditor.EditorFehler as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@app.post("/api/karten/testlauf")
+def api_karte_testlauf(body: TestlaufBody, request: Request,
+                       caller: auth.Caller = Depends(auth.require_login)):
+    """Einen Testlauf in Auftrag geben.
+
+    Gerechnet wird im Bot — er hat die Karten mit allen Änderungen und kann
+    die Rechnung so portionieren, dass das Spiel nebenher weiterläuft. Ein
+    Lauf dauert je nach Einstellung Minuten; deshalb nur einer auf einmal.
+    """
+    try:
+        sauber = karteneditor.pruefe_testlauf(body.name, body.spielweise,
+                                              body.kaempfe_je_paarung)
+    except karteneditor.EditorFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    laufend = [j for j in jobs.active() if j["kind"] == "cards.testlauf"]
+    if laufend:
+        raise HTTPException(409, f"Es läuft schon ein Testlauf für "
+                                 f"„{laufend[0]['payload'].get('karte', '?')}“ "
+                                 f"(Auftrag {laufend[0]['id']}). "
+                                 f"Mehrere auf einmal würden den Bot ausbremsen.")
+
+    # Die Zahl der Gegner steht erst beim Rechnen fest; als Gesamtwert taugt
+    # sie trotzdem schon, damit der Balken nicht bei 0 von 0 steht.
+    auftrag = jobs.create("cards.testlauf", None, sauber, caller.actor,
+                          total=max(0, len(cards.catalog()) - 1))
+    audit.record(actor=caller.actor, action="testlauf.gestartet", target=sauber["karte"],
+                 detail=f"{sauber['kaempfe_je_paarung']} Kämpfe je Paarung, "
+                        f"{sauber['spielweise']}",
+                 client_ip=_ip(request))
+    return auftrag
+
+
+@app.get("/api/karten/{name}/testlaeufe")
+def api_karte_testlaeufe(name: str, limit: int = 5,
+                         _: auth.Caller = Depends(auth.require_login)):
+    return {"laeufe": queries.card_testruns(name, limit=min(max(limit, 1), 25))}
+
+
 @app.get("/api/papierkorb")
 def api_papierkorb(_: auth.Caller = Depends(auth.require_login)):
     return {"eintraege": sicherung.liste(),
