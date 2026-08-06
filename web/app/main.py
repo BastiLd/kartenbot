@@ -383,8 +383,20 @@ async def api_discord_roles(guild_id: str, _: auth.Caller = Depends(auth.require
 @app.get("/api/discord/{guild_id}/channels")
 async def api_discord_channels(guild_id: str, _: auth.Caller = Depends(auth.require_login)):
     channels = await discordapi.channels(guild_id)
-    lesbar = [c for c in channels if c.get("type") in (0, 5, 15)]     # Text, News, Forum
-    return {"kanaele": sorted(lesbar, key=lambda c: (c.get("position", 0), c.get("name", "")))}
+    # Kategorien (Typ 4) sind selbst keine Kanaele, geben aber die Ordnung vor.
+    # Ihren Namen mitzugeben hilft bei Servern mit vielen gleich benannten
+    # Kanaelen ("allgemein" gibt es gern mehrfach).
+    kategorien = {c["id"]: c.get("name", "") for c in channels if c.get("type") == 4}
+    lesbar = []
+    for c in channels:
+        if c.get("type") not in (0, 5, 15):        # Text, News, Forum
+            continue
+        eintrag = dict(c)
+        eintrag["kategorie"] = kategorien.get(c.get("parent_id"), "")
+        lesbar.append(eintrag)
+    return {"kanaele": sorted(lesbar, key=lambda c: (c.get("kategorie", ""),
+                                                    c.get("position", 0),
+                                                    c.get("name", "")))}
 
 
 @app.get("/api/discord/{guild_id}/members")

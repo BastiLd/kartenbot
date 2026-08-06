@@ -145,6 +145,7 @@ const STATE = {
   cache: {},
   namen: {},          // Discord-ID -> Name, einmal geholt und dann wiederverwendet
   rollen: {},         // Rollen-ID -> Name, dito
+  kanaele: {},        // Kanal-ID -> Name, dito
   quellen: { karte: [], rolle: [], mitglied: [], frei: [] },  // fuer die Auswahlfelder
 };
 
@@ -188,6 +189,15 @@ async function waermeNamenAuf(erzwingen = false) {
   } catch {
     _aufgewaermt = null;   // beim nächsten Mal neu versuchen
   }
+}
+
+/* Kanalnamen merken - dieselbe Idee wie bei Rollen. */
+function merkeKanaele(kanaele) {
+  (kanaele || []).forEach((c) => { if (c && c.id) STATE.kanaele[c.id] = c.name; });
+}
+
+function kanalName(id) {
+  return STATE.kanaele[id] || id;
 }
 
 /* Rollennamen merken, damit im Verlauf nicht nur Nummern stehen. */
@@ -1328,10 +1338,39 @@ function zustandName(status) {
 
 /* --------------------------------------------------------------- Steuerung */
 RENDER.steuerung = async (ziel) => {
-  const d = await api('/api/guild-settings');
+  const gid = STATE.guildId;
+  // Die Kanalliste kommt von Discord, die Freigaben aus der Datenbank des Bots.
+  const [d, kanalInfo] = await Promise.all([
+    api('/api/guild-settings'),
+    gid ? api(`/api/discord/${gid}/channels`).catch(() => null) : null,
+  ]);
   const server = d.server || [];
+  const kanaele = (kanalInfo && kanalInfo.kanaele) || [];
+  const eigene = server.find((s) => String(s.guild_id) === String(gid));
+  const frei = new Set((eigene ? eigene.erlaubte_kanaele : []).map(String));
 
   ziel.innerHTML = `
+    ${gid ? `
+    <div class="panel">
+      <div class="panel-head"><h2>Kanal-Freigaben</h2>
+        <p class="muted">Wo der Bot auf Befehle antwortet. ${frei.size
+          ? `Zurzeit <strong>${frei.size}</strong> ${frei.size === 1 ? 'Kanal' : 'Kanäle'} freigegeben —
+             überall sonst bleibt er still.`
+          : '<strong>Zurzeit ist nichts eingeschränkt</strong>, der Bot antwortet in jedem Kanal. '
+            + 'Sobald du den ersten Kanal freigibst, gilt nur noch dieser.'}</p></div>
+      ${kanaele.length ? `
+        <div class="pick-list" id="kanalListe">
+          ${kanaele.map((c) => `
+            <label class="pick">
+              <input type="checkbox" class="kPick" value="${esc(c.id)}"
+                     ${frei.has(String(c.id)) ? 'checked' : ''}>
+              <span><strong>#${esc(c.name)}</strong>
+                ${c.kategorie ? `<br><span class="muted">${esc(c.kategorie)}</span>` : ''}</span>
+            </label>`).join('')}
+        </div>`
+        : leer('Keine Kanäle gefunden. Ist der Bot-Token hinterlegt?')}
+    </div>` : ''}
+
     <div class="panel">
       <div class="panel-head"><h2>Schalter je Server</h2>
         <p class="muted">Wirken sofort — genau wie im Entwicklerpanel des Bots.</p></div>
@@ -1348,7 +1387,7 @@ RENDER.steuerung = async (ziel) => {
               ${schalter(s.guild_id, 'beta_enabled', 'Beta-Phase', s.beta)}
             </div>
             <p style="margin-top:10px">Freigegebene Kanäle: ${s.erlaubte_kanaele.length
-              ? s.erlaubte_kanaele.map((c) => `<span class="tag mono">${esc(c)}</span>`).join(' ')
+              ? s.erlaubte_kanaele.map((c) => `<span class="tag">#${esc(kanalName(c))}</span>`).join(' ')
               : '<em>keine — der Bot antwortet dort überall</em>'}</p>
           </div>
         </details>`).join('') : leer('Für keinen Server sind bisher Einstellungen gespeichert.')}
@@ -1368,6 +1407,33 @@ RENDER.steuerung = async (ziel) => {
         <p class="muted">Jede Aktion, die hier ausgelöst wurde.</p></div>
       <div id="auditListe"><div class="skeleton"></div></div>
     </div>`;
+
+  merkeKanaele(kanaele);
+
+  // Ein Häkchen gibt einen Kanal frei oder sperrt ihn wieder.
+  $$('.kPick', ziel).forEach((box) => box.addEventListener('change', async () => {
+    const name = box.closest('.pick').querySelector('strong').textContent;
+    const vorher = !box.checked;
+    try {
+      await api('/api/actions/channel',
+                { json: { guild_id: gid, channel_id: box.value, allow: box.checked } });
+      toast(`${name} ${box.checked ? 'freigegeben' : 'gesperrt'}.`, 'ok', {
+        label: 'Rückgängig',
+        run: async () => {
+          try {
+            await api('/api/actions/channel',
+                      { json: { guild_id: gid, channel_id: box.value, allow: vorher } });
+            zeichne('steuerung');
+          } catch (e) { fehler(e); }
+        },
+      });
+      // Der einleitende Satz haengt an der Anzahl - also neu zeichnen.
+      zeichne('steuerung', { leise: true });
+    } catch (e) {
+      box.checked = vorher;      // die Anzeige darf nicht luegen
+      fehler(e);
+    }
+  }));
 
   $$('[data-flag]', ziel).forEach((b) => b.addEventListener('click', async () => {
     const { guild, flag, wert } = b.dataset;
