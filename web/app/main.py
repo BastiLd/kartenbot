@@ -13,7 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               RedirectResponse)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -562,6 +563,28 @@ def index():
                             status_code=500)
     html = page.read_text(encoding="utf-8").replace("__VERSION__", config.VERSION)
     return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/{dateiname}", include_in_schema=False)
+def statische_datei(dateiname: str):
+    """Liefert style.css und app.js auch ohne /static davor aus.
+
+    Die Seite verweist bewusst relativ auf ihre Dateien, damit sie hinter
+    WebHafen funktioniert - dort liegen sie im Wurzelverzeichnis. Damit
+    dieselbe Seite auch beim Backend selbst laedt, muessen die Dateien hier
+    ebenfalls direkt unter / erreichbar sein.
+
+    Bewusst eng gehalten: keine Unterordner, keine versteckten Dateien, und
+    nur was wirklich im Ordner liegt. Sonst waere das ein Weg, beliebige
+    Dateien aus dem Container zu lesen.
+    """
+    if not STATIC_DIR.exists() or dateiname.startswith("."):
+        raise HTTPException(404, "Nicht gefunden.")
+    ziel = STATIC_DIR / dateiname
+    # resolve() loest .. auf - danach muss die Datei immer noch im Ordner liegen.
+    if ziel.resolve().parent != STATIC_DIR.resolve() or not ziel.is_file():
+        raise HTTPException(404, "Nicht gefunden.")
+    return FileResponse(ziel)
 
 
 if STATIC_DIR.exists():

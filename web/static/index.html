@@ -1,7 +1,10 @@
 <title>Kartenbot Web</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<link rel="stylesheet" href="/static/style.css?v=__VERSION__">
+<!-- Relative Pfade ohne fuehrenden Schraegstrich: so findet die Seite ihre
+     Dateien in beiden Faellen - wenn WebHafen sie im Wurzelverzeichnis
+     ausliefert und wenn das Backend sie selbst ausliefert. -->
+<link rel="stylesheet" href="style.css">
 
 <!-- ===================== Anmeldung ===================== -->
 <div id="gate" class="gate" hidden>
@@ -38,7 +41,7 @@
       <span class="brand-mark" aria-hidden="true">🃏</span>
       <span class="brand-text">
         <strong>Kartenbot</strong>
-        <small>Web v__VERSION__</small>
+        <small id="versionLabel">Web</small>
       </span>
       <button class="icon-btn only-narrow" id="menuClose" aria-label="Menü schließen">✕</button>
     </div>
@@ -125,4 +128,4 @@
 
 <div class="toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/static/app.js?v=__VERSION__"></script>
+<script src="app.js"></script>

@@ -1386,12 +1386,27 @@ async function aktualisiereKopf() {
 async function starte() {
   $('#gate').hidden = true;
   $('#app').hidden = false;
+  zeigeVersion();
   STATE.auth = await api('/api/auth/status');
   await ladeServer();
   aktualisiereKopf();
   const ausHash = (location.hash.match(/^#\/(\w+)/) || [])[1];
   gehZu(ausHash && TABS[ausHash] ? ausHash : 'uebersicht');
   setInterval(aktualisiereKopf, 30000);
+}
+
+async function zeigeVersion() {
+  // Die Version kommt vom Backend statt fest in der Seite zu stehen. So
+  // stimmt sie auch, wenn WebHafen die Dateien ausliefert und nicht das
+  // Backend selbst - dort koennte nichts in die Seite hineingeschrieben werden.
+  const feld = $('#versionLabel');
+  if (!feld) return;
+  try {
+    const info = await api('/api/health');
+    if (info && info.version) feld.textContent = `Web v${info.version}`;
+  } catch {
+    /* Ohne Verbindung bleibt schlicht "Web" stehen - kein Grund fuer Laerm. */
+  }
 }
 
 function bindeGlobales() {
