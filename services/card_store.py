@@ -23,10 +23,14 @@ from datetime import datetime, timezone
 
 from db import db_context
 
-# Diese Felder darf die Website ändern. Bewusst eng: Angriffe haben eine
-# eigene, verschachtelte Form mit Wirkungen und Abklingzeiten — dort wäre ein
-# falscher Wert im Kampf sofort spürbar. Das kommt später und mit Prüfung.
-AENDERBAR = ("seltenheit", "hp", "beschreibung", "bild")
+# Diese Felder darf die Website ändern. Muss zur Liste in
+# web/app/karteneditor.py passen.
+#
+# "attacks" ist dabei besonders: Die Website legt die vollständige, geprüfte
+# Angriffsliste ab — nicht nur die geänderten Felder. So kann hier nichts
+# halb angewendet werden, und seltene Felder, die die Website gar nicht
+# anfasst, sind darin bereits enthalten.
+AENDERBAR = ("seltenheit", "hp", "beschreibung", "bild", "attacks")
 
 
 def _jetzt() -> str:

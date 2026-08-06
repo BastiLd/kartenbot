@@ -22,7 +22,7 @@ COPY web/VERSION /app/web/VERSION
 
 # Nur die Bot-Module, die für die Kartenprüfung gebraucht werden
 COPY karten.py items.py /app/
-COPY services/__init__.py services/card_variants.py /app/services/
+COPY services/__init__.py services/card_variants.py services/card_validation.py /app/services/
 
 ENV KARTENBOT_DB_PATH=/data/kartenbot.db \
     KARTENBOT_LOG_PATH=/data/bot.log \

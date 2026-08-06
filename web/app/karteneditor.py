@@ -16,10 +16,19 @@ from datetime import datetime, timezone
 
 from . import cards, database
 
-# Muss zur Liste in services/card_store.py passen. Angriffe fehlen absichtlich:
-# die haben eine verschachtelte Form mit Wirkungen und Abklingzeiten, und ein
-# falscher Wert waere im Kampf sofort spuerbar.
-AENDERBAR = ("seltenheit", "hp", "beschreibung", "bild")
+# Muss zur Liste in services/card_store.py passen.
+AENDERBAR = ("seltenheit", "hp", "beschreibung", "bild", "attacks")
+
+# Felder eines Angriffs, die sich bearbeiten lassen. Bewusst nur die
+# haeufigen: Es gibt 26 verschiedene Angriffsfelder, viele davon kommen genau
+# einmal im ganzen Spiel vor (etwa bonus_damage_if_condition). Die blind
+# bearbeitbar zu machen waere gefaehrlich - sie werden unveraendert
+# durchgereicht, damit nichts davon verlorengeht.
+ANGRIFF_FELDER = ("name", "info", "damage", "cooldown_turns", "heal",
+                  "self_damage", "multi_hit", "button_style", "lifesteal_ratio",
+                  "is_standard_attack", "effects")
+
+KNOEPFE = ("red", "blurple", "green", "grey", "gray")
 
 GRENZEN = {
     "hp": (1, 10000),
@@ -56,6 +65,122 @@ def _schema(con: sqlite3.Connection) -> None:
     """)
 
 
+def _zahl_oder_bereich(wert, feld: str):
+    """Schaden steht mal als Zahl da, mal als Bereich [von, bis].
+
+    Beides muss durchkommen — die Kartendatei nutzt beide Formen, und wer
+    einen festen Schaden will, soll nicht [7, 7] tippen müssen.
+    """
+    if isinstance(wert, (list, tuple)):
+        if len(wert) != 2:
+            raise EditorFehler(f"„{feld}“ als Bereich braucht genau zwei Werte: von und bis.")
+        try:
+            von, bis = int(wert[0]), int(wert[1])
+        except (TypeError, ValueError):
+            raise EditorFehler(f"„{feld}“ muss aus ganzen Zahlen bestehen.") from None
+        if von > bis:
+            raise EditorFehler(f"Bei „{feld}“ ist der untere Wert größer als der obere.")
+        if von < 0 or bis > 9999:
+            raise EditorFehler(f"„{feld}“ muss zwischen 0 und 9999 liegen.")
+        return [von, bis]
+    try:
+        zahl = int(wert)
+    except (TypeError, ValueError):
+        raise EditorFehler(f"„{feld}“ muss eine ganze Zahl oder ein Bereich sein.") from None
+    if not 0 <= zahl <= 9999:
+        raise EditorFehler(f"„{feld}“ muss zwischen 0 und 9999 liegen.")
+    return zahl
+
+
+def _pruefe_angriffe(name: str, neue_angriffe: list) -> list:
+    """Angriffe zusammenbauen und von der Kartenprüfung des Bots abnehmen lassen.
+
+    Der Aufbau: Die unveränderte Karte wird geholt, die bearbeitbaren Felder
+    werden überschrieben, alles andere bleibt wie es war. Dann läuft die
+    echte Prüfung darüber — dieselbe, die auch der Bot benutzt. Was sie
+    beanstandet, wird gar nicht erst gespeichert.
+    """
+    original = next((k for k in _rohkarten() if k.get("name") == name), None)
+    if original is None:
+        raise EditorFehler(f"Die Karte „{name}“ gibt es nicht.")
+    vorhandene = original.get("attacks") or []
+    if len(neue_angriffe) != len(vorhandene):
+        raise EditorFehler("Die Anzahl der Angriffe lässt sich nicht ändern — "
+                           "nur die vorhandenen bearbeiten.")
+
+    zusammengebaut = []
+    for index, (alt, neu) in enumerate(zip(vorhandene, neue_angriffe), start=1):
+        # Mit dem Original anfangen, damit seltene Felder erhalten bleiben.
+        angriff = dict(alt)
+        for feld, wert in (neu or {}).items():
+            if feld not in ANGRIFF_FELDER:
+                raise EditorFehler(f"Angriff {index}: „{feld}“ lässt sich nicht ändern.")
+            if feld in ("damage", "heal", "self_damage", "cooldown_turns", "multi_hit"):
+                if wert in ("", None):
+                    angriff.pop(feld, None)      # leer heisst: gibt es hier nicht
+                    continue
+                angriff[feld] = _zahl_oder_bereich(wert, feld)
+            elif feld == "lifesteal_ratio":
+                try:
+                    anteil = float(wert)
+                except (TypeError, ValueError):
+                    raise EditorFehler(f"Angriff {index}: Lebensraub muss eine Zahl sein.") from None
+                if not 0 <= anteil <= 1:
+                    raise EditorFehler(f"Angriff {index}: Lebensraub liegt zwischen 0 und 1 "
+                                       "(0,5 = die Hälfte des Schadens).")
+                angriff[feld] = anteil
+            elif feld == "is_standard_attack":
+                angriff[feld] = bool(wert)
+            elif feld == "button_style":
+                if wert not in KNOEPFE:
+                    raise EditorFehler(f"Angriff {index}: Knopffarbe „{wert}“ gibt es nicht. "
+                                       f"Möglich: {', '.join(KNOEPFE)}")
+                angriff[feld] = wert
+            elif feld == "effects":
+                if not isinstance(wert, list):
+                    raise EditorFehler(f"Angriff {index}: Nebenwirkungen müssen eine Liste sein.")
+                angriff[feld] = wert
+            else:
+                text = str(wert or "").strip()
+                if feld == "name" and not text:
+                    raise EditorFehler(f"Angriff {index} braucht einen Namen.")
+                if len(text) > 200:
+                    raise EditorFehler(f"Angriff {index}: „{feld}“ ist zu lang (höchstens 200).")
+                angriff[feld] = text
+        zusammengebaut.append(angriff)
+
+    # Genau ein Standardangriff — der Knopf oben links im Kampf.
+    standard = [a for a in zusammengebaut if a.get("is_standard_attack")]
+    if len(standard) != 1:
+        raise EditorFehler(f"Genau ein Angriff muss der Standardangriff sein, "
+                           f"gerade sind es {len(standard)}.")
+
+    _abnehmen(original, zusammengebaut)
+    return zusammengebaut
+
+
+def _abnehmen(original: dict, angriffe: list) -> None:
+    """Die Kartenprüfung des Bots über die geänderte Karte laufen lassen."""
+    try:
+        from services import card_validation
+    except ImportError:
+        return          # Ohne die Prüfung lieber weitermachen als blockieren
+    probe = dict(original)
+    probe["attacks"] = angriffe
+    fehler = card_validation.validate_cards([probe])
+    if fehler:
+        # Der erste Fehler reicht — mehr überfordert nur.
+        raise EditorFehler(f"Die Kartenprüfung beanstandet: {fehler[0]}")
+
+
+def _rohkarten() -> list:
+    try:
+        from karten import karten as roh
+        return roh
+    except ImportError:
+        return []
+
+
 def pruefe(aenderungen: dict) -> dict:
     """Eingaben prüfen, bevor irgendetwas gespeichert wird.
 
@@ -86,8 +211,6 @@ def pruefe(aenderungen: dict) -> dict:
             raise EditorFehler(f"Die Seltenheit „{text}“ gibt es nicht. "
                                f"Möglich: {', '.join(sorted(_seltenheiten()))}")
         sauber[feld] = text
-    if not sauber:
-        raise EditorFehler("Es wurde nichts angegeben, was sich ändern ließe.")
     return sauber
 
 
@@ -119,7 +242,16 @@ def alle() -> dict:
 def setze(name: str, aenderungen: dict, *, von: str = "") -> dict:
     if not any(k.get("name") == name for k in cards.catalog()):
         raise EditorFehler(f"Die Karte „{name}“ gibt es nicht.")
-    sauber = pruefe(aenderungen)
+
+    # Angriffe brauchen den Kartennamen, um gegen das Original geprüft zu
+    # werden — deshalb getrennt von den einfachen Feldern.
+    aenderungen = dict(aenderungen or {})
+    angriffe = aenderungen.pop("attacks", None)
+    sauber = pruefe(aenderungen) if aenderungen else {}
+    if angriffe is not None:
+        sauber["attacks"] = _pruefe_angriffe(name, angriffe)
+    if not sauber:
+        raise EditorFehler("Es wurde nichts angegeben, was sich ändern ließe.")
     with database.write_connection() as con:
         _schema(con)
         vorher = con.execute(

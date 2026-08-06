@@ -77,7 +77,15 @@ benutzt wurde und wer gewonnen hat — nicht die Lage im Moment der
 Entscheidung. Ohne die lässt sich nicht lernen, *warum* jemand so gespielt
 hat. Der Bot hält deshalb ab sofort bei jedem Zug fest: Lebenspunkte beider
 Seiten, aktive Effekte, Abklingzeiten, verfügbare Angriffe, die getroffene
-Wahl und wie der Kampf ausging.
+Wahl und wie der Kampf ausging. Dazu die **Bedenkzeit** — wie lange jemand
+für die Entscheidung gebraucht hat. Die verrät viel: Ein Zug nach zwei
+Sekunden ist Routine, einer nach dreißig war eine schwierige Lage. Genau
+solche Stellen sind zum Lernen die wertvollsten.
+
+Weiter mitgeschrieben wird, was sich später als nützlich erweisen könnte,
+ohne dass es jetzt schon gebraucht wird: Rundennummer, ob der Zug ein
+Wiederholen nach einem Fehlschlag war, und ob die Karte kurz vorher
+geändert wurde. Nachträglich lässt sich das nicht mehr erheben.
 
 Das heißt auch: **gelernt wird aus Kämpfen nach dem Update.** Die alten sind
 dafür zu dünn. Bis genug zusammengekommen ist, spielt der Gegner wie bisher.
