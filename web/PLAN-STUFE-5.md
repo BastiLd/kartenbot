@@ -142,3 +142,59 @@ Jeder Schritt ist für sich benutzbar.
   gelernt wurde und wie viele Kämpfe eingeflossen sind.
 - **Testläufe fassen die echte Datenbank nicht an.** Sie rechnen auf Kopien.
 - **Jede Kartenänderung bleibt zurücknehmbar**, auch nach dem Testlauf.
+
+---
+
+# G. Missionsbereich (nachgereicht)
+
+Ein Umschalter ganz oben: **grün** = Karten wie bisher, **rot** = Missionen
+und Bosse. Im roten Bereich filtern nach Missionen, nach Bossen, nur den
+kleinen Gegnern, und nach den Dreiergruppen, die zusammengehören.
+
+Der Aufbau passt: Jede Operation hat genau **3 kleine Gegner und 1 Boss**.
+
+## Die fünf Operationen im Code
+
+| Operation | Boss | Bildordner |
+|---|---|---|
+| BROKEN_TIMELINE | Maestro | Maestro |
+| GOLDENER_KAEFIG | Kingpin | Kingpin |
+| GRUENER_TERROR | Green Goblin | Green Goblin |
+| HEXENFEUER | Agatha Harkness | Agatha |
+| TECHNISCHER_KOLLAPS | M.O.D.O.K. | M.O.D.O.K |
+
+Bilder gibt es zusätzlich für Doc Ock, Hela, Taskmaster und Red Skull —
+diese Missionen existieren im Bot noch nicht. Sie werden erst angezeigt,
+wenn es sie gibt.
+
+## Was beim Zuordnen der Bilder auffiel
+
+**Die Namen stimmen nicht überall überein.** Automatisch zuordnen geht
+deshalb nur teilweise:
+
+- **GRUENER_TERROR** und **HEXENFEUER**: alle vier Namen passen. Hier geht es
+  automatisch.
+- **BROKEN_TIMELINE**: Code sagt „Umprogrammierter Hulkbuster", das Bild
+  heißt „Maestro-Hulkbuster".
+- **GOLDENER_KAEFIG**: Code sagt „Fisks Enforcer", dazu gibt es kein Bild —
+  stattdessen liegt „Korrupte SWAT-Einheit" doppelt vor.
+- **TECHNISCHER_KOLLAPS**: **alle drei** kleinen Gegner heißen anders.
+  Code: A.I.M.-Laborwache, A.I.M.-Wissenschaftler, Schwerer Kampf-Mech.
+  Bilder: A.I.M. Techniker, A.I.M. Mutagen-Forscher, Kybernetischer Exo-Suit.
+
+**Folge:** Es braucht eine Zuordnung von Hand — je Gegner ein Bild wählen.
+Das ist ohnehin die bessere Lösung als raten, und es ist einmalige Arbeit.
+Wo die Namen passen, wird vorbelegt.
+
+## Weitere Auffälligkeiten in den Bildern
+
+- **Doppelte Dateien** bei Doc Ock, Hela und Taskmaster (8 statt 4). Werden
+  beim Einlesen aussortiert, mit Bericht darüber, welche.
+- **Maestros Boss-Bild** heißt nur `Maestro.png`, ohne die `(… 4)` am Ende —
+  lässt sich dadurch nicht automatisch als Boss erkennen.
+- **Kingpin**: eine Datei ist `(King Pin 3)` geschrieben, getrennt.
+
+## Reihenfolge
+
+Nach dem Testlauf (Schritt 3). Zuerst die Ansicht mit Umschalter und
+Filtern, dann die Bildzuordnung, dann das Bearbeiten der Gegner.
