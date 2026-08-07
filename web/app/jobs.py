@@ -28,6 +28,7 @@ KINDS = {
     "guild.sync":     "Serverdaten neu einlesen",
     "cards.reload":   "Kartenänderungen übernehmen",
     "cards.testlauf": "Testlauf einer Karte",
+    "cards.kikampf":  "Kontrollkampf gegen die KI",
 }
 
 

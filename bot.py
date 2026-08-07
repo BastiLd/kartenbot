@@ -198,7 +198,8 @@ from services.runtime_store import (
 from services.stats_export import build_stats_workbook
 from services.card_grant import grant_cards_to_users
 from services import (bot_versions, card_store, card_testrun, history_scan,
-                      move_log, role_manager, web_jobs)
+                      ki_gegner, move_log, ollama_bot, role_manager, web_jobs)
+from simulation import loader as simulation_loader
 from services.user_data import (
     add_exact_card_variant_once,
     add_card_buff,
@@ -2687,6 +2688,9 @@ async def _run_web_job(job: dict) -> dict:
     if art == "cards.testlauf":
         return await _run_card_testrun(job, nutzlast)
 
+    if art == "cards.kikampf":
+        return await _run_ki_kontrollkampf(job, nutzlast)
+
     guild = bot.get_guild(int(job["guild_id"])) if job.get("guild_id") else None
     if guild is None:
         raise RuntimeError("Der Bot ist auf diesem Server nicht (mehr) Mitglied.")
@@ -2839,6 +2843,62 @@ async def _run_card_testrun(job: dict, nutzlast: dict) -> dict:
                              "siegquote": d["siegquote"],
                              "stufe": d["einordnung"]["stufe"]}
                             for d in ergebnis["durchgaenge"]]}
+
+
+async def _run_ki_kontrollkampf(job: dict, nutzlast: dict) -> dict:
+    """Ein einzelner Kampf, bei dem das Sprachmodell jeden Zug entscheidet.
+
+    Laeuft aus demselben Grund im Bot wie der Testlauf: Nur hier liegen die
+    Karten mit allen Aenderungen. Der zweite Grund ist hier sogar staerker -
+    zwischen zwei Zuegen wird auf das Modell gewartet, und zwar Sekunden bis
+    Minuten. Der Kampf gibt dabei ab, das Spiel laeuft daneben weiter.
+    """
+    async def fortschritt(erledigt, gesamt, stufe=None):
+        await web_jobs.update_progress(job["id"], erledigt, gesamt, stufe)
+
+    async def abgebrochen() -> bool:
+        return await web_jobs.is_cancelled(job["id"])
+
+    name = str(nutzlast.get("karte") or "").strip()
+    gegner_name = str(nutzlast.get("gegner") or "").strip()
+    gegenspieler = str(nutzlast.get("gegenspieler") or "optimal")
+
+    zugang = await ollama_bot.zugang()
+    if not zugang["modell"]:
+        raise RuntimeError("Es ist kein Modell fuer den Kampf ausgewaehlt. Der "
+                           "Modell-Finder in den Einstellungen sucht eines.")
+    erreichbar, meldung = await ollama_bot.erreichbar()
+    if not erreichbar:
+        raise RuntimeError(meldung)
+
+    # Denselben Kartenstand auflegen wie beim Testlauf - sonst prueft der
+    # Kontrollkampf einen Zustand, den es im Discord gar nicht gibt.
+    try:
+        await card_store.anwenden(RAW_KARTEN)
+    except Exception:
+        logging.exception("Kartenaenderungen vor dem Kontrollkampf nicht anwendbar")
+
+    karten = simulation_loader.load_base_runtime_cards()
+    karte_a = card_testrun._finde_karte(karten, name)
+    if gegner_name:
+        karte_b = card_testrun._finde_karte(karten, gegner_name)
+    else:
+        gegner_liste = [k for k in karten
+                        if simulation_loader.canonical_hero_name(k)
+                        != simulation_loader.canonical_hero_name(karte_a)]
+        if not gegner_liste:
+            raise RuntimeError("Es gibt keine zweite Karte, gegen die angetreten werden koennte.")
+        karte_b = random.choice(gegner_liste)
+
+    async def frage(prompt: str) -> str:
+        return await ollama_bot.frage(prompt, url=zugang["url"], modell=zugang["modell"],
+                                      zeitlimit=zugang["zeitlimit"])
+
+    ergebnis = await ki_gegner.kontrollkampf(
+        karte_a, karte_b, frage=frage, gegenspieler=gegenspieler,
+        fortschritt=fortschritt, abbruch=abgebrochen)
+    ergebnis["modell"] = zugang["modell"]
+    return ergebnis
 
 
 async def _expire_temporary_roles() -> None:

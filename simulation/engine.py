@@ -77,19 +77,11 @@ def simulate_duel(
     average_mistake_rate: float,
     debug: bool = False,
     gewichte: dict | None = None,
-    strategie_a: object | None = None,
-    strategie_b: object | None = None,
-    max_runden: int = 500,
 ) -> DuelResult:
     """``gewichte`` sind die gelernten Gewichte einer Gegner-Version.
 
     Ohne Angabe rechnet die Engine Zahl fuer Zahl wie bisher - siehe
     ``simulation.strategy.STANDARD_GEWICHTE``.
-
-    ``strategie_a``/``strategie_b`` setzen eine fertige Strategie an die
-    Stelle der ueber den Namen gebauten. Gedacht fuer den KI-Gegner, der
-    seinen Zugang zum Sprachmodell mitbringt und ein Protokoll fuehrt -
-    ueber einen blossen Namen waere beides nicht hereinzureichen.
     """
     from services.combat_runner import CombatRunner
     from simulation.strategy import build_strategy
@@ -98,16 +90,16 @@ def simulate_duel(
     random.seed(duel_seed)
     try:
         runner = CombatRunner(fresh_runtime_copy(card_a), fresh_runtime_copy(card_b), starter_id=starter_id, debug=debug)
-        strategy_a = strategie_a or build_strategy(strategy_a_name, rng=random.Random(duel_seed ^ 0xA11CE), average_mistake_rate=average_mistake_rate, gewichte=gewichte)
-        strategy_b = strategie_b or build_strategy(strategy_b_name, rng=random.Random(duel_seed ^ 0xB0B), average_mistake_rate=average_mistake_rate, gewichte=gewichte)
+        strategy_a = build_strategy(strategy_a_name, rng=random.Random(duel_seed ^ 0xA11CE), average_mistake_rate=average_mistake_rate, gewichte=gewichte)
+        strategy_b = build_strategy(strategy_b_name, rng=random.Random(duel_seed ^ 0xB0B), average_mistake_rate=average_mistake_rate, gewichte=gewichte)
         rounds = 0
-        while not runner.is_finished() and rounds < max_runden:
+        while not runner.is_finished() and rounds < 500:
             player_id = runner.current_turn
             strategy = strategy_a if player_id == runner.player1_id else strategy_b
             attack_index = strategy.select_attack_index(runner, player_id)
             runner.perform_turn(attack_index)
             rounds += 1
-        winner_id = runner.winner_id() if rounds < max_runden or runner.is_finished() else None
+        winner_id = runner.winner_id() if rounds < 500 or runner.is_finished() else None
         if winner_id is None:
             return DuelResult(winner=None, loser=None, draw=True, rounds=rounds)
         loser_id = runner.other_player(winner_id)

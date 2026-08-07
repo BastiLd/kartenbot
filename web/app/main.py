@@ -482,26 +482,37 @@ class KiKampfBody(BaseModel):
     gegenspieler: str = "optimal"
 
 
-@app.post("/api/karten/kikampf")
-async def api_kikampf(body: KiKampfBody, request: Request,
-                      caller: auth.Caller = Depends(auth.require_login)):
-    """Ein einzelner Kampf, bei dem das Sprachmodell jeden Zug entscheidet.
+@app.get("/api/karten/kikampf/moeglichkeiten")
+def api_kikampf_moeglichkeiten(_: auth.Caller = Depends(auth.require_login)):
+    return kikampf.moeglichkeiten()
 
-    Dauert Minuten — jeder Zug ist eine Anfrage. Gedacht zum Zusehen, nicht
-    für Zahlen: Das Protokoll zeigt, wie das Modell die Lagen gelesen hat.
+
+@app.post("/api/karten/kikampf")
+def api_kikampf(body: KiKampfBody, request: Request,
+                caller: auth.Caller = Depends(auth.require_login)):
+    """Einen Kontrollkampf in Auftrag geben.
+
+    Gekämpft wird im Bot — dort liegen die Karten mit allen Änderungen, und
+    dort ist die Engine überhaupt lauffähig. Ein Zug ist eine Anfrage ans
+    Modell; der Kampf dauert deshalb Minuten und läuft als Auftrag.
     """
     try:
-        ergebnis = await kikampf.laufen(body.name, body.gegner,
-                                        gegenspieler=body.gegenspieler)
+        sauber = kikampf.pruefe(body.name, body.gegner, body.gegenspieler)
     except kikampf.KampfFehler as exc:
         raise HTTPException(400, str(exc)) from exc
-    except ollama.OllamaError as exc:
-        raise HTTPException(502, str(exc)) from exc
-    audit.record(actor=caller.actor, action="kikampf.gelaufen", target=body.name,
-                 detail=f"{ergebnis['gefragt']} Fragen, "
-                        f"{ergebnis['ausgewichen']} ohne brauchbare Antwort",
+
+    laufend = [j for j in jobs.active() if j["kind"] in ("cards.kikampf", "cards.testlauf")]
+    if laufend:
+        raise HTTPException(409, f"Es läuft schon ein Auftrag am Kampfrechner "
+                                 f"(Auftrag {laufend[0]['id']}). "
+                                 f"Mehrere auf einmal würden den Bot ausbremsen.")
+
+    auftrag = jobs.create("cards.kikampf", None, sauber, caller.actor, total=0)
+    audit.record(actor=caller.actor, action="kikampf.gestartet", target=sauber["karte"],
+                 detail=f"gegen {sauber['gegner'] or 'zufällig'}, "
+                        f"{sauber['gegenspieler']}",
                  client_ip=_ip(request))
-    return ergebnis
+    return auftrag
 
 
 @app.get("/api/karten/{name}/testlaeufe")

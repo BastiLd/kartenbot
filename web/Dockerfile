@@ -20,8 +20,13 @@ COPY web/app /app/web/app
 COPY web/static /app/web/static
 COPY web/VERSION /app/web/VERSION
 
-# Nur die Bot-Module, die für die Kartenprüfung gebraucht werden
-COPY karten.py items.py /app/
+# Nur die Bot-Module, die für die Kartenprüfung gebraucht werden.
+#
+# mission_enemies.py gehört dazu: Ohne die Datei bleibt der Bereich
+# „Schurken" leer und meldet, der Bot-Ordner sei nicht eingebunden — was nach
+# einem Fehler in der Einbindung aussieht, aber keiner ist. Eingebunden wird
+# der Ordner für die Datenbank, nicht für den Programmcode.
+COPY karten.py items.py mission_enemies.py /app/
 COPY services/__init__.py services/card_variants.py services/card_validation.py /app/services/
 
 ENV KARTENBOT_DB_PATH=/data/kartenbot.db \

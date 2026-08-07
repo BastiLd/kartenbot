@@ -1,6 +1,6 @@
 # Übergabe — Kartenbot Web
 
-Stand: 7. August 2026, Version 1.4.0. Diese Datei ist für eine neue Sitzung
+Stand: 7. August 2026, Version 1.4.1. Diese Datei ist für eine neue Sitzung
 gedacht: Sie sagt, wo alles liegt, was fertig ist, was als Nächstes ansteht
 und welche Fallen es gibt.
 
@@ -33,13 +33,23 @@ und welche Fallen es gibt.
 
 ## Wie ausgeliefert wird
 
-Drei getrennte Teile — **wer nur einen aktualisiert, bekommt Fehler, die wie
-Programmfehler aussehen, aber keine sind.**
+**Schritt 0, sonst ist alles Weitere wirkungslos: `git push`.** Bot-Manager
+und Portainer ziehen aus GitHub, nicht vom Entwicklungsrechner. Ein Commit,
+der nur lokal liegt, kommt nirgends an — und im Bot-Manager steht dann
+„Repository ist aktuell", weil es das ja auch ist. Beide Branches mitziehen:
+`main` und `feature/web-dashboard` werden gleich gehalten.
+
+Danach drei getrennte Teile — **wer nur einen aktualisiert, bekommt Fehler,
+die wie Programmfehler aussehen, aber keine sind.**
 
 1. **Bot** — im Bot-Manager von GitHub holen, **neu starten**.
 2. **Backend** — Portainer → Stacks → `kartenbot-web` → *Update the stack*.
 3. **Oberfläche** — `web/static/` als ZIP packen, in WebHafen hochladen
    („Ordner vorher leeren"), dann Strg+F5.
+
+Zum Nachsehen, ob der Push angekommen ist: Im Bot-Manager steht unter
+*Settings* der **Remote commit**. Steht dort nicht der neueste Commit, hilft
+kein einziger Klick auf „Update".
 
 Faustregel: Änderungen unter `web/app/` brauchen 2, unter `web/static/`
 brauchen 3, in `bot.py` oder `services/` brauchen 1.
@@ -156,9 +166,12 @@ Einstellungen (`dashboard.url`, derzeit `http://192.168.68.10:7859/`).
   stürzt die Anfrage ab, entscheidet die eingebaute Bewertung — und das
   steht im Protokoll, damit niemand ein Regelergebnis für eine Leistung
   des Modells hält.
-- Läuft auf der **Website** (`web/app/kikampf.py`) in einem eigenen Faden.
-  Anders als beim Testlauf gibt es keinen Grund, im Bot zu rechnen: Es ist
-  ein Kampf, nicht zehntausend — und der Zugang zum Modell liegt hier.
+- Läuft als **Auftrag im Bot** (`cards.kikampf`), genau wie der Testlauf.
+- Der Kampf führt seine Schleife **selbst** über `CombatRunner` statt über
+  `simulate_duel`. Zwei Gründe, beide zwingend: Zwischen zwei Zügen wird auf
+  das Modell gewartet, das geht nur mit `await`. Und `simulate_duel` setzt
+  den globalen Zufall auf einen festen Startwert — wer dazwischen abgibt,
+  lässt einen echten Kampf im Spiel auf einem bekannten Startwert laufen.
 
 680 Tests grün: `.venv/Scripts/python.exe -m pytest -q`
 
@@ -297,14 +310,38 @@ simulation/loader.py    Karten laden
 
 | Teil | Wo |
 |---|---|
-| Entscheiden | `services/ki_gegner.py` — `KIGegner`, `frage_bauen`, `antwort_lesen` |
-| Kampf | `services/ki_gegner.py:kontrollkampf` |
-| Website-Seite | `web/app/kikampf.py`, Endpunkt `/api/karten/kikampf` |
-| Modellzugang | `web/app/ollama.py:generate_sync` (synchron, für den eigenen Faden) |
+| Entscheiden | `services/ki_gegner.py` — `KIGegner.waehle`, `frage_bauen`, `antwort_lesen` |
+| Kampf | `services/ki_gegner.py:kontrollkampf` (async, eigene Schleife) |
+| Auftrag | Art `cards.kikampf`, in `web/app/jobs.py` und `bot.py` (`_run_ki_kontrollkampf`) |
+| Modellzugang im Bot | `services/ollama_bot.py` (aiohttp) |
+| Prüfung der Eingaben | `web/app/kikampf.py` — legt nur den Auftrag an |
 
 **Warum die Anfrage hereingereicht wird** (`frage`) statt fest verdrahtet:
 So läuft das Modul im Test ohne Netz und ohne Ollama — jeder Test dort gibt
 seine eigene Antwort vor, auch eine abstürzende.
+
+**Warum es zwei Ollama-Zugänge gibt.** Das Backend-Abbild hat `httpx`, der
+Bot nicht — dafür bringt discord.py `aiohttp` mit. Ein gemeinsames Modul
+müsste eine der beiden Abhängigkeiten zusätzlich installieren; beide
+Umgebungen sind absichtlich schlank. Die *Einstellungen* teilen sie sich
+(`web_settings`), es gibt also nur einen Ort, an dem die Adresse gepflegt wird.
+
+### Was das Backend-Abbild NICHT kann
+
+`web/Dockerfile` kopiert nur wenige Bot-Module hinein und installiert weder
+discord.py noch aiosqlite. Die Kampf-Engine ist dort deshalb **nicht
+lauffähig**: `simulation/engine.py` holt sich `services/combat_runner.py`,
+und das importiert das ganze `bot.py`.
+
+Der Import fällt nicht auf — `simulate_duel` lädt `combat_runner` erst beim
+Aufruf. Es stürzt also nicht beim Start ab, sondern beim ersten Kampf. Alles,
+was wirklich rechnet, gehört deshalb in den Bot.
+
+Aus derselben Ecke kam ein zweiter Fehler: `mission_enemies.py` fehlte im
+Abbild, und der Bereich „Schurken" meldete daraufhin, der Bot-Ordner sei
+nicht eingebunden. Er war es — eingebunden wird er für die *Datenbank*, nicht
+für den *Programmcode*. Wer dort ein Bot-Modul braucht, muss es in den
+`COPY`-Zeilen des Dockerfiles nachtragen.
 
 Der Missionsbereich (Punkt G) ist fertig — siehe oben.
 

@@ -1,127 +1,71 @@
 """Kontrollkampf gegen die KI — die Website-Hälfte (Stufe 5, Schritt 10).
 
-Ein einzelner Kampf, bei dem vor jedem Zug das Sprachmodell gefragt wird.
-Die Entscheidungslogik steht in ``services/ki_gegner.py``; hier steht nur die
-Klammer: welche Karten antreten, welches Modell gefragt wird, und dass das
-Ganze nicht den Webserver blockiert.
+Hier wird **nicht gerechnet**, hier wird nur geprüft und ein Auftrag angelegt.
+Gekämpft wird im Bot (``bot.py``, ``_run_ki_kontrollkampf``).
 
-**Warum auf der Website und nicht im Bot** — anders als beim Testlauf: Hier
-läuft genau *ein* Kampf, nicht zehntausend. Der Grund, im Bot zu rechnen (die
-Rechnung portionieren, damit das Spiel weiterläuft), entfällt damit. Dafür
-liegt hier der fertige Zugang zum Sprachmodell.
+**Warum nicht hier**, obwohl der Zugang zum Sprachmodell hier liegt: Die
+Kampf-Engine braucht über ``services/combat_runner.py`` das ganze ``bot.py``
+und damit discord.py und aiosqlite. Beides ist im Backend-Abbild bewusst
+nicht drin — es enthält nur die Module, die für die Kartenprüfung nötig sind.
+Ein Kampf hier würde beim ersten Zug abstürzen.
 
-**Warum in einem eigenen Faden:** Die Kampf-Engine ist synchron, und die
-Anfragen ans Modell dauern Sekunden bis Minuten. Liefe das im Ereignis-Faden,
-stünde die ganze Website still.
-
-Gerechnet wird mit den Karten des Spiels **einschließlich** der Änderungen,
-die über diese Seite gemacht wurden — sonst prüfte der Kontrollkampf einen
-Zustand, den es im Discord gar nicht gibt.
+Dazu kommt derselbe Grund wie beim Testlauf: Nur der Bot hat die Karten mit
+allen Änderungen, die über diese Seite gemacht wurden.
 """
 from __future__ import annotations
 
-import asyncio
-import sys
+from . import cards, missionen, settings
 
-from . import config, karteneditor, ollama, settings
-
-if str(config.PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(config.PROJECT_ROOT))
-
-# Was der Kampf höchstens kosten darf. Jeder Zug ist eine Anfrage; bei einem
-# langsamen Modell sind 120 Züge schon eine halbe Stunde.
-MAX_RUNDEN_HINWEIS = 120
+GEGENSPIELER = {
+    "optimal": "bestmöglich — jeder Zug so gut es geht",
+    "average": "wie Menschen, mit Fehlern",
+}
 
 
 class KampfFehler(Exception):
     """Der Kontrollkampf kann so nicht laufen — Text ist für den Menschen."""
 
 
-def _karten() -> list[dict]:
-    """Die Karten des Spiels mit den Änderungen von dieser Seite."""
-    try:
-        from simulation.loader import load_base_runtime_cards
-    except Exception as fehler:                                # noqa: BLE001
-        raise KampfFehler(f"Die Kampf-Engine ist nicht erreichbar: {fehler}") from fehler
-
-    karten = load_base_runtime_cards()
-    try:
-        from services.card_store import AENDERBAR
-    except Exception:                                          # noqa: BLE001
-        AENDERBAR = ()                                         # noqa: N806
-
-    abweichungen = karteneditor.alle()
-    for karte in karten:
-        eintrag = abweichungen.get(karte.get("name"))
-        if not eintrag:
-            continue
-        for feld, wert in (eintrag.get("aenderungen") or {}).items():
-            if not AENDERBAR or feld in AENDERBAR:
-                karte[feld] = wert
-    return karten
-
-
-def _finde(karten: list[dict], name: str) -> dict:
+def _kennt(name: str) -> bool:
     gesucht = str(name or "").strip()
-    try:
-        from simulation.loader import canonical_hero_name
-    except Exception:                                          # noqa: BLE001
-        def canonical_hero_name(k):                            # type: ignore
-            return str(k.get("name") or "")
+    if any(k.get("name") == gesucht for k in cards.catalog()):
+        return True
+    return gesucht in missionen.namen()
 
-    for karte in karten:
-        if canonical_hero_name(karte) == gesucht:
-            return karte
-    try:
-        from services.card_testrun import missionsgegner
-        for gegner in missionsgegner():
-            if str(gegner.get("name") or "").strip() == gesucht:
-                return gegner
-    except Exception:                                          # noqa: BLE001
-        pass
-    raise KampfFehler(f"„{gesucht}“ ist dem Spiel nicht bekannt.")
+
+def moeglichkeiten() -> dict:
+    """Was sich einstellen lässt — für die Oberfläche."""
+    modell = settings.get("ollama.model_kampf") or settings.get("ollama.model")
+    return {
+        "gegenspieler": [{"wert": w, "text": t} for w, t in GEGENSPIELER.items()],
+        "modell": modell,
+        "ki_an": settings.get_bool("ai.enabled"),
+        "bereit": bool(modell and settings.get_bool("ai.enabled")),
+    }
 
 
 def pruefe(karte: str, gegner: str, gegenspieler: str) -> dict:
-    """Eingaben abnehmen, bevor der Kampf losgeht."""
+    """Eingaben abnehmen, bevor ein Auftrag angelegt wird.
+
+    Alles, was sich hier schon erkennen lässt, wird hier gemeldet — sonst
+    stünde der Fehler erst in einem Auftrag, der Minuten später drankommt.
+    """
     if not settings.get_bool("ai.enabled"):
         raise KampfFehler("Die KI-Auswertung ist ausgeschaltet. Der Schalter steht "
                           "in den Einstellungen unter „KI“.")
-    modell = settings.get("ollama.model_kampf") or settings.get("ollama.model")
-    if not modell:
+    if not (settings.get("ollama.model_kampf") or settings.get("ollama.model")):
         raise KampfFehler("Es ist kein Modell für den Kampf ausgewählt. Der "
                           "Modell-Finder in den Einstellungen sucht eines.")
-    if gegenspieler not in ("optimal", "average"):
-        raise KampfFehler("Als Gegenspieler geht „optimal“ oder „average“.")
+    if gegenspieler not in GEGENSPIELER:
+        raise KampfFehler(f"Als Gegenspieler geht: {', '.join(GEGENSPIELER)}.")
 
-    karten = _karten()
-    _finde(karten, karte)
-    if gegner:
-        _finde(karten, gegner)
-    return {"karte": str(karte).strip(), "gegner": str(gegner or "").strip(),
-            "gegenspieler": gegenspieler, "modell": modell}
-
-
-async def laufen(karte: str, gegner: str = "", *, gegenspieler: str = "optimal",
-                 seed: int | None = None) -> dict:
-    """Einen Kontrollkampf rechnen — im eigenen Faden, damit nichts stillsteht."""
-    sauber = pruefe(karte, gegner, gegenspieler)
-    karten = _karten()
-    karte_a = _finde(karten, sauber["karte"])
-    if sauber["gegner"]:
-        karte_b = _finde(karten, sauber["gegner"])
-    else:
-        karte_b = next((k for k in karten if k is not karte_a), None)
-        if karte_b is None:
-            raise KampfFehler("Es gibt keine zweite Karte, gegen die angetreten werden könnte.")
-
-    from services import ki_gegner
-
-    def frage(prompt: str) -> str:
-        return ollama.generate_sync(prompt, model=sauber["modell"])
-
-    ergebnis = await asyncio.to_thread(
-        ki_gegner.kontrollkampf, karte_a, karte_b,
-        frage=frage, seed=seed, gegenspieler=gegenspieler)
-    ergebnis["modell"] = sauber["modell"]
-    return ergebnis
+    name = str(karte or "").strip()
+    if not _kennt(name):
+        raise KampfFehler(f"„{name}“ gibt es weder bei den Helden noch bei den Schurken.")
+    gegner_name = str(gegner or "").strip()
+    if gegner_name and not _kennt(gegner_name):
+        raise KampfFehler(f"„{gegner_name}“ gibt es weder bei den Helden "
+                          f"noch bei den Schurken.")
+    if gegner_name and gegner_name == name:
+        raise KampfFehler("Eine Karte kann nicht gegen sich selbst antreten.")
+    return {"karte": name, "gegner": gegner_name, "gegenspieler": gegenspieler}

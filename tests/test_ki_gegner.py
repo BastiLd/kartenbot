@@ -10,6 +10,7 @@ dafür ist sie ein Parameter und kein fest verdrahteter Aufruf.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,19 @@ from services import ki_gegner
 from simulation.loader import load_base_runtime_cards
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _antwort(was):
+    """Ein Modell, das immer dasselbe sagt — oder das abstürzt."""
+    async def frage(prompt):
+        return was(prompt) if callable(was) else was
+    return frage
+
+
+def _kampf(a, b, antwort, **rest):
+    """Einen Kontrollkampf laufen lassen. ``antwort`` ist die Modellantwort."""
+    return asyncio.run(ki_gegner.kontrollkampf(
+        a, b, frage=_antwort(antwort), seed=7, **rest))
 
 
 # --------------------------------------------------------------------------
@@ -115,7 +129,7 @@ def _zwei_karten() -> tuple[dict, dict]:
 def test_ein_kampf_mit_brauchbaren_antworten_geht_zu_ende():
     a, b = _zwei_karten()
 
-    ergebnis = ki_gegner.kontrollkampf(a, b, frage=lambda _: "1", seed=7)
+    ergebnis = _kampf(a, b, "1")
 
     assert ergebnis["runden"] > 0
     assert ergebnis["gefragt"] >= 0
@@ -126,7 +140,7 @@ def test_ein_kampf_mit_brauchbaren_antworten_geht_zu_ende():
 def test_ein_schweigendes_modell_haelt_den_kampf_nicht_auf():
     a, b = _zwei_karten()
 
-    ergebnis = ki_gegner.kontrollkampf(a, b, frage=lambda _: "", seed=7)
+    ergebnis = _kampf(a, b, "")
 
     assert ergebnis["runden"] > 0
     assert ergebnis["ausgewichen"] == ergebnis["gefragt"]
@@ -139,7 +153,7 @@ def test_ein_abstuerzendes_modell_haelt_den_kampf_nicht_auf():
     def kaputt(_):
         raise RuntimeError("Ollama antwortet nicht")
 
-    ergebnis = ki_gegner.kontrollkampf(a, b, frage=kaputt, seed=7)
+    ergebnis = _kampf(a, b, kaputt)
 
     assert ergebnis["runden"] > 0
     assert ergebnis["ausgewichen"] == ergebnis["gefragt"]
@@ -151,15 +165,43 @@ def test_ein_kampf_ohne_ergebnis_bricht_nach_der_hoechstzahl_ab():
     """Sonst koennte ein ausweichendes Modell eine Endlosschleife erzeugen."""
     a, b = _zwei_karten()
 
-    ergebnis = ki_gegner.kontrollkampf(a, b, frage=lambda _: "1", seed=7)
+    ergebnis = _kampf(a, b, "1")
 
     assert ergebnis["runden"] <= ki_gegner.MAX_ZUEGE
+
+
+def test_ein_abbruch_beendet_den_kampf_sofort():
+    """Ein Kampf dauert Minuten - er muss sich anhalten lassen."""
+    a, b = _zwei_karten()
+
+    async def sofort():
+        return True
+
+    ergebnis = asyncio.run(ki_gegner.kontrollkampf(
+        a, b, frage=_antwort("1"), seed=7, abbruch=sofort))
+
+    assert ergebnis["abgebrochen"] is True
+    assert ergebnis["runden"] == 0
+
+
+def test_der_fortschritt_wird_gemeldet():
+    a, b = _zwei_karten()
+    meldungen = []
+
+    async def fortschritt(erledigt, gesamt, stufe=None):
+        meldungen.append((erledigt, gesamt, stufe))
+
+    ergebnis = asyncio.run(ki_gegner.kontrollkampf(
+        a, b, frage=_antwort("1"), seed=7, fortschritt=fortschritt))
+
+    assert len(meldungen) == ergebnis["runden"]
+    assert meldungen[0][0] == 1
 
 
 def test_das_protokoll_haelt_jeden_zug_fest():
     a, b = _zwei_karten()
 
-    ergebnis = ki_gegner.kontrollkampf(a, b, frage=lambda _: "1", seed=7)
+    ergebnis = _kampf(a, b, "1")
 
     for zug in ergebnis["protokoll"]:
         assert zug["lage"]["angriffe"]
@@ -176,9 +218,13 @@ def test_bei_nur_einem_moeglichen_zug_wird_nicht_gefragt():
         def legal_attack_indices(self, player_id):
             return [2]
 
-    ki = ki_gegner.KIGegner(lambda p: gefragt.append(p) or "1")
+    async def frage(prompt):
+        gefragt.append(prompt)
+        return "1"
 
-    assert ki.select_attack_index(EinZug(), 1) == 2
+    ki = ki_gegner.KIGegner(frage)
+
+    assert asyncio.run(ki.waehle(EinZug(), 1)) == 2
     assert gefragt == []
     assert ki.gefragt == 0
     assert ki.protokoll == []
@@ -189,63 +235,104 @@ def test_ohne_moeglichen_zug_faellt_die_wahl_auf_null():
         def legal_attack_indices(self, player_id):
             return []
 
-    assert ki_gegner.KIGegner(lambda p: "1").select_attack_index(KeinZug(), 1) == 0
+    ki = ki_gegner.KIGegner(_antwort("1"))
+
+    assert asyncio.run(ki.waehle(KeinZug(), 1)) == 0
 
 
 # --------------------------------------------------------------------------
 # Die Einordnung in Worten
 # --------------------------------------------------------------------------
 def test_ohne_eine_einzige_frage_sagt_die_einordnung_das_auch():
-    ki = ki_gegner.KIGegner(lambda p: "1")
+    ki = ki_gegner.KIGegner(_antwort("1"))
 
-    assert "nie gefragt" in ki_gegner.einordnen(ki, None)
+    assert "nie gefragt" in ki_gegner.einordnen(ki)
 
 
 def test_viel_ausweichen_wird_deutlich_benannt():
-    ki = ki_gegner.KIGegner(lambda p: "1")
+    ki = ki_gegner.KIGegner(_antwort("1"))
     ki.gefragt, ki.ausgewichen = 10, 8
 
-    assert "taugt als Gegner nicht" in ki_gegner.einordnen(ki, None)
+    assert "taugt als Gegner nicht" in ki_gegner.einordnen(ki)
 
 
 def test_lueckenloses_entscheiden_wird_gelobt():
-    ki = ki_gegner.KIGegner(lambda p: "1")
+    ki = ki_gegner.KIGegner(_antwort("1"))
     ki.gefragt, ki.ausgewichen = 10, 0
 
-    assert "Alle 10 Entscheidungen" in ki_gegner.einordnen(ki, None)
+    assert "Alle 10 Entscheidungen" in ki_gegner.einordnen(ki)
 
 
 def test_gelegentliches_ausweichen_bekommt_einen_eigenen_satz():
-    ki = ki_gegner.KIGegner(lambda p: "1")
+    ki = ki_gegner.KIGegner(_antwort("1"))
     ki.gefragt, ki.ausgewichen = 10, 2
 
-    text = ki_gegner.einordnen(ki, None)
-    assert "nicht verlässlich" in text
+    assert "nicht verlässlich" in ki_gegner.einordnen(ki)
 
 
 # --------------------------------------------------------------------------
 # Verdrahtung
 # --------------------------------------------------------------------------
-def test_die_engine_nimmt_eine_fertige_strategie_an():
+def test_der_kampf_setzt_den_globalen_zufall_nie_neu(monkeypatch):
+    """Der springende Punkt gegenueber simulate_duel.
+
+    simulate_duel setzt random.seed() auf einen festen Wert und stellt den
+    Zustand danach wieder her. Sicher ist das nur, solange dazwischen nicht
+    abgegeben wird - hier wird aber bei jedem Zug auf das Modell gewartet.
+    Ein echter Kampf im Spiel saehe in dieser Zeit einen Zufall, der auf einem
+    bekannten Startwert steht, und waere damit vorhersagbar.
+
+    Der Kontrollkampf verbraucht Zufallszahlen wie jeder andere Kampf auch -
+    das ist harmlos. Er darf nur nie am Startwert drehen.
+    """
+    import random as zufall
+
+    a, b = _zwei_karten()
+
+    def verboten(*_a, **_k):                                   # pragma: no cover
+        raise AssertionError("random.seed() darf im Kontrollkampf nicht vorkommen")
+
+    monkeypatch.setattr(zufall, "seed", verboten)
+    monkeypatch.setattr(zufall, "setstate", verboten)
+
+    ergebnis = _kampf(a, b, "1")
+
+    assert ergebnis["runden"] > 0
+
+
+def test_die_engine_bleibt_unveraendert_bei_fuenfhundert_runden():
+    """Der Kontrollkampf fuehrt seine Schleife selbst - simulate_duel wurde
+    dafuer nicht angefasst, sonst fiele jedes bisherige Ergebnis anders aus."""
     quelle = (ROOT / "simulation" / "engine.py").read_text(encoding="utf-8")
 
-    assert "strategie_a" in quelle and "strategie_b" in quelle
-    assert "strategie_a or build_strategy" in quelle
-    assert "rounds < max_runden" in quelle
+    assert "rounds < 500" in quelle
+    assert "strategie_a" not in quelle
 
 
-def test_der_normale_testlauf_bleibt_bei_fuenfhundert_runden():
-    """Die Hoechstzahl ist neu einstellbar - ihre Voreinstellung darf sich
-    nicht geaendert haben, sonst faellt jedes bisherige Ergebnis anders aus."""
-    quelle = (ROOT / "simulation" / "engine.py").read_text(encoding="utf-8")
+def test_gekaempft_wird_im_bot_und_nicht_im_backend():
+    """Die Engine braucht ueber combat_runner das ganze bot.py - discord und
+    aiosqlite. Beides ist im Backend-Abbild nicht drin."""
+    web = (ROOT / "web" / "app" / "kikampf.py").read_text(encoding="utf-8")
+    bot = (ROOT / "bot.py").read_text(encoding="utf-8")
 
-    assert "max_runden: int = 500" in quelle
+    assert "simulate_duel" not in web
+    assert "ki_gegner" not in web
+    assert 'art == "cards.kikampf"' in bot
+    assert "ki_gegner.kontrollkampf(" in bot
 
 
-def test_die_website_fragt_synchron_und_in_einem_eigenen_faden():
-    quelle = (ROOT / "web" / "app" / "kikampf.py").read_text(encoding="utf-8")
-    llm = (ROOT / "web" / "app" / "ollama.py").read_text(encoding="utf-8")
+def test_der_bot_benutzt_aiohttp_und_nicht_httpx():
+    """httpx ist nur im Backend-Abbild, aiohttp bringt discord.py mit."""
+    quelle = (ROOT / "services" / "ollama_bot.py").read_text(encoding="utf-8")
 
-    assert "asyncio.to_thread" in quelle
-    assert "def generate_sync" in llm
-    assert "httpx.Client(" in llm
+    assert "import aiohttp" in quelle
+    assert "import httpx" not in quelle
+
+
+def test_der_bot_liest_die_einstellungen_der_website():
+    """Kein zweiter Ort, an dem eine Adresse gepflegt werden muesste."""
+    quelle = (ROOT / "services" / "ollama_bot.py").read_text(encoding="utf-8")
+
+    assert "web_settings" in quelle
+    assert "ollama.model_kampf" in quelle
+    assert "ollama.url" in quelle

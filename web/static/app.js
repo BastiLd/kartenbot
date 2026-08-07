@@ -13,7 +13,7 @@
    aktualisiert. Siehe zeigeVersion() ganz unten.
 
    Beim Ausliefern mit web/VERSION gleichziehen. */
-const OBERFLAECHE_VERSION = '1.4.0';
+const OBERFLAECHE_VERSION = '1.4.1';
 
 /* ------------------------------------------------------------- Werkzeuge -- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -1546,8 +1546,20 @@ function bindeBeurteilen(ziel) {
    neben dem Testlauf, sondern ein eigener mit Warnung davor: Wer ihn
    ausloest, soll wissen, worauf er sich einlaesst. */
 async function frageKiKampf(k) {
-  const karten = await ladeKarten().catch(() => []);
+  const [karten, moeglich] = await Promise.all([
+    ladeKarten().catch(() => []),
+    api('/api/karten/kikampf/moeglichkeiten').catch(() => ({ bereit: false })),
+  ]);
   const andere = karten.filter((x) => x.name !== k.name).map((x) => x.name);
+
+  if (!moeglich.bereit) {
+    return fehler(new Error(
+      moeglich.ki_an === false
+        ? 'Die KI-Auswertung ist ausgeschaltet. Der Schalter steht in den '
+          + 'Einstellungen unter „KI".'
+        : 'Es ist kein Modell für den Kampf ausgewählt. Der Modell-Finder in '
+          + 'den Einstellungen sucht eines.'));
+  }
 
   dialog({
     titel: `Kontrollkampf für „${k.name}“`,
@@ -1557,9 +1569,11 @@ async function frageKiKampf(k) {
         Danach steht im Protokoll, wie es entschieden hat.</p>
       <div class="notice warn" style="margin-top:14px">
         Jeder Zug ist eine Anfrage ans Modell. Der Kampf dauert deshalb
-        <strong>Minuten statt Millisekunden</strong> — lass die Seite offen.
-        Für Zahlen ist der Testlauf da; das hier ist zum Zusehen.
+        <strong>Minuten statt Millisekunden</strong>. Gerechnet wird im Bot —
+        du kannst die Seite ruhig schließen. Für Zahlen ist der Testlauf da;
+        das hier ist zum Zusehen.
       </div>
+      <p class="hint" style="margin-top:10px">Modell: <strong>${esc(moeglich.modell || '')}</strong></p>
       <div class="form-row" style="margin-top:14px">
         <label class="field"><span>Gegner</span>
           <select id="kkGegner">
@@ -1587,19 +1601,11 @@ async function frageKiKampf(k) {
             gegenspieler: $('#kkGegenspieler').value,
           };
           zu();
-          const ziel = $('#kkErgebnis');
-          if (ziel) {
-            ziel.innerHTML = `<div class="notice" style="margin-bottom:14px">
-              Der Kampf läuft — jeder Zug ist eine Anfrage ans Modell.
-              Das kann einige Minuten dauern.</div>`;
-          }
           try {
-            const e = await api('/api/karten/kikampf', { json: koerper });
-            if (ziel) ziel.innerHTML = kiKampfErgebnis(e);
-          } catch (err) {
-            if (ziel) ziel.innerHTML = '';
-            fehler(err);
-          }
+            const auftrag = await api('/api/karten/kikampf', { json: koerper });
+            toast('Kontrollkampf gestartet.', 'ok');
+            beobachteAuftrag(auftrag.id, $('#tlStatus'));
+          } catch (err) { fehler(err); }
         },
       },
     ],
@@ -1607,8 +1613,8 @@ async function frageKiKampf(k) {
 }
 
 function kiKampfErgebnis(e) {
-  const ausgang = e.unentschieden ? 'unentschieden'
-    : (e.gewonnen ? 'gewonnen' : 'verloren');
+  const ausgang = e.abgebrochen ? 'abgebrochen'
+    : (e.unentschieden ? 'unentschieden' : (e.gewonnen ? 'gewonnen' : 'verloren'));
   return `
     <div class="panel" style="margin-bottom:14px">
       <div class="panel-head"><h3>🤖 Kontrollkampf</h3>
@@ -2304,6 +2310,13 @@ function beobachteAuftrag(id, box) {
         if (STATE.tab === 'karten' && job.kind === 'cards.testlauf'
             && ['done', 'cancelled'].includes(job.status)) {
           zeichne('karten', { leise: true });
+        }
+        // Der Kontrollkampf hinterlaesst kein gespeichertes Ergebnis wie der
+        // Testlauf - sein Protokoll steckt im Auftrag selbst. Also von dort
+        // anzeigen, statt die Seite neu zu zeichnen.
+        if (job.kind === 'cards.kikampf' && job.status === 'done' && job.result) {
+          const kk = $('#kkErgebnis');
+          if (kk) kk.innerHTML = kiKampfErgebnis(job.result);
         }
       }
     }

@@ -23,8 +23,19 @@ Lage überhaupt sinnvoll liest — und woran es scheitert, wenn nicht.
    nicht sagen, warum ein Kampf so ausging.
 
 Die Anfrage selbst wird **hereingereicht** (``frage``) und nicht hier
-gebaut. So bleibt dieses Modul ohne Netz und ohne Ollama prüfbar — und die
-Website kann ihren vorhandenen Zugang benutzen, statt einen zweiten zu haben.
+gebaut. So bleibt dieses Modul ohne Netz und ohne Ollama prüfbar — jeder Test
+gibt seine eigene Antwort vor, auch eine abstürzende.
+
+**Warum der Kampf hier selbst geführt wird** statt über ``simulate_duel``:
+Zwischen zwei Zügen wird auf das Modell gewartet, und zwar Sekunden bis
+Minuten. Das geht nur mit ``await`` — sonst stünde der Bot die ganze Zeit
+still. ``simulate_duel`` ist synchron und käme dafür nicht in Frage.
+
+Ein zweiter Grund kommt dazu: ``simulate_duel`` setzt den globalen
+Zufallsgenerator auf einen festen Startwert und stellt ihn danach wieder her.
+Das ist nur solange sicher, wie dazwischen nicht abgegeben wird — genau das
+muss hier aber passieren. Hier wird deshalb gar nicht erst am globalen
+Zufall gedreht: Der ``CombatRunner`` bekommt seinen eigenen.
 """
 from __future__ import annotations
 
@@ -32,7 +43,7 @@ import logging
 import random
 import time
 
-from simulation.strategy import OptimalStrategy
+from simulation.strategy import OptimalStrategy, build_strategy
 
 # Antworten kleiner Modelle sind selten sauber. Mehr als das lesen wir nicht:
 # Was danach kommt, ist Begründung, nicht Entscheidung.
@@ -146,11 +157,11 @@ def antwort_lesen(text: str, anzahl: int) -> int | None:
 
 
 class KIGegner:
-    """Eine Strategie, die vor jedem Zug das Sprachmodell fragt.
+    """Führt Buch über die Züge, die das Modell entschieden hat.
 
-    ``frage`` ist ein Aufruf ``frage(prompt) -> str``. Er wird hereingereicht
-    und nicht hier gebaut: So läuft dieses Modul im Test ohne Netz, und die
-    Website benutzt ihren vorhandenen Ollama-Zugang statt eines zweiten.
+    ``frage`` ist ein **await-barer** Aufruf ``frage(prompt) -> str``. Er wird
+    hereingereicht und nicht hier gebaut: So läuft dieses Modul im Test ohne
+    Netz, und der Bot benutzt seinen eigenen Zugang.
 
     Passt die Antwort nicht, entscheidet ``rueckfall`` — voreingestellt die
     eingebaute Bewertung. Der Kampf läuft also in jedem Fall zu Ende.
@@ -164,7 +175,7 @@ class KIGegner:
         self.gefragt = 0
         self.ausgewichen = 0
 
-    def select_attack_index(self, runner, player_id: int) -> int:
+    async def waehle(self, runner, player_id: int) -> int:
         erlaubt = runner.legal_attack_indices(player_id)
         if not erlaubt:
             return 0
@@ -179,7 +190,7 @@ class KIGegner:
         grund = ""
         try:
             self.gefragt += 1
-            antwort = str(self.frage(prompt) or "")
+            antwort = str(await self.frage(prompt) or "")
             nummer = antwort_lesen(antwort, len(erlaubt))
         except Exception as fehler:                            # noqa: BLE001
             logging.exception("KI-Gegner: Anfrage fehlgeschlagen")
@@ -206,52 +217,73 @@ class KIGegner:
         return gewaehlt
 
 
-def kontrollkampf(karte_a: dict, karte_b: dict, *, frage, seed: int | None = None,
-                  gegenspieler: str = "optimal", fehlerquote: float = 0.35,
-                  gewichte: dict | None = None) -> dict:
+async def kontrollkampf(karte_a: dict, karte_b: dict, *, frage, seed: int | None = None,
+                        gegenspieler: str = "optimal", fehlerquote: float = 0.35,
+                        gewichte: dict | None = None,
+                        fortschritt=None, abbruch=None) -> dict:
     """Ein einzelner Kampf: die KI gegen die eingebaute Bewertung.
 
     Gibt neben dem Ergebnis das vollständige Protokoll zurück — jeden Zug mit
     der Lage, der Antwort im Wortlaut und der Zeit. Genau das ist der Zweck:
     nicht wer gewinnt, sondern **wie** entschieden wurde.
+
+    ``fortschritt(erledigt, gesamt, stufe)`` und ``abbruch() -> bool`` sind
+    dieselben Rückrufe wie beim Testlauf; beide dürfen fehlen. Beim Warten auf
+    das Modell gibt der Bot ab — das Spiel läuft daneben ungestört weiter.
     """
-    from simulation.engine import PLAYER_ONE_ID, simulate_duel
+    from services.combat_runner import CombatRunner
+    from simulation.loader import canonical_hero_name, fresh_runtime_copy
 
     if seed is None:
         seed = random.randrange(0, 2**31)
     protokoll: list[dict] = []
     ki = KIGegner(frage, protokoll=protokoll, gewichte=gewichte)
+    gegner_strategie = build_strategy(
+        gegenspieler, rng=random.Random(int(seed) ^ 0xB0B),
+        average_mistake_rate=fehlerquote, gewichte=gewichte)
 
+    runner = CombatRunner(fresh_runtime_copy(karte_a), fresh_runtime_copy(karte_b),
+                          starter_id=1)
     begonnen = time.monotonic()
-    ergebnis = simulate_duel(
-        karte_a, karte_b,
-        starter_id=PLAYER_ONE_ID,
-        duel_seed=int(seed),
-        strategy_a_name=gegenspieler,
-        strategy_b_name=gegenspieler,
-        average_mistake_rate=fehlerquote,
-        gewichte=gewichte,
-        strategie_a=ki,
-        max_runden=MAX_ZUEGE,
-    )
+    runden = 0
+    abgebrochen = False
+
+    while not runner.is_finished() and runden < MAX_ZUEGE:
+        if abbruch and await abbruch():
+            abgebrochen = True
+            break
+        am_zug = runner.current_turn
+        if am_zug == runner.player1_id:
+            index = await ki.waehle(runner, am_zug)
+        else:
+            index = gegner_strategie.select_attack_index(runner, am_zug)
+        runner.perform_turn(index)
+        runden += 1
+        if fortschritt:
+            await fortschritt(runden, MAX_ZUEGE,
+                              f"Zug {runden} — {ki.gefragt} Fragen ans Modell")
+
+    sieger_id = runner.winner_id()
+    name_a = canonical_hero_name(karte_a)
 
     return {
-        "karte": str(karte_a.get("name") or ""),
-        "gegner": str(karte_b.get("name") or ""),
-        "gewonnen": ergebnis.winner == karte_a.get("name"),
-        "unentschieden": ergebnis.draw,
-        "runden": ergebnis.rounds,
+        "karte": name_a,
+        "gegner": canonical_hero_name(karte_b),
+        "gewonnen": sieger_id == runner.player1_id,
+        "unentschieden": sieger_id is None,
+        "abgebrochen": abgebrochen,
+        "runden": runden,
         "gefragt": ki.gefragt,
         "ausgewichen": ki.ausgewichen,
         "gegenspieler": gegenspieler,
         "seed": int(seed),
         "dauer_s": round(time.monotonic() - begonnen, 1),
         "protokoll": protokoll,
-        "einordnung": einordnen(ki, ergebnis),
+        "einordnung": einordnen(ki),
     }
 
 
-def einordnen(ki: KIGegner, ergebnis) -> str:
+def einordnen(ki: KIGegner) -> str:
     """Was der Kampf über das Modell sagt — in einem Satz."""
     if not ki.gefragt:
         return ("In diesem Kampf gab es keine einzige echte Wahl — das Modell "
