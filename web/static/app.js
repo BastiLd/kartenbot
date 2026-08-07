@@ -13,7 +13,7 @@
    aktualisiert. Siehe zeigeVersion() ganz unten.
 
    Beim Ausliefern mit web/VERSION gleichziehen. */
-const OBERFLAECHE_VERSION = '1.3.0';
+const OBERFLAECHE_VERSION = '1.4.0';
 
 /* ------------------------------------------------------------- Werkzeuge -- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -1245,9 +1245,11 @@ async function zeichneEinzelkarte(ziel, k, aenderung, seltenheiten) {
           je Paarung. Danach steht schwarz auf weiß, ob sie zu stark, zu schwach oder
           rund ist.</p>
         <div class="spacer"></div>
+        <button class="btn sm" id="kKiKampf">🤖 Kontrollkampf</button>
         <button class="btn primary gross" id="kTestlaufGross">⚔ Testlauf starten</button>
       </div>
       <div id="tlStatus"></div>
+      <div id="kkErgebnis"></div>
       <div id="tlErgebnis">${testlaufErgebnis(letzterBrauchbarerLauf(laeufe))}</div>
     </div>
 
@@ -1318,6 +1320,7 @@ async function zeichneEinzelkarte(ziel, k, aenderung, seltenheiten) {
 
   $('#kVorschau', ziel).addEventListener('click', () => zeigeVorschau(k));
   $('#kTestlaufGross', ziel).addEventListener('click', () => frageTestlauf(k));
+  $('#kKiKampf', ziel).addEventListener('click', () => frageKiKampf(k));
   bindeBeurteilen(ziel);
 
   // Laeuft gerade schon einer fuer diese Karte? Dann direkt weiterverfolgen -
@@ -1537,6 +1540,111 @@ function bindeBeurteilen(ziel) {
 /* Das Ergebnis eines Laufs. Ohne Lauf ein Hinweis, sonst je Durchgang
    Einordnung, Kennzahlen und jede einzelne Paarung — und bei zwei
    Durchgaengen oben, was der Unterschied bedeutet. */
+/* ------------------------------------------------- Kontrollkampf gegen KI */
+/* Ein einzelner Kampf, bei dem das Sprachmodell jeden Zug entscheidet. Er
+   dauert Minuten - jeder Zug ist eine Anfrage. Deshalb bewusst kein Knopf
+   neben dem Testlauf, sondern ein eigener mit Warnung davor: Wer ihn
+   ausloest, soll wissen, worauf er sich einlaesst. */
+async function frageKiKampf(k) {
+  const karten = await ladeKarten().catch(() => []);
+  const andere = karten.filter((x) => x.name !== k.name).map((x) => x.name);
+
+  dialog({
+    titel: `Kontrollkampf für „${k.name}“`,
+    inhalt: `
+      <p class="muted">Ein <strong>einzelner</strong> Kampf, bei dem das Sprachmodell
+        vor jedem Zug gefragt wird: Hier ist die Lage, welcher Angriff?
+        Danach steht im Protokoll, wie es entschieden hat.</p>
+      <div class="notice warn" style="margin-top:14px">
+        Jeder Zug ist eine Anfrage ans Modell. Der Kampf dauert deshalb
+        <strong>Minuten statt Millisekunden</strong> — lass die Seite offen.
+        Für Zahlen ist der Testlauf da; das hier ist zum Zusehen.
+      </div>
+      <div class="form-row" style="margin-top:14px">
+        <label class="field"><span>Gegner</span>
+          <select id="kkGegner">
+            <option value="">zufällig aus dem Spiel</option>
+            ${andere.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('')}
+          </select></label>
+        <label class="field"><span>Wie der Gegner spielt</span>
+          <select id="kkGegenspieler">
+            <option value="optimal" selected>bestmöglich — jeder Zug so gut es geht</option>
+            <option value="average">wie Menschen, mit Fehlern</option>
+          </select></label>
+      </div>
+      <p class="hint" style="margin-top:10px">Antwortet das Modell nicht oder unsinnig,
+        entscheidet die eingebaute Bewertung — der Kampf läuft immer zu Ende, und wie
+        oft ausgewichen wurde, steht hinterher dabei.</p>`,
+    knoepfe: [
+      { label: 'Abbrechen', art: 'ghost' },
+      {
+        label: 'Kampf starten',
+        art: 'primary',
+        run: async (zu) => {
+          const koerper = {
+            name: k.name,
+            gegner: $('#kkGegner').value,
+            gegenspieler: $('#kkGegenspieler').value,
+          };
+          zu();
+          const ziel = $('#kkErgebnis');
+          if (ziel) {
+            ziel.innerHTML = `<div class="notice" style="margin-bottom:14px">
+              Der Kampf läuft — jeder Zug ist eine Anfrage ans Modell.
+              Das kann einige Minuten dauern.</div>`;
+          }
+          try {
+            const e = await api('/api/karten/kikampf', { json: koerper });
+            if (ziel) ziel.innerHTML = kiKampfErgebnis(e);
+          } catch (err) {
+            if (ziel) ziel.innerHTML = '';
+            fehler(err);
+          }
+        },
+      },
+    ],
+  });
+}
+
+function kiKampfErgebnis(e) {
+  const ausgang = e.unentschieden ? 'unentschieden'
+    : (e.gewonnen ? 'gewonnen' : 'verloren');
+  return `
+    <div class="panel" style="margin-bottom:14px">
+      <div class="panel-head"><h3>🤖 Kontrollkampf</h3>
+        <p class="muted">${esc(e.karte)} gegen ${esc(e.gegner)} — ${ausgang}
+          nach ${num(e.runden)} Zügen.</p>
+      </div>
+      <div class="notice ${e.ausgewichen ? 'warn' : 'ok'}" style="margin-bottom:14px">
+        ${esc(e.einordnung)}
+      </div>
+      <div class="bar-row"><span class="name">Modell</span>
+        <span class="val">${esc(e.modell || '')}</span></div>
+      <div class="bar-row"><span class="name">Gefragt</span>
+        <span class="val">${num(e.gefragt)} Züge</span></div>
+      <div class="bar-row"><span class="name">Ohne brauchbare Antwort</span>
+        <span class="val">${num(e.ausgewichen)}</span></div>
+      <div class="bar-row"><span class="name">Gerechnet in</span>
+        <span class="val">${num(Math.round(e.dauer_s))} Sekunden</span></div>
+
+      <h4 style="margin:18px 0 10px">Protokoll</h4>
+      ${(e.protokoll || []).map((z) => `
+        <details class="info-row">
+          <summary><strong>Zug ${z.runde}</strong>
+            <span>${esc(z.gewaehlt_name)}</span>
+            ${z.ausgewichen ? '<span class="tag">ausgewichen</span>' : ''}
+            <span class="muted" style="margin-left:auto">${z.sekunden} s</span></summary>
+          <div class="why">
+            <p>${esc(z.lage.eigene_karte)} ${z.lage.eigene_hp}/${z.lage.eigene_max_hp}
+               gegen ${esc(z.lage.gegner_karte)} ${z.lage.gegner_hp}/${z.lage.gegner_max_hp}</p>
+            <p>Zur Wahl standen: ${z.lage.angriffe.map((a) => esc(a.name)).join(', ')}</p>
+            ${z.antwort ? `<p><strong>Antwort:</strong> ${esc(z.antwort)}</p>` : ''}
+            ${z.grund ? `<p class="hint">${esc(z.grund)}</p>` : ''}
+          </div>
+        </details>`).join('')}
+    </div>`;
+}
+
 function testlaufErgebnis(lauf) {
   if (!lauf) {
     return leer('Für diese Karte gab es noch keinen Testlauf. Der Knopf oben startet einen.', '⚔');

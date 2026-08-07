@@ -21,8 +21,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import (actions, audit, auth, cards, config, database, discordapi,
-               gegnerversionen, jobs, logparse, missionen, names, netguard,
-               ollama, queries, roles, schema, karteneditor, settings, sicherung)
+               gegnerversionen, jobs, kikampf, logparse, missionen, names,
+               netguard, ollama, queries, roles, schema, karteneditor,
+               settings, sicherung)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -473,6 +474,34 @@ def api_karte_testlauf(body: TestlaufBody, request: Request,
                         f"{sauber['spielweise']}",
                  client_ip=_ip(request))
     return auftrag
+
+
+class KiKampfBody(BaseModel):
+    name: str
+    gegner: str = ""
+    gegenspieler: str = "optimal"
+
+
+@app.post("/api/karten/kikampf")
+async def api_kikampf(body: KiKampfBody, request: Request,
+                      caller: auth.Caller = Depends(auth.require_login)):
+    """Ein einzelner Kampf, bei dem das Sprachmodell jeden Zug entscheidet.
+
+    Dauert Minuten — jeder Zug ist eine Anfrage. Gedacht zum Zusehen, nicht
+    für Zahlen: Das Protokoll zeigt, wie das Modell die Lagen gelesen hat.
+    """
+    try:
+        ergebnis = await kikampf.laufen(body.name, body.gegner,
+                                        gegenspieler=body.gegenspieler)
+    except kikampf.KampfFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except ollama.OllamaError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    audit.record(actor=caller.actor, action="kikampf.gelaufen", target=body.name,
+                 detail=f"{ergebnis['gefragt']} Fragen, "
+                        f"{ergebnis['ausgewichen']} ohne brauchbare Antwort",
+                 client_ip=_ip(request))
+    return ergebnis
 
 
 @app.get("/api/karten/{name}/testlaeufe")

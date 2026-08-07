@@ -239,6 +239,37 @@ async def generate(prompt: str, *, model: str | None = None, as_json: bool = Fal
         raise OllamaError(explain(f"connection: {exc}")) from exc
 
 
+def generate_sync(prompt: str, *, model: str | None = None,
+                  timeout: float | None = None) -> str:
+    """Dasselbe wie ``generate``, aber synchron.
+
+    Gebraucht vom KI-Gegner: Die Kampf-Engine ist synchron, und ein Zug
+    entsteht mitten in ihrer Schleife. Der ganze Kontrollkampf läuft deshalb
+    in einem eigenen Faden (``asyncio.to_thread``) — dort wäre ein ``await``
+    weder möglich noch nötig.
+    """
+    name = model or settings.get("ollama.model_kampf") or settings.get("ollama.model")
+    if not name:
+        raise OllamaError("Es ist kein Modell ausgewählt. Wähle eines in den Einstellungen "
+                          "oder benutze den Modell-Finder.")
+    payload = {"model": name, "prompt": prompt, "stream": False,
+               "options": {"temperature": 0.2}}
+    try:
+        with httpx.Client(timeout=timeout or timeout_seconds()) as client:
+            response = client.post(base_url() + "/api/generate", json=payload)
+            response.raise_for_status()
+            return (response.json() or {}).get("response", "").strip()
+    except httpx.HTTPStatusError as exc:
+        raise OllamaError(explain(exc.response.text[:300])) from exc
+    except httpx.ReadTimeout as exc:
+        raise OllamaError(
+            "Das Modell hat nicht rechtzeitig geantwortet. Auf der CPU ist das normal — "
+            "erhöhe das Zeitlimit in den Einstellungen oder nimm ein kleineres Modell."
+        ) from exc
+    except httpx.RequestError as exc:
+        raise OllamaError(explain(f"connection: {exc}")) from exc
+
+
 async def generate_json(prompt: str, *, model: str | None = None) -> dict:
     raw = await generate(prompt, model=model, as_json=True)
     try:

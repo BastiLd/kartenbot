@@ -1,8 +1,10 @@
 # Übergabe — Kartenbot Web
 
-Stand: 6. August 2026, Version 1.2.0. Diese Datei ist für eine neue Sitzung
+Stand: 7. August 2026, Version 1.4.0. Diese Datei ist für eine neue Sitzung
 gedacht: Sie sagt, wo alles liegt, was fertig ist, was als Nächstes ansteht
 und welche Fallen es gibt.
+
+**Stufe 5 ist damit vollständig** — Schritte 1 bis 10 sind erledigt.
 
 ---
 
@@ -117,7 +119,48 @@ Einstellungen (`dashboard.url`, derzeit `http://192.168.68.10:7859/`).
 - Gewichte und Lernstand sind in der Tabelle vorbereitet, aber noch ohne
   Wirkung — dort landet später das Gelernte.
 
-582 Tests grün: `.venv/Scripts/python.exe -m pytest -q`
+**Auswahl der Gegner-Version im Discord** (Stufe 5, Schritt 8):
+
+- Wer im `/kampf` auf „Bot" geht, wird gefragt, wie der Gegner spielen soll —
+  eine Auswahlliste mit der Beschreibung als zweite Zeile. Keine Knöpfe:
+  Discord kann nur unter einer Option eine Erklärung setzen.
+- **Gefragt wird nur, wenn es etwas zu entscheiden gibt.** Solange es allein
+  „Standard" gibt, läuft der Kampfstart Klick für Klick wie vorher.
+- Die Wahl wird über `setze_gegner_version` **vor** `init_with_buffs` gesetzt;
+  dort wird nur nachgeladen, was fehlt. Damit gilt jetzt auch die
+  Einstellung **pro Server** — beim Kampfstart ist die Gilde bekannt.
+- Die Version steht in der Sitzung. Ohne das spielte der Bot nach einem
+  Neustart mitten im Kampf plötzlich wieder „Standard".
+
+**Lernen aus echten Kämpfen** (Stufe 5, Schritt 9):
+
+- `services/lernen.py` bestimmt die vier Gewichte aus `battle_moves`.
+- Gemessen wird der **Abstand zum Zufall**, nicht die Häufigkeit: Standen
+  vier Angriffe zur Wahl und zwei betäuben, fiele bei blindem Raten in der
+  Hälfte der Fälle die Wahl auf einen Betäuber. Wird öfter betäubt, ist das
+  eine Vorliebe. Sonst gewänne schlicht, was auf den meisten Karten steht.
+- Nur gewonnene Kämpfe, nur Menschen (`ist_bot = 0`). Von den Zügen des Bots
+  zu lernen hiesse, ihm seine eigenen Vorlieben zu bestätigen.
+- Übersprungen: Züge ohne Wahl, Kategorien unter 30 Gelegenheiten. Der
+  Faktor ist auf halb bis doppelt gedeckelt.
+- **Wirksam wird das im Testlauf, nicht im Discord.** Der echte Kampf
+  benutzt `_score_bot_attack_choice` in `bot.py` — eine andere Bewertung.
+  Der Testlauf-Dialog hat dafür eine Auswahl; Versionen ohne Gelerntes
+  stehen gar nicht erst drin.
+
+**KI als Gegner** (Stufe 5, Schritt 10):
+
+- `services/ki_gegner.py` fragt vor jedem Zug das Sprachmodell. Ein
+  **einzelner** Kontrollkampf, kein Testlauf: Jeder Zug ist eine Anfrage.
+- Der Kampf endet immer. Schweigt das Modell, schreibt es Unsinn oder
+  stürzt die Anfrage ab, entscheidet die eingebaute Bewertung — und das
+  steht im Protokoll, damit niemand ein Regelergebnis für eine Leistung
+  des Modells hält.
+- Läuft auf der **Website** (`web/app/kikampf.py`) in einem eigenen Faden.
+  Anders als beim Testlauf gibt es keinen Grund, im Bot zu rechnen: Es ist
+  ein Kampf, nicht zehntausend — und der Zugang zum Modell liegt hier.
+
+680 Tests grün: `.venv/Scripts/python.exe -m pytest -q`
 
 ### Wie die Zug-Mitschrift gebaut ist
 
@@ -196,73 +239,72 @@ belegt, dass dabei Zahl für Zahl dasselbe herauskommt wie bei
 
 ## Was als Nächstes ansteht
 
-### Schritt 8: Auswahl der Gegner-Version im Discord
+Stufe 5 ist abgeschlossen. Offen sind nur noch die Punkte, die schon vorher
+als „wäre als Nächstes sinnvoll" notiert waren:
 
-Die Versionen gibt es, und die aktive wirkt schon. Was fehlt: Wer auf „Bot"
-klickt, soll zwischen „Standard" und den gespeicherten Versionen wählen —
-mit der Beschreibung als Hilfe.
+### Die Züge der Bosse in Missionen mitschreiben
 
-Anzusetzen bei `BattleView(` in `bot.py` (~8456): Davor gehört ein View mit
-einem Knopf je Version. Die gewählte Version wird dann auf `_bot_version`
-und `_bot_fehlerquote` gesetzt, statt sie in `init_with_buffs` zu laden.
+Die einzige bekannte Lücke der Zug-Mitschrift. Ihre Auswahl steckt in den
+Boss-Hooks und ist an jeder Stelle anders. Die Spielerzüge in Missionen sind
+vollständig da.
 
-Damit fällt auch die zweite Lücke weg: Heute gilt immer die Einstellung
-„für alle Server", weil der View seine Gilde beim Laden nicht kennt. Die
-Tabelle `bot_version_aktiv` kann längst pro Server.
+### Gelerntes auch im echten Kampf wirksam machen
 
-### Schritt 9: Lernen aus echten Kämpfen
+Heute wirken die gelernten Gewichte nur im Testlauf, weil der echte Kampf mit
+`_score_bot_attack_choice` in `bot.py` eine **andere** Bewertung benutzt als
+`evaluate_move` in der Simulation. Beide zusammenzuführen wäre der saubere
+Weg — das ist aber ein Eingriff mitten in den laufenden Kampf und gehört
+sorgfältig gemacht, mit einem Testlauf davor und danach.
 
-Die Daten sammeln sich seit dem Einschalten der Mitschrift in
-`battle_moves`. Gelernt werden sollen die **Gewichte** in
-`simulation/strategy.py:evaluate_move` (CONTROL 140, DEFENSE 110, SETUP 85,
-DOT 90). Sie gehören dann in `bot_versions.gewichte_json` — die Spalte ist
-da und wird schon geladen, nur noch nicht benutzt.
+### Modi und Gesamtübersicht beim Testlauf
 
-Auswertbar ist: In welcher Lage haben Spieler, die den Kampf **gewonnen**
-haben, welche Art von Zug gewählt? Dafür `ausgang = 'gewonnen'` und
-`ist_bot = 0` filtern.
+Die **Modi** `light` und `max` aus `simulation/modes.py` zuschaltbar machen
+(heute rechnet er immer mit dem echten Spielstand), und eine
+**Gesamtübersicht** über alle Karten. `queries.card_testruns()` kann dafür
+schon ohne Kartennamen abgefragt werden.
 
-### Schritt 10: KI als Gegner
+### Weniger Anfragen im Kontrollkampf
 
-Zuletzt, weil am teuersten: Jeder Zug eine Anfrage, ein Kampf dauert Minuten
-statt Millisekunden. Nur für einzelne Kontrollkämpfe gedacht, nicht für die
-Massenauswertung.
+Heute wird jeder Zug einzeln gefragt. Wer das billiger will: gleiche Lagen
+zwischenspeichern, oder das Modell mehrere Züge im Voraus planen lassen.
 
-### Schritt 4: Zweites KI-Modell für den Testlauf — erledigt
+---
 
-Eines fürs **Prüfen** (Server-Analyse, wie bisher), eines für den
-**Testlauf** — mit eigenem Modell-Finder. Der vorhandene testet auf eine
-Verständnisaufgabe; der neue muss eine Kampflage lesen und eine sinnvolle
-Entscheidung treffen können. Also eigene Testaufgabe, eigene Bewertung.
-Anzusetzen bei `web/app/ollama.py` (`find_model`) und den Einstellungen.
-
-Die Engine dafür steht bereit:
+## Die Engine
 
 ```
 simulation/engine.py    simulate_duel, simulate_matchup,
                         simulate_full_round_robin, aggregate_hero_results
+                        simulate_duel nimmt jetzt gewichte= und strategie_a=
 simulation/strategy.py  Strategy-Protokoll, OptimalStrategy, AverageStrategy,
-                        build_strategy(name, rng, average_mistake_rate),
-                        evaluate_move  <- hier setzt später das Lernen an
+                        build_strategy(name, rng, average_mistake_rate, gewichte),
+                        evaluate_move, STANDARD_GEWICHTE, normalisiere_gewichte
 simulation/modes.py     apply_mode_to_cards
 simulation/loader.py    Karten laden
 ```
 
-### Danach
+### Wie das Lernen gebaut ist
 
-5. KI beurteilt die Testlauf-Ergebnisse in Worten (braucht 4). Die Zahlen
-   liegen fertig in `card_testruns.ergebnis_json`; die regelbasierte
-   Einordnung (`card_testrun.einordnen`) bleibt als Rückfall daneben stehen.
-6. **Zug-Mitschrift** — sollte früh kommen, siehe unten
-7. Gegner-Versionen („Standard", „Schwer") auf der Website
-8. Auswahl im Discord beim Kampfstart
-9. Lernen aus echten Kämpfen
-10. KI als Gegner (zuletzt, sehr langsam)
+| Teil | Wo |
+|---|---|
+| Auswertung | `services/lernen.py` — `auswerten()`, `beschreibe()` |
+| Website-Seite | `web/app/gegnerversionen.py` — `lerne()`, `lernstoff()`, `gewichte_vergessen()` |
+| Ablage | `bot_versions.gewichte_json` und `lernstand_json` |
+| Wirkung | `simulation/strategy.py:evaluate_move` über `gewichte` |
+| Oberfläche | `web/static/app.js` — Block unter jeder Version, Auswahl im Testlauf |
 
-Beim Testlauf selbst wäre als Nächstes sinnvoll: die **Modi** `light` und
-`max` aus `simulation/modes.py` zuschaltbar machen (heute rechnet er immer
-mit dem echten Spielstand), und eine **Gesamtübersicht** über alle Karten.
-`queries.card_testruns()` kann dafür schon ohne Kartennamen abgefragt werden.
+### Wie der KI-Gegner gebaut ist
+
+| Teil | Wo |
+|---|---|
+| Entscheiden | `services/ki_gegner.py` — `KIGegner`, `frage_bauen`, `antwort_lesen` |
+| Kampf | `services/ki_gegner.py:kontrollkampf` |
+| Website-Seite | `web/app/kikampf.py`, Endpunkt `/api/karten/kikampf` |
+| Modellzugang | `web/app/ollama.py:generate_sync` (synchron, für den eigenen Faden) |
+
+**Warum die Anfrage hereingereicht wird** (`frage`) statt fest verdrahtet:
+So läuft das Modul im Test ohne Netz und ohne Ollama — jeder Test dort gibt
+seine eigene Antwort vor, auch eine abstürzende.
 
 Der Missionsbereich (Punkt G) ist fertig — siehe oben.
 
@@ -337,5 +379,13 @@ git log --oneline -5
 .venv-Python -m pytest -q
 ```
 
-Erwartung: sauberer Stand, 454 Tests grün, `main` und
+Erwartung: sauberer Stand, 680 Tests grün, `main` und
 `feature/web-dashboard` auf demselben Commit.
+
+**Und das Wichtigste vor jeder Fehlersuche:** Steht in der Seitenleiste
+„Oberfläche vX · Backend vY" oder ein Balken oben auf der Seite, ist nichts
+kaputt — dann wurde nur einer der drei Teile aktualisiert. Genau dieser Fall
+hat schon einen halben Tag gekostet: Das Backend meldete die neue Version,
+die alte `app.js` schrieb sie ungeprüft in die Seitenleiste, und es sah aus,
+als fehlten Knöpfe im Programm. Seit 1.3.0 trägt `app.js` ihre eigene Nummer
+und vergleicht.
