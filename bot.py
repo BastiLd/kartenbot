@@ -3917,6 +3917,20 @@ class BaseBattleView(BattleMechanicsMixin, DurableView):
         self._optional_attack_confirmations: dict[int, dict[str, object]] = {}
         return runtime_maps
 
+    def setze_gegner_version(self, version: dict | None, guild_id: int | None = None) -> None:
+        """Legt fest, mit welcher Gegner-Version der Bot diesen Kampf spielt.
+
+        Muss **vor** ``init_with_buffs`` stehen: Dort wird nur nachgeladen,
+        was hier noch nicht gesetzt wurde. Ohne Version bleibt es beim alten
+        Weg ueber die Servereinstellung.
+        """
+        if guild_id is not None:
+            self._bot_guild_id = int(guild_id)
+        if not version:
+            return
+        self._bot_version = version
+        self._bot_fehlerquote = float(version.get("fehlerquote") or 0.0)
+
 
 class BattleView(BaseBattleView):
     durable_view_kind = VIEW_KIND_BATTLE
@@ -4295,6 +4309,11 @@ class BattleView(BaseBattleView):
             "all_battle_log_entries": _json_clone(self._all_battle_log_entries),
             "all_battle_log_summaries": _json_clone(self._all_battle_log_summaries),
             "recent_log_lines": _json_clone(self._recent_log_lines),
+            # Die gewaehlte Gegner-Version gehoert in die Sitzung: Nach einem
+            # Neustart mitten im Kampf spielte der Bot sonst ploetzlich wieder
+            # "Standard" - dieselbe Karte, aber ein anderer Gegner.
+            "bot_version": _json_clone(getattr(self, "_bot_version", None)),
+            "bot_fehlerquote": float(getattr(self, "_bot_fehlerquote", 0.0) or 0.0),
             "last_highlight_tone": self._last_highlight_tone,
             "biggest_hit": self._biggest_hit,
             "critical_hits": self._critical_hits,
@@ -4364,6 +4383,10 @@ class BattleView(BaseBattleView):
         ]
         self.round_counter = int(payload.get("round_counter", 0) or 0)
         self.ui_needs_resend = bool(payload.get("ui_needs_resend", False))
+        gemerkte_version = _dict_str_any(payload.get("bot_version"))
+        if gemerkte_version:
+            self._bot_version = gemerkte_version
+            self._bot_fehlerquote = float(payload.get("bot_fehlerquote", 0.0) or 0.0)
         self._optional_attack_confirmations = {}
         self._full_battle_log_embed = create_battle_log_embed()
         self._full_battle_log_embed.description = self._full_battle_log_text()
@@ -4989,13 +5012,13 @@ class BattleView(BaseBattleView):
         # einmal beim Start. Schlaegt es fehl, bleibt es bei Standard und der
         # Kampf laeuft wie immer.
         #
-        # Ohne Server-Id gilt die Einstellung "fuer alle Server". Der View
-        # kennt seine Gilde an dieser Stelle nicht; das serverweise Umstellen
-        # bekommt seinen Weg mit der Auswahl beim Kampfstart (Stufe 5,
-        # Schritt 8).
+        # Hat der Spieler beim Kampfstart schon gewaehlt (setze_gegner_version),
+        # steht sie hier bereits und wird nicht ueberschrieben. Sonst gilt die
+        # Servereinstellung - mit der Gilde, wenn sie bekannt ist, sonst wie
+        # bisher die Einstellung "fuer alle Server".
         if self.player2_id == 0 and not getattr(self, "_bot_version", None):
             try:
-                version = await bot_versions.aktive(None)
+                version = await bot_versions.aktive(getattr(self, "_bot_guild_id", None))
                 self._bot_version = version
                 self._bot_fehlerquote = float(version.get("fehlerquote") or 0.0)
             except Exception:
@@ -7859,6 +7882,97 @@ class OpponentSelectView(RestrictedView):
         self.value = selected_value
         self.stop()
         await interaction.response.defer()
+
+
+class BotVersionSelectView(RestrictedView):
+    """Vor dem Kampf gegen den Bot: Wie soll der Gegner spielen?
+
+    Eine Auswahlliste statt einzelner Knoepfe. Discord kann nur unter einer
+    Option eine zweite Zeile setzen - und genau diese Beschreibung ist die
+    Hilfe, an der sich "Standard" von "Schwer" unterscheiden laesst. Auf
+    Knoepfen stuende nur der nackte Name.
+    """
+
+    def __init__(self, user_id: int, versionen: list[dict], aktive_id: int = 0):
+        super().__init__(timeout=60)
+        self.user_id = int(user_id)
+        self.value: dict | None = None
+        self._nach_id = {int(v.get("id") or 0): v for v in versionen}
+
+        optionen = [
+            SelectOption(
+                label=eintrag["name"],
+                value=eintrag["wert"],
+                description=eintrag["hinweis"] or None,
+                default=bool(eintrag["vorgewaehlt"]),
+            )
+            for eintrag in bot_versions.auswahl_optionen(versionen, aktive_id)
+        ]
+
+        self.select = ui.Select(
+            placeholder="Wie soll der Bot spielen?",
+            min_values=1,
+            max_values=1,
+            options=optionen,
+        )
+        self.select.callback = self._on_select
+        self.add_item(self.select)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "Nur wer den Kampf startet, kann den Gegner einstellen!", ephemeral=True)
+            return
+        self.value = self._nach_id.get(int(self.select.values[0] or 0))
+        self.stop()
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+
+
+async def frage_gegner_version(interaction: discord.Interaction) -> dict:
+    """Welche Gegner-Version in diesem Kampf gegen den Bot gilt.
+
+    Gibt es ausser "Standard" nichts zu waehlen, wird gar nicht erst gefragt -
+    dann bleibt der Kampfstart so kurz wie bisher und im Spiel aendert sich
+    nichts. Wer nicht antwortet, bekommt die fuer diesen Server eingestellte
+    Version.
+
+    Hier faellt nebenbei die zweite Luecke weg: Bis jetzt galt immer die
+    Einstellung "fuer alle Server", weil der View seine Gilde beim Laden nicht
+    kennt. An dieser Stelle ist sie bekannt.
+
+    Jeder Fehler endet bei der Voreinstellung - eine hakende Abfrage darf den
+    Kampf weder aufhalten noch abbrechen.
+    """
+    guild_id = getattr(interaction, "guild_id", None)
+    try:
+        voreinstellung = await bot_versions.aktive(guild_id)
+    except Exception:
+        logging.exception("Aktive Gegner-Version nicht ermittelbar - es gilt Standard")
+        voreinstellung = bot_versions.standard()
+    try:
+        versionen = await bot_versions.alle()
+    except Exception:
+        logging.exception("Gegner-Versionen nicht ladbar - es bleibt bei der Voreinstellung")
+        return voreinstellung
+    if not bot_versions.braucht_auswahl(versionen):
+        return voreinstellung
+
+    view = BotVersionSelectView(
+        interaction.user.id, versionen, aktive_id=int(voreinstellung.get("id") or 0))
+    name = str(voreinstellung.get("name") or bot_versions.STANDARD_NAME)
+    try:
+        await interaction.followup.send(
+            f"Wie soll der Bot spielen? Ohne Auswahl gilt **{name}**.",
+            view=view,
+            ephemeral=True,
+        )
+    except Exception:
+        logging.exception("Auswahl der Gegner-Version nicht sendbar - es gilt die Voreinstellung")
+        return voreinstellung
+    await view.wait()
+    return view.value or voreinstellung
+
 
 class AdminUserSelectView(RestrictedView):
     def __init__(self, admin_user_id: int, guild: discord.Guild):

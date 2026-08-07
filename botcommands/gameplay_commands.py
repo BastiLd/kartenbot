@@ -197,6 +197,9 @@ def register_gameplay_commands(bot, api: GameplayFacade) -> dict[str, object]:
 
         opponent_id = view.value
         if opponent_id == "bot":
+            # Wie soll der Bot spielen? Gibt es nur "Standard", wird nicht
+            # gefragt und der Ablauf bleibt genau der alte.
+            gegner_version = await api.frage_gegner_version(interaction)
             fight_thread = await api._create_required_private_fight_thread(interaction)
             if fight_thread is None:
                 return
@@ -211,6 +214,7 @@ def register_gameplay_commands(bot, api: GameplayFacade) -> dict[str, object]:
                 None,
                 public_result_channel_id=public_result_channel_id,
             )
+            battle_view.setze_gegner_version(gegner_version, guild_id=interaction.guild_id)
             await battle_view.init_with_buffs()
 
             class BotUser:

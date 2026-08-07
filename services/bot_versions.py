@@ -160,6 +160,58 @@ def cache_leeren() -> None:
     _cache.clear()
 
 
+def braucht_auswahl(versionen: list[dict] | None) -> bool:
+    """Lohnt sich die Frage beim Kampfstart überhaupt?
+
+    Gibt es nur „Standard", ist nichts zu entscheiden. Dann wird nicht
+    gefragt und der Kampf startet so knapp wie eh und je — eine Rückfrage,
+    die nur eine Antwort zulässt, ist bloß ein Klick mehr.
+    """
+    return len(versionen or []) > 1
+
+
+# Discord lässt in einer Auswahlliste 25 Einträge zu; Name und zweite Zeile
+# je 100 Zeichen. Was darüber steht, würde die Liste kommentarlos ablehnen.
+AUSWAHL_MAX = 25
+AUSWAHL_TEXT_MAX = 100
+
+
+def auswahl_optionen(versionen: list[dict], aktive_id: int = 0) -> list[dict]:
+    """Was beim Kampfstart in der Auswahlliste steht.
+
+    Eine eigene Funktion, weil sich nur so prüfen lässt, was der Spieler zu
+    sehen bekommt: Die View selbst hängt an Discord und ist im Test nicht zu
+    haben.
+
+    Der ``hinweis`` ist die Beschreibung der Version; hat sie eine Fehlerquote,
+    steht sie dahinter. Ohne diesen Zusatz sähen „Schwer" und „Übungsgegner"
+    gleich aus — der Unterschied ist genau die Quote.
+    """
+    def _zahl(wert, wandler, ersatz):
+        # Was aus der Datenbank kommt, muss nicht heil sein. Eine krumme
+        # Zeile darf hoechstens sich selbst verderben, nie den Kampfstart.
+        try:
+            return wandler(wert or ersatz)
+        except (TypeError, ValueError):
+            return ersatz
+
+    optionen: list[dict] = []
+    for version in list(versionen or [])[:AUSWAHL_MAX]:
+        version_id = _zahl(version.get("id"), int, 0)
+        hinweis = str(version.get("beschreibung") or "").strip()
+        quote = max(0.0, min(1.0, _zahl(version.get("fehlerquote"), float, 0.0)))
+        if quote > 0:
+            zusatz = f"greift in {quote * 100:.0f} % der Züge daneben"
+            hinweis = f"{hinweis} — {zusatz}" if hinweis else zusatz
+        optionen.append({
+            "name": (str(version.get("name") or "Ohne Namen"))[:AUSWAHL_TEXT_MAX],
+            "wert": str(version_id),
+            "hinweis": hinweis[:AUSWAHL_TEXT_MAX],
+            "vorgewaehlt": version_id == _zahl(aktive_id, int, 0),
+        })
+    return optionen
+
+
 def waehle_mit_fehlerquote(kandidaten: list[int], bester: int, fehlerquote: float,
                            rng: random.Random | None = None) -> int:
     """Mit der Fehlerquote nicht den besten, sondern einen anderen Zug nehmen.

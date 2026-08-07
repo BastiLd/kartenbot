@@ -101,6 +101,7 @@ def build_command_api(global_ns: dict[str, Any]) -> CommandApi:
         "create_battle_log_embed",
         "create_fight_request",
         "create_mission_request",
+        "frage_gegner_version",
         "get_mission_count",
         "mission_operation_options",
         "update_fight_request_message",
