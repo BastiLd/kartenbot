@@ -8,6 +8,13 @@
    =========================================================================== */
 'use strict';
 
+/* Die Fassung DIESER Datei. Sie kommt mit der ZIP, die Backend-Version per
+   API — stimmen beide nicht überein, wurde nur eines der drei Teile
+   aktualisiert. Siehe zeigeVersion() ganz unten.
+
+   Beim Ausliefern mit web/VERSION gleichziehen. */
+const OBERFLAECHE_VERSION = '1.3.0';
+
 /* ------------------------------------------------------------- Werkzeuge -- */
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -2862,15 +2869,44 @@ async function starte() {
   setInterval(aktualisiereKopf, 30000);
 }
 
+/* Ist a aelter als b? Zahlenweise, damit 1.10 nicht vor 1.9 landet. */
+function versionKleiner(a, b) {
+  const teile = (v) => String(v).split('.').map((n) => Number(n) || 0);
+  const [x, y] = [teile(a), teile(b)];
+  for (let i = 0; i < Math.max(x.length, y.length); i += 1) {
+    if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) < (y[i] || 0);
+  }
+  return false;
+}
+
 async function zeigeVersion() {
-  // Die Version kommt vom Backend statt fest in der Seite zu stehen. So
-  // stimmt sie auch, wenn WebHafen die Dateien ausliefert und nicht das
-  // Backend selbst - dort koennte nichts in die Seite hineingeschrieben werden.
+  // Die Backend-Version kommt per API, die der Oberflaeche steckt oben in
+  // dieser Datei. Weichen sie ab, wurde nur eines der drei Teile
+  // aktualisiert - und genau dieser Fall sieht aus wie ein Programmfehler,
+  // ist aber keiner: Knoepfe fehlen, Bereiche sind nicht da, und man sucht
+  // den Fehler im Code statt beim Hochladen.
   const feld = $('#versionLabel');
   if (!feld) return;
   try {
     const info = await api('/api/health');
-    if (info && info.version) feld.textContent = `Web v${info.version}`;
+    const backend = (info && info.version) || '';
+    if (!backend) return;
+    if (backend === OBERFLAECHE_VERSION) {
+      feld.textContent = `Web v${backend}`;
+      return;
+    }
+    feld.textContent = `Oberfläche v${OBERFLAECHE_VERSION} · Backend v${backend}`;
+    feld.classList.add('version-ungleich');
+    const balken = document.createElement('div');
+    balken.className = 'version-warnung';
+    balken.innerHTML = `<strong>Die drei Teile passen nicht zusammen.</strong>
+      Die Oberfläche ist <strong>v${esc(OBERFLAECHE_VERSION)}</strong>, das Backend
+      <strong>v${esc(backend)}</strong>. Dadurch fehlen Knöpfe und ganze Bereiche —
+      das ist kein Fehler im Programm.<br>
+      ${versionKleiner(OBERFLAECHE_VERSION, backend)
+        ? 'Lade <code>web/static</code> als ZIP in WebHafen hoch (Ordner vorher leeren) und drücke Strg+F5.'
+        : 'Aktualisiere den Stack in Portainer (kartenbot-web → Update the stack).'}`;
+    document.body.prepend(balken);
   } catch {
     /* Ohne Verbindung bleibt schlicht "Web" stehen - kein Grund fuer Laerm. */
   }

@@ -731,6 +731,22 @@ textarea { width: 100%; resize: vertical; }
 .dv-green   { background: #248046; }
 .dv-grey, .dv-gray { background: #4e5058; }
 
+/* --- Warnung, wenn Oberflaeche und Backend nicht zusammenpassen --- */
+/* Der haeufigste Stolperstein bei drei getrennten Teilen: Es sieht aus wie
+   ein Programmfehler, ist aber nur ein vergessener Upload. */
+.version-warnung {
+  position: sticky; top: 0; z-index: 200;
+  padding: 12px 20px; font-size: .9rem; line-height: 1.55;
+  color: var(--text);
+  background: color-mix(in srgb, var(--yellow) 18%, var(--panel));
+  border-bottom: 2px solid var(--yellow);
+}
+.version-warnung code {
+  padding: .1em .4em; border-radius: 4px;
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+.version-ungleich { color: var(--yellow); }
+
 /* --- Umschalter Helden / Schurken --- */
 /* Zwei Welten, deshalb zwei Farben: gruen die Karten der Spieler, rot die
    Gegner aus den Missionen. Man soll auf einen Blick sehen, wo man ist. */
