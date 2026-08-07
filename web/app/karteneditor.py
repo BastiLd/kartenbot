@@ -313,15 +313,34 @@ def testlauf_moeglichkeiten() -> dict:
         "standard_spielweise": modul.STANDARD_AUSWAHL,
         "kampfzahlen": list(modul.KAMPFZAHLEN),
         "standard_kaempfe": modul.STANDARD_KAEMPFE,
+        # Nur Versionen, die wirklich etwas gelernt haben. Eine ohne Gewichte
+        # zur Wahl zu stellen hiesse, eine Wahl anzubieten, die nichts ändert.
+        "gelernte_versionen": _gelernte_versionen(),
     }
 
 
-def pruefe_testlauf(name: str, spielweise: str, kaempfe_je_paarung: int) -> dict:
+def _gelernte_versionen() -> list[dict]:
+    try:
+        from . import gegnerversionen
+        return [{"id": v["id"], "name": v["name"],
+                 "zuege": int((v.get("lernstand") or {}).get("zuege_verwertet") or 0)}
+                for v in gegnerversionen.alle() if v.get("gewichte")]
+    except Exception:                                          # noqa: BLE001
+        # Der Testlauf muss auch dann einstellbar bleiben, wenn es mit den
+        # Versionen gerade hakt.
+        return []
+
+
+def pruefe_testlauf(name: str, spielweise: str, kaempfe_je_paarung: int,
+                    version_id: int = 0) -> dict:
     """Eingaben abnehmen, bevor ein Auftrag angelegt wird.
 
     Der Bot prüft dasselbe noch einmal — er muss das, weil er Aufträge auch
     von anderswo bekommen könnte. Hier geht es darum, einen Fehler sofort zu
     melden statt erst, wenn der Auftrag drankommt.
+
+    ``version_id`` sagt, mit wessen gelernten Gewichten gerechnet wird. 0 ist
+    „Standard": die eingebauten Werte, also der Testlauf wie bisher.
     """
     modul = _testlauf_modul()
     karte = str(name or "").strip()
@@ -342,7 +361,22 @@ def pruefe_testlauf(name: str, spielweise: str, kaempfe_je_paarung: int) -> dict
     if zahl not in modul.KAMPFZAHLEN:
         raise EditorFehler(f"So viele Kämpfe sind nicht vorgesehen. Möglich: "
                            f"{', '.join(str(z) for z in modul.KAMPFZAHLEN)}")
-    return {"karte": karte, "spielweise": spielweise, "kaempfe_je_paarung": zahl}
+    try:
+        version = int(version_id or 0)
+    except (TypeError, ValueError):
+        raise EditorFehler("Die Gegner-Version ist nicht lesbar.") from None
+    if version:
+        from . import gegnerversionen
+        gewaehlt = next((v for v in gegnerversionen.alle() if v["id"] == version), None)
+        if gewaehlt is None:
+            raise EditorFehler("Diese Gegner-Version gibt es nicht (mehr).")
+        if not gewaehlt.get("gewichte"):
+            raise EditorFehler(
+                f"„{gewaehlt['name']}“ hat noch nichts gelernt — der Testlauf "
+                f"käme damit auf genau dieselben Zahlen wie mit "
+                f"„{gegnerversionen.STANDARD_NAME}“.")
+    return {"karte": karte, "spielweise": spielweise, "kaempfe_je_paarung": zahl,
+            "version_id": version}
 
 
 def verlauf(name: str, limit: int = 20) -> list[dict]:

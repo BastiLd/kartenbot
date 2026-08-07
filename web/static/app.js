@@ -1446,6 +1446,16 @@ async function frageTestlauf(k) {
               ${s.wert === moeglich.standard_spielweise ? 'selected' : ''}>${esc(s.text)}</option>`).join('')}
           </select></label>
       </div>
+      ${(moeglich.gelernte_versionen || []).length ? `
+        <label class="field" style="margin-top:12px"><span>Womit gerechnet wird</span>
+          <select id="tlVersion">
+            <option value="0" selected>Standard — die eingebauten Gewichte</option>
+            ${moeglich.gelernte_versionen.map((v) => `<option value="${v.id}">
+              ${esc(v.name)} — gelernt aus ${num(v.zuege)} Entscheidungen</option>`).join('')}
+          </select></label>
+        <p class="hint" style="margin-top:6px">Eine Version, die aus echten Kämpfen
+          gelernt hat, spielt im Testlauf anders — sie gewichtet Betäuben, Schützen,
+          Vorbereiten und Dauerschaden so, wie es die Gewinner getan haben.</p>` : ''}
       <div class="notice" style="margin-top:14px" id="tlUmfang"></div>
       <p class="hint" style="margin-top:10px">Gerechnet wird auf Kopien — an der Karte und
         an der Datenbank ändert der Testlauf nichts.</p>`,
@@ -1455,10 +1465,12 @@ async function frageTestlauf(k) {
         label: 'Testlauf starten',
         art: 'primary',
         run: async (zu) => {
+          const versionFeld = $('#tlVersion');
           const koerper = {
             name: k.name,
             kaempfe_je_paarung: Number($('#tlKaempfe').value),
             spielweise: $('#tlSpielweise').value,
+            version_id: versionFeld ? Number(versionFeld.value) || 0 : 0,
           };
           zu();
           try {
@@ -1564,7 +1576,9 @@ function testlaufErgebnis(lauf) {
     <p class="hint" style="margin-top:12px">
       ${esc(zeitpunkt(lauf.finished_at || lauf.started_at))}
       ${e.dauer_s ? ` · gerechnet in ${num(Math.round(e.dauer_s))} Sekunden` : ''}
-      ${e.seed ? ` · Startwert ${e.seed}` : ''}</p>`;
+      ${e.seed ? ` · Startwert ${e.seed}` : ''}
+      ${e.gewichte && Object.keys(e.gewichte).length
+        ? ' · gerechnet mit gelernten Gewichten' : ''}</p>`;
 }
 
 /* Ein einzelner Durchgang: eine Spielweise, alle Gegner. */
@@ -2443,6 +2457,56 @@ async function zeichneVersionen(wurzel) {
     return;
   }
   const aktivFuerAlle = Number(d.aktiv['*'] || 0);
+  const stoff = d.lernstoff || { zuege: 0, kaempfe: 0, mitgeschrieben: 0 };
+
+  /* Was aus echten Kaempfen gelernt wurde - je Version. Steht nur da, wenn
+     wirklich gelernt wurde; ein leerer Kasten waere nur Platzverbrauch. */
+  const lernBlock = (v) => {
+    const stand = v.lernstand || {};
+    const gewichte = v.gewichte || {};
+    const namen = {
+      control: 'Betäuben und Sperren',
+      defense: 'Schützen und Ausweichen',
+      setup: 'Vorbereiten',
+      dot: 'Schaden über Runden',
+    };
+    const gelernt = Object.keys(gewichte).length > 0;
+    return `
+      <div class="lern-block">
+        <h4>Aus echten Kämpfen gelernt</h4>
+        ${gelernt ? `
+          <div class="lern-werte">
+            ${Object.entries(namen).map(([k, text]) => {
+              const werte = (stand.grundlage || {})[k] || {};
+              const grund = werte.grundgewicht;
+              const neu = gewichte[k];
+              const anders = werte.gelernt && neu !== grund;
+              return `<div class="bar-row">
+                <span class="name">${text}</span>
+                <span class="val ${anders ? 'accent' : 'muted'}">
+                  ${werte.gelernt ? `${grund} → ${neu}` : 'zu wenig Material'}</span>
+              </div>`;
+            }).join('')}
+          </div>
+          <p class="hint" style="white-space:pre-line">${esc(stand.text || '')}</p>
+          <p class="hint">Gelernt am ${zeitpunkt(stand.stand_am)}.
+            Die Gewichte wirken im <strong>Testlauf</strong> — der Kampf im Discord
+            spielt unverändert weiter.</p>
+          <div class="form-actions">
+            <button class="btn sm" data-lernen="${v.id}">Neu lernen</button>
+            <button class="btn danger sm" data-verlernen="${v.id}">Gelerntes verwerfen</button>
+          </div>`
+        : `
+          <p class="hint">Noch nichts gelernt — diese Version rechnet mit den
+            eingebauten Gewichten.</p>
+          <p class="hint">Zur Verfügung stehen <strong>${num(stoff.zuege)}</strong>
+            Entscheidungen aus <strong>${num(stoff.kaempfe)}</strong> gewonnenen
+            Kämpfen${stoff.mitgeschrieben ? '' : ' — die Zug-Mitschrift ist noch aus'}.</p>
+          <div class="form-actions">
+            <button class="btn sm" data-lernen="${v.id}">Aus echten Kämpfen lernen</button>
+          </div>`}
+      </div>`;
+  };
 
   box.innerHTML = `
     <label class="field" style="max-width:520px">
@@ -2480,7 +2544,8 @@ async function zeichneVersionen(wurzel) {
                 <button class="btn primary sm" data-speichern="${v.id}">Speichern</button>
                 <button class="btn sm" data-kopieren="${v.id}">Kopieren</button>
                 <button class="btn danger sm" data-loeschen="${v.id}">Löschen</button>
-              </div>`}
+              </div>
+              ${lernBlock(v)}`}
           </div>
         </details>`).join('')}
     </div>
@@ -2540,6 +2605,36 @@ async function zeichneVersionen(wurzel) {
     try {
       await api(`/api/gegner-versionen/${b.dataset.kopieren}/kopieren`, { json: { name } });
       toast('Kopiert.', 'ok');
+      neuLaden();
+    } catch (err) { fehler(err); }
+  }));
+
+  $$('[data-lernen]', box).forEach((b) => b.addEventListener('click', async () => {
+    const vorher = b.textContent;
+    b.disabled = true;
+    b.textContent = 'Rechnet …';
+    try {
+      const v = await api(`/api/gegner-versionen/${b.dataset.lernen}/lernen`, { method: 'POST' });
+      toast(`Gelernt aus ${num((v.lernstand || {}).zuege_verwertet || 0)} Entscheidungen.`, 'ok');
+      neuLaden();
+    } catch (err) {
+      b.disabled = false;
+      b.textContent = vorher;
+      fehler(err);
+    }
+  }));
+
+  $$('[data-verlernen]', box).forEach((b) => b.addEventListener('click', async () => {
+    const ok = await bestaetige({
+      titel: 'Das Gelernte verwerfen?',
+      vorschau: '<p>Diese Version rechnet danach wieder mit den eingebauten Gewichten. '
+        + 'Die mitgeschriebenen Züge bleiben erhalten — neu lernen geht jederzeit.</p>',
+      knopfText: 'Ja, verwerfen',
+    });
+    if (!ok) return;
+    try {
+      await api(`/api/gegner-versionen/${b.dataset.verlernen}/lernen`, { method: 'DELETE' });
+      toast('Verworfen.', 'ok');
       neuLaden();
     } catch (err) { fehler(err); }
   }));

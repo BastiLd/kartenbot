@@ -2797,6 +2797,19 @@ async def _run_card_testrun(job: dict, nutzlast: dict) -> dict:
     spielweise = str(nutzlast.get("spielweise") or card_testrun.STANDARD_AUSWAHL)
     kaempfe = int(nutzlast.get("kaempfe_je_paarung") or card_testrun.STANDARD_KAEMPFE)
 
+    # Mit welchen Gewichten gerechnet wird. Ohne Angabe - und bei "Standard" -
+    # sind es die eingebauten, dann rechnet der Testlauf wie bisher. Laesst
+    # sich die Version nicht laden, wird ebenfalls mit den eingebauten
+    # gerechnet: ein Testlauf ohne Ergebnis nuetzt niemandem.
+    gewichte: dict = {}
+    version_id = int(nutzlast.get("version_id") or 0)
+    if version_id:
+        try:
+            version = await bot_versions.hole(version_id)
+            gewichte = (version or {}).get("gewichte") or {}
+        except Exception:
+            logging.exception("Gegner-Version %s fuer den Testlauf nicht ladbar", version_id)
+
     # Sicherheitshalber den gespeicherten Kartenstand auflegen. Normalerweise
     # ist er das schon, weil jede Aenderung einen cards.reload-Auftrag anlegt,
     # der vor diesem hier drankommt - aber wenn der einmal fehlschlaegt, soll
@@ -2809,7 +2822,7 @@ async def _run_card_testrun(job: dict, nutzlast: dict) -> dict:
     lauf_id = await web_jobs.start_card_testrun(name, job["id"], spielweise, kaempfe)
     try:
         ergebnis = await card_testrun.laufen_mehrfach(
-            name, kaempfe_je_paarung=kaempfe, auswahl=spielweise,
+            name, kaempfe_je_paarung=kaempfe, auswahl=spielweise, gewichte=gewichte,
             progress=fortschritt, cancelled=abgebrochen)
     except Exception as exc:  # noqa: BLE001
         await web_jobs.finish_card_testrun(lauf_id, "failed", error=str(exc)[:1000])

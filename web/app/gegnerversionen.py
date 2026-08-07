@@ -13,9 +13,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from datetime import datetime, timezone
 
-from . import database
+from . import config, database
+
+if str(config.PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(config.PROJECT_ROOT))
 
 STANDARD_NAME = "Standard"
 ALLE = "*"
@@ -146,6 +150,107 @@ def loeschen(version_id: int) -> bool:
         con.execute("DELETE FROM bot_version_aktiv WHERE version_id = ?", (int(version_id),))
         cursor = con.execute("DELETE FROM bot_versions WHERE id = ?", (int(version_id),))
         return cursor.rowcount > 0
+
+
+# --------------------------------------------------------------------------
+# Lernen aus echten Kämpfen (Stufe 5, Schritt 9)
+# --------------------------------------------------------------------------
+def lernstoff() -> dict:
+    """Wie viel verwertbares Material bisher zusammengekommen ist.
+
+    Steht über dem Knopf, damit niemand auf „lernen" drückt und dann rätselt,
+    warum sich nichts verändert hat. Gelernt wird nur aus **gewonnenen**
+    Kämpfen von **Menschen** — von den Zügen des Bots zu lernen hiesse, ihm
+    seine eigenen Vorlieben noch einmal zu bestätigen.
+    """
+    # Fehlt die Tabelle (die Mitschrift lief noch nie), liefert fetch_one
+    # von sich aus None - dann steht hier schlicht überall null.
+    with database.read_connection() as con:
+        zeile = database.fetch_one(
+            con,
+            "SELECT COUNT(*) AS zuege, COUNT(DISTINCT session_id) AS kaempfe "
+            "FROM battle_moves WHERE ausgang = 'gewonnen' AND ist_bot = 0") or {}
+        gesamt = database.fetch_one(
+            con, "SELECT COUNT(*) AS alle FROM battle_moves") or {}
+    return {"zuege": int(zeile.get("zuege") or 0),
+            "kaempfe": int(zeile.get("kaempfe") or 0),
+            "mitgeschrieben": int(gesamt.get("alle") or 0)}
+
+
+def lerne(version_id: int) -> dict:
+    """Die Gewichte einer Version aus echten Kämpfen neu bestimmen.
+
+    „Standard" bleibt außen vor — er ist der Weg zurück zu „spielt wie
+    immer" und muss es bleiben. Wer Gelerntes ausprobieren will, legt eine
+    Kopie an.
+    """
+    from services import lernen as lern_modul
+
+    if not version_id:
+        raise VersionFehler(f"„{STANDARD_NAME}“ lernt nichts dazu — er ist der "
+                            f"Weg zurück zu „spielt wie immer“. Lege eine Kopie "
+                            f"an und lass die lernen.")
+    version = next((v for v in alle() if v["id"] == int(version_id)), None)
+    if version is None:
+        raise VersionFehler("Diese Version gibt es nicht (mehr).")
+
+    with database.read_connection() as con:
+        zeilen = database.fetch_all(
+            con,
+            "SELECT angriff_index, lage_json FROM battle_moves "
+            "WHERE ausgang = 'gewonnen' AND ist_bot = 0 "
+            "ORDER BY id DESC LIMIT ?", (lern_modul.MAX_ZUEGE,))
+
+    if not zeilen:
+        # Zwei verschiedene Gründe, und beide brauchen einen anderen Rat.
+        if not lernstoff()["mitgeschrieben"]:
+            raise VersionFehler(
+                "Es wurde noch kein einziger Zug mitgeschrieben. Der Schalter "
+                "dafür steht in den Einstellungen unter „Kämpfe“ — gelernt "
+                "werden kann erst, wenn danach Kämpfe zu Ende gespielt wurden.")
+        raise VersionFehler(
+            "Mitgeschrieben wurde schon, aber es ist noch kein Kampf dabei, den "
+            "ein Spieler gewonnen hat. Genau die sind es, aus denen gelernt wird.")
+
+    ergebnis = lern_modul.auswerten(lern_modul.zuege_aus_zeilen(zeilen))
+    if not ergebnis["zuege_verwertet"]:
+        raise VersionFehler(
+            "Es gibt noch keinen verwertbaren Zug. Gezählt werden nur gewonnene "
+            "Kämpfe von Spielern — und nur Züge, bei denen es überhaupt etwas "
+            "zu wählen gab.")
+
+    lernstand = {
+        "stand_am": _jetzt(),
+        "grundlage": ergebnis["grundlage"],
+        "zuege_gesamt": ergebnis["zuege_gesamt"],
+        "zuege_verwertet": ergebnis["zuege_verwertet"],
+        "text": lern_modul.beschreibe(ergebnis),
+    }
+    with database.write_connection() as con:
+        cursor = con.execute(
+            "UPDATE bot_versions SET gewichte_json = ?, lernstand_json = ?, "
+            "geaendert_am = ? WHERE id = ?",
+            (json.dumps(ergebnis["gewichte"], ensure_ascii=False),
+             json.dumps(lernstand, ensure_ascii=False), _jetzt(), int(version_id)))
+        if not cursor.rowcount:
+            raise VersionFehler("Diese Version gibt es nicht (mehr).")
+    return next(v for v in alle() if v["id"] == int(version_id))
+
+
+def gewichte_vergessen(version_id: int) -> dict:
+    """Das Gelernte wieder wegwerfen — zurück zu den eingebauten Werten.
+
+    Es muss einen Weg zurück geben, ohne die Version neu anzulegen.
+    """
+    if not version_id:
+        raise VersionFehler(f"„{STANDARD_NAME}“ hat nie etwas gelernt.")
+    with database.write_connection() as con:
+        cursor = con.execute(
+            "UPDATE bot_versions SET gewichte_json = '{}', lernstand_json = '{}', "
+            "geaendert_am = ? WHERE id = ?", (_jetzt(), int(version_id)))
+        if not cursor.rowcount:
+            raise VersionFehler("Diese Version gibt es nicht (mehr).")
+    return next(v for v in alle() if v["id"] == int(version_id))
 
 
 def setze_aktiv(guild_id: str | None, version_id: int | None) -> dict:

@@ -76,7 +76,13 @@ def simulate_duel(
     strategy_b_name: str,
     average_mistake_rate: float,
     debug: bool = False,
+    gewichte: dict | None = None,
 ) -> DuelResult:
+    """``gewichte`` sind die gelernten Gewichte einer Gegner-Version.
+
+    Ohne Angabe rechnet die Engine Zahl fuer Zahl wie bisher - siehe
+    ``simulation.strategy.STANDARD_GEWICHTE``.
+    """
     from services.combat_runner import CombatRunner
     from simulation.strategy import build_strategy
 
@@ -84,8 +90,8 @@ def simulate_duel(
     random.seed(duel_seed)
     try:
         runner = CombatRunner(fresh_runtime_copy(card_a), fresh_runtime_copy(card_b), starter_id=starter_id, debug=debug)
-        strategy_a = build_strategy(strategy_a_name, rng=random.Random(duel_seed ^ 0xA11CE), average_mistake_rate=average_mistake_rate)
-        strategy_b = build_strategy(strategy_b_name, rng=random.Random(duel_seed ^ 0xB0B), average_mistake_rate=average_mistake_rate)
+        strategy_a = build_strategy(strategy_a_name, rng=random.Random(duel_seed ^ 0xA11CE), average_mistake_rate=average_mistake_rate, gewichte=gewichte)
+        strategy_b = build_strategy(strategy_b_name, rng=random.Random(duel_seed ^ 0xB0B), average_mistake_rate=average_mistake_rate, gewichte=gewichte)
         rounds = 0
         while not runner.is_finished() and rounds < 500:
             player_id = runner.current_turn

@@ -30,6 +30,41 @@ DEFENSE_EFFECTS = {
 SETUP_EFFECTS = {"damage_boost", "damage_multiplier", "force_max", "guaranteed_hit", "burn_multiplier", "incoming_damage_bonus"}
 DOT_EFFECTS = {"burning", "poison", "bleeding"}
 
+# Wie viel ein Angriff dadurch wert ist, dass er betaeubt, schuetzt,
+# vorbereitet oder ueber Runden Schaden macht. Bisher standen diese vier
+# Zahlen fest im Code; seit Stufe 5, Schritt 9 lassen sie sich je
+# Gegner-Version ersetzen (services/lernen.py).
+#
+# Fehlt eine Angabe, gilt genau der alte Wert - ohne Gewichte rechnet die
+# Engine Zahl fuer Zahl wie vorher.
+STANDARD_GEWICHTE: dict[str, float] = {
+    "control": 140.0,
+    "defense": 110.0,
+    "setup": 85.0,
+    "dot": 90.0,
+}
+
+
+def normalisiere_gewichte(gewichte: dict | None = None) -> dict[str, float]:
+    """Die vier Gewichte, aufgefuellt mit den eingebauten Werten.
+
+    Alles Unbekannte und alles Unlesbare wird stillschweigend uebergangen:
+    Die Gewichte kommen aus der Datenbank, und eine krumme Zeile dort darf
+    keinen Kampf und keinen Testlauf zu Fall bringen.
+    """
+    if not gewichte:
+        return dict(STANDARD_GEWICHTE)
+    werte = dict(STANDARD_GEWICHTE)
+    for schluessel, wert in gewichte.items():
+        name = str(schluessel).strip().lower()
+        if name not in werte:
+            continue
+        try:
+            werte[name] = float(wert)
+        except (TypeError, ValueError):
+            continue
+    return werte
+
 
 class Strategy(Protocol):
     def select_attack_index(self, runner: CombatRunner, player_id: int) -> int: ...
@@ -51,7 +86,8 @@ def _effect_types(attack: dict) -> set[str]:
     }
 
 
-def evaluate_move(runner: CombatRunner, player_id: int, attack_index: int) -> MoveScore:
+def evaluate_move(runner: CombatRunner, player_id: int, attack_index: int,
+                  gewichte: dict | None = None) -> MoveScore:
     selection = runner.preview_attack_selection(player_id, attack_index)
     attack = selection.attack
     defender_id = selection.defender_id
@@ -81,10 +117,11 @@ def evaluate_move(runner: CombatRunner, player_id: int, attack_index: int) -> Mo
         if attacker_hp / attacker_max_hp < 0.45:
             score += min(hp_missing, heal_amount) * 1.3
 
-    score += len(effect_types & CONTROL_EFFECTS) * 140.0
-    score += len(effect_types & DEFENSE_EFFECTS) * 110.0
-    score += len(effect_types & SETUP_EFFECTS) * 85.0
-    score += len(effect_types & DOT_EFFECTS) * 90.0
+    werte = normalisiere_gewichte(gewichte)
+    score += len(effect_types & CONTROL_EFFECTS) * werte["control"]
+    score += len(effect_types & DEFENSE_EFFECTS) * werte["defense"]
+    score += len(effect_types & SETUP_EFFECTS) * werte["setup"]
+    score += len(effect_types & DOT_EFFECTS) * werte["dot"]
 
     if selection.is_reload_action:
         score -= 180.0
@@ -108,25 +145,31 @@ def evaluate_move(runner: CombatRunner, player_id: int, attack_index: int) -> Mo
     return MoveScore(attack_index=attack_index, score=score, min_damage=min_damage, max_damage=max_damage)
 
 
-def score_legal_moves(runner: CombatRunner, player_id: int) -> list[MoveScore]:
+def score_legal_moves(runner: CombatRunner, player_id: int,
+                      gewichte: dict | None = None) -> list[MoveScore]:
     legal = runner.legal_attack_indices(player_id)
-    moves = [evaluate_move(runner, player_id, attack_index) for attack_index in legal]
+    moves = [evaluate_move(runner, player_id, attack_index, gewichte) for attack_index in legal]
     moves.sort(key=lambda move: (-move.score, -move.max_damage, -move.min_damage, move.attack_index))
     return moves
 
 
 class OptimalStrategy:
+    def __init__(self, gewichte: dict | None = None) -> None:
+        self.gewichte = gewichte
+
     def select_attack_index(self, runner: CombatRunner, player_id: int) -> int:
-        return score_legal_moves(runner, player_id)[0].attack_index
+        return score_legal_moves(runner, player_id, self.gewichte)[0].attack_index
 
 
 class AverageStrategy:
-    def __init__(self, rng: random.Random, mistake_rate: float) -> None:
+    def __init__(self, rng: random.Random, mistake_rate: float,
+                 gewichte: dict | None = None) -> None:
         self.rng = rng
         self.mistake_rate = max(0.0, min(1.0, float(mistake_rate)))
+        self.gewichte = gewichte
 
     def select_attack_index(self, runner: CombatRunner, player_id: int) -> int:
-        moves = score_legal_moves(runner, player_id)
+        moves = score_legal_moves(runner, player_id, self.gewichte)
         if self.mistake_rate <= 0.0 or len(moves) == 1:
             return moves[0].attack_index
         max_score = moves[0].score
@@ -139,10 +182,11 @@ class AverageStrategy:
         return self.rng.choices([move.attack_index for move in moves], weights=weights, k=1)[0]
 
 
-def build_strategy(name: str, *, rng: random.Random, average_mistake_rate: float = 0.35) -> Strategy:
+def build_strategy(name: str, *, rng: random.Random, average_mistake_rate: float = 0.35,
+                   gewichte: dict | None = None) -> Strategy:
     normalized = str(name or "").strip().lower()
     if normalized == "optimal":
-        return OptimalStrategy()
+        return OptimalStrategy(gewichte=gewichte)
     if normalized == "average":
-        return AverageStrategy(rng=rng, mistake_rate=average_mistake_rate)
+        return AverageStrategy(rng=rng, mistake_rate=average_mistake_rate, gewichte=gewichte)
     raise ValueError(f"Unsupported strategy: {name}")

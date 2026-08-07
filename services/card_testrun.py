@@ -235,6 +235,7 @@ async def laufen(karten_name: str, *, kaempfe_je_paarung: int = STANDARD_KAEMPFE
                  spielweise: str = "optimal",
                  fehlerquote: float = DEFAULT_AVERAGE_MISTAKE_RATE,
                  seed: int | None = None, karten: list[dict] | None = None,
+                 gewichte: dict | None = None,
                  progress=None, cancelled=None) -> dict:
     """Lässt eine Karte gegen alle anderen antreten.
 
@@ -243,6 +244,9 @@ async def laufen(karten_name: str, *, kaempfe_je_paarung: int = STANDARD_KAEMPFE
 
     ``karten`` ist nur für Tests da — normalerweise kommt die Liste aus dem
     Spiel, mit allen Änderungen, die über die Website gemacht wurden.
+
+    ``gewichte`` sind die aus echten Kämpfen gelernten Gewichte einer
+    Gegner-Version. Ohne Angabe rechnet der Testlauf wie bisher.
     """
     if spielweise not in SPIELWEISEN:
         raise TestlaufFehler(f"Die Spielweise „{spielweise}“ gibt es nicht. "
@@ -311,6 +315,7 @@ async def laufen(karten_name: str, *, kaempfe_je_paarung: int = STANDARD_KAEMPFE
                 strategy_a_name=spielweise,
                 strategy_b_name=spielweise,
                 average_mistake_rate=fehlerquote,
+                gewichte=gewichte,
             )
             runden_hier += ergebnis.rounds
             if ergebnis.draw:
@@ -374,6 +379,7 @@ async def laufen(karten_name: str, *, kaempfe_je_paarung: int = STANDARD_KAEMPFE
         "rolle": rolle,
         "einordnung": einordnen(siegquote, paarungen, rolle),
         "paarungen": paarungen,
+        "gewichte": dict(gewichte) if gewichte else {},
     }
 
 
@@ -413,6 +419,7 @@ async def laufen_mehrfach(karten_name: str, *, auswahl: str = STANDARD_AUSWAHL,
                           kaempfe_je_paarung: int = STANDARD_KAEMPFE,
                           fehlerquote: float = DEFAULT_AVERAGE_MISTAKE_RATE,
                           seed: int | None = None, karten: list[dict] | None = None,
+                          gewichte: dict | None = None,
                           progress=None, cancelled=None) -> dict:
     """Einen Testlauf über eine oder mehrere Spielweisen.
 
@@ -442,7 +449,7 @@ async def laufen_mehrfach(karten_name: str, *, auswahl: str = STANDARD_AUSWAHL,
 
         durchgaenge.append(await laufen(
             karten_name, kaempfe_je_paarung=kaempfe_je_paarung, spielweise=spielweise,
-            fehlerquote=fehlerquote, seed=seed, karten=karten,
+            fehlerquote=fehlerquote, seed=seed, karten=karten, gewichte=gewichte,
             progress=teilfortschritt if progress else None, cancelled=cancelled))
         if durchgaenge[-1]["abgebrochen"]:
             break
@@ -469,5 +476,6 @@ async def laufen_mehrfach(karten_name: str, *, auswahl: str = STANDARD_AUSWAHL,
         "dauer_s": round(time.monotonic() - begonnen, 1),
         "abgebrochen": any(d["abgebrochen"] for d in durchgaenge),
         "vergleich": vergleiche(durchgaenge),
+        "gewichte": dict(gewichte) if gewichte else {},
         "durchgaenge": durchgaenge,
     }

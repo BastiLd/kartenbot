@@ -240,7 +240,34 @@ class VersionAktivBody(BaseModel):
 def api_versionen(_: auth.Caller = Depends(auth.require_login)):
     return {"versionen": gegnerversionen.alle(),
             "aktiv": gegnerversionen.aktive_zuordnung(),
-            "max_fehlerquote": gegnerversionen.MAX_FEHLERQUOTE}
+            "max_fehlerquote": gegnerversionen.MAX_FEHLERQUOTE,
+            "lernstoff": gegnerversionen.lernstoff()}
+
+
+@app.post("/api/gegner-versionen/{version_id}/lernen")
+def api_version_lernen(version_id: int, request: Request,
+                       caller: auth.Caller = Depends(auth.require_login)):
+    try:
+        version = gegnerversionen.lerne(version_id)
+    except gegnerversionen.VersionFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    stand = version.get("lernstand") or {}
+    audit.record(actor=caller.actor, action="gegnerversion.gelernt", target=version["name"],
+                 detail=f"{stand.get('zuege_verwertet', 0)} Entscheidungen",
+                 client_ip=_ip(request))
+    return version
+
+
+@app.delete("/api/gegner-versionen/{version_id}/lernen")
+def api_version_vergessen(version_id: int, request: Request,
+                          caller: auth.Caller = Depends(auth.require_login)):
+    try:
+        version = gegnerversionen.gewichte_vergessen(version_id)
+    except gegnerversionen.VersionFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    audit.record(actor=caller.actor, action="gegnerversion.verlernt", target=version["name"],
+                 client_ip=_ip(request))
+    return version
 
 
 @app.post("/api/gegner-versionen")
@@ -403,6 +430,8 @@ class TestlaufBody(BaseModel):
     name: str
     spielweise: str = "beides"
     kaempfe_je_paarung: int = 200
+    # 0 = „Standard": mit den eingebauten Gewichten, also wie bisher.
+    version_id: int = 0
 
 
 @app.get("/api/karten/testlauf/moeglichkeiten")
@@ -424,7 +453,7 @@ def api_karte_testlauf(body: TestlaufBody, request: Request,
     """
     try:
         sauber = karteneditor.pruefe_testlauf(body.name, body.spielweise,
-                                              body.kaempfe_je_paarung)
+                                              body.kaempfe_je_paarung, body.version_id)
     except karteneditor.EditorFehler as exc:
         raise HTTPException(400, str(exc)) from exc
 

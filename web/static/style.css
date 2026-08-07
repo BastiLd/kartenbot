@@ -361,6 +361,19 @@ td.num, th.num { text-align: right; font-family: var(--mono); }
   font-size: .87rem; line-height: 1.6;
 }
 
+/* Was eine Gegner-Version aus echten Kaempfen gelernt hat. Bewusst abgesetzt
+   vom Rest der Version: Hier wird nichts eingestellt, hier steht ein
+   Ergebnis - und woraus es entstanden ist. */
+.lern-block {
+  margin-top: 16px; padding: 12px 14px;
+  border: 1px solid var(--border-soft); border-radius: var(--r-m);
+  background: var(--panel);
+}
+.lern-block h4 { margin: 0 0 10px; font-size: .9rem; color: var(--text); }
+.lern-werte { margin-bottom: 10px; }
+.lern-werte .bar-row { margin-bottom: 7px; }
+.lern-werte .val.accent { color: var(--accent-2); }
+
 .empty {
   padding: 40px 20px; text-align: center; color: var(--muted);
   border: 1px dashed var(--border); border-radius: var(--r-m);
