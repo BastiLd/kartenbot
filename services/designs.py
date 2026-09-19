@@ -87,6 +87,25 @@ def _grundkarte(karte: Any) -> dict | None:
     return karte if isinstance(karte, dict) else None
 
 
+def finde_karte(name: Any) -> dict | None:
+    """Die Grundkarte zu einem eingetippten Namen (Groß/klein egal), sonst None.
+
+    Varianten-Namen wie "Alpha_Iron-Man" führen zur Grundkarte "Iron-Man".
+    """
+    gesucht = grundname(str(name or "").strip()).lower()
+    if not gesucht:
+        return None
+    for eintrag in _live_karten():
+        if isinstance(eintrag, dict) and str(eintrag.get("name") or "").strip().lower() == gesucht:
+            return eintrag
+    return None
+
+
+def alle_grundnamen() -> list[str]:
+    """Namen aller Karten in der Reihenfolge von karten.py."""
+    return [str(k.get("name")) for k in _live_karten() if isinstance(k, dict) and k.get("name")]
+
+
 def _link(quelle: dict | None, feld: str) -> str:
     wert = (quelle or {}).get(feld)
     return wert.strip() if isinstance(wert, str) else ""

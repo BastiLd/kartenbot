@@ -10,6 +10,8 @@ EXPECTED_ALPHA_COMMANDS = {
     "anfang",
     "bot-status",
     "design",
+    "design-entziehen",
+    "design-geben",
     "eingeladen",
     "entwicklerpanel",
     "geschichte",

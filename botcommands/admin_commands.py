@@ -3,6 +3,7 @@ from __future__ import annotations
 import discord
 from discord import app_commands
 
+from botcommands import design_admin
 from botcore.facades import AdminFacade
 from services.card_grant import grant_cards_to_users
 
@@ -803,7 +804,36 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
         visibility_key = module.command_visibility_key_for_interaction(interaction)
         await module.send_bot_status(interaction, visibility_key=visibility_key)
 
+    # Alternative Designs vergeben/wegnehmen. In Discord nur für Administratoren
+    # sichtbar (default_permissions) — geprüft wird trotzdem mit is_admin.
+    @bot.tree.command(name="design-geben", description="Nur für Admins: ein Karten-Design freischalten")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    @app_commands.describe(mitglied="Wer bekommt das Design?", karte="Welche Karte?", design="Welches Design?")
+    @app_commands.choices(design=design_admin.design_auswahl())
+    async def design_geben(interaction: discord.Interaction, mitglied: discord.Member, karte: str, design: int):
+        if not await module.is_channel_allowed(interaction):
+            return
+        await design_admin.ausfuehren(interaction, module, mitglied, karte, design)
+
+    @bot.tree.command(name="design-entziehen", description="Nur für Admins: ein Karten-Design wegnehmen")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    @app_commands.describe(mitglied="Wem wird das Design weggenommen?", karte="Welche Karte?", design="Welches Design?")
+    @app_commands.choices(design=design_admin.design_auswahl())
+    async def design_entziehen(interaction: discord.Interaction, mitglied: discord.Member, karte: str, design: int):
+        if not await module.is_channel_allowed(interaction):
+            return
+        await design_admin.ausfuehren(interaction, module, mitglied, karte, design, entziehen=True)
+
+    @design_geben.autocomplete("karte")
+    @design_entziehen.autocomplete("karte")
+    async def _design_karte_vorschlaege(interaction: discord.Interaction, current: str):
+        return design_admin.karten_vorschlaege(current)
+
     return {
+        "design_geben": design_geben,
+        "design_entziehen": design_entziehen,
         "configure_group": configure_group,
         "add_channel_shortcut": add_channel_shortcut,
         "configure_add": configure_add,

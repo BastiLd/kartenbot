@@ -1554,6 +1554,8 @@ ADMIN_SLASH_COMMANDS = {
     "kanal-freigeben",
     "entwicklerpanel",
     "bot_log",
+    "design-geben",
+    "design-entziehen",
 }
 
 def prune_admin_slash_commands() -> None:
