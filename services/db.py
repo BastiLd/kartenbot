@@ -9,6 +9,30 @@ from services.card_variants import default_variant_name_for_base, iter_card_vari
 
 DB_PATH = os.getenv("KARTENBOT_DB_PATH", "kartenbot.db")
 
+# Alternative Karten-Designs. karten_name ist immer der GRUNDname der Karte
+# (bei Iron-Man teilen sich beide Varianten einen Eintrag); Design 1 ist immer
+# frei und steht deshalb nie in user_designs.
+DESIGN_TABLES_SQL = (
+    """
+    CREATE TABLE IF NOT EXISTS user_designs (
+        user_id           INTEGER NOT NULL,
+        karten_name       TEXT    NOT NULL,
+        design            INTEGER NOT NULL,
+        quelle            TEXT    NOT NULL DEFAULT '',
+        freigeschaltet_am TEXT    NOT NULL,
+        PRIMARY KEY (user_id, karten_name, design)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS user_design_wahl (
+        user_id     INTEGER NOT NULL,
+        karten_name TEXT    NOT NULL,
+        design      INTEGER NOT NULL,
+        PRIMARY KEY (user_id, karten_name)
+    )
+    """,
+)
+
 _db = None
 
 
@@ -496,5 +520,10 @@ async def init_db():
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_afk_battle_id ON afk_timers(battle_id)"
     )
+
+    # Alternative Karten-Designs (v2.4.0): welche ein Spieler freigeschaltet
+    # und welches er gewählt hat. Logik in services/designs.py.
+    for sql in DESIGN_TABLES_SQL:
+        await db.execute(sql)
 
     await db.commit()
