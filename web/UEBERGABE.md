@@ -1,6 +1,8 @@
 # Übergabe — Kartenbot Web
 
-Stand: 7. August 2026, Version 1.4.1. Diese Datei ist für eine neue Sitzung
+Stand: 7. August 2026, Version 1.4.1 — ergänzt am 19. September 2026 um
+Teil 1, Plan 1 (Designs, Web 1.5.0 / Bot 2.4.0, noch nicht in `main`).
+Diese Datei ist für eine neue Sitzung
 gedacht: Sie sagt, wo alles liegt, was fertig ist, was als Nächstes ansteht
 und welche Fallen es gibt.
 
@@ -250,7 +252,60 @@ belegt, dass dabei Zahl für Zahl dasselbe herauskommt wie bei
 
 ---
 
+## Teil 1, Plan 1: Alternative Karten-Designs (Bot 2.4.0, Web 1.5.0)
+
+Stand 19. September 2026, gebaut nach `docs/dev/TEIL-1_PLAN-1_Designs.md` auf
+dem Branch `opus/teil-1-designs-und-level` (Tags `teil1-start`,
+`teil1-vor-schritt-3`, `teil1-vor-schritt-7`, `teil1-plan1-fertig`). Noch
+**nicht** in `main`, `feature/bot` oder `feature/web-dashboard` übernommen.
+
+Jeder Held kann bis zu drei Designs haben: `bild` (Design 1, immer frei),
+`bild_2`, `bild_3`. Ein Design ist **nur ein Bild** — keine eigene
+Sammlungskarte, keine anderen Werte. Mit den Iron-Man-Varianten
+(`services/card_variants.py`) hat das nichts zu tun; beide Varianten teilen
+sich Designs über den Grundnamen „Iron-Man".
+
+| Teil | Wo |
+|---|---|
+| Bild-Links | `bild_2`/`bild_3` in `card_overrides` (Website), `AENDERBAR` in `services/card_store.py` **und** `web/app/karteneditor.py` — gleiche Liste, gleiche Reihenfolge |
+| Prüfung | `services/card_validation.py` (Bot), `karteneditor.pruefe()` (Website): http(s), ≤ 500 Zeichen, Design 3 nur mit Design 2 |
+| Freischaltung / Wahl | Tabellen `user_designs`, `user_design_wahl` (SQL in `services/db.py`, `DESIGN_TABLES_SQL`) |
+| Logik | `services/designs.py` — `MAX_DESIGNS = 3` steht nur dort |
+| Anzeige | `bot.py`: `_design_bild`, `_karte_mit_design`, `_design_hinweis`; Sammlung in `_build_owned_card_detail` |
+| `/design` | `botcommands/design_view.py`, angemeldet in `player_commands.py` |
+| `/design-geben`, `/design-entziehen` | `botcommands/design_admin.py`, angemeldet in `admin_commands.py` (versteckt per `default_permissions(administrator=True)`, geprüft per `is_admin`) |
+| Website | Felder „Design 2/3" im Editor, Kennzeichen „N Designs", Umschalter in der Discord-Vorschau (`web/static/app.js`) |
+
+**Regeln, die der Code einhält:**
+- Freischalten geht **ohne** Bild-Link (Belohnungen gehen nicht verloren,
+  solange Bilder fehlen). Sichtbar und wählbar wird ein Design erst mit Link
+  **und** Freischaltung. Fehlt eins davon, gilt still Design 1.
+- Im Kampf liegt das Design nur auf der **eigenen Kopie** der Kampfkarte
+  (`_karte_mit_design`), nie auf `RAW_KARTEN`. Die Karte wird mit der
+  Sitzung gespeichert, das Bild übersteht also einen Neustart. Bot- und
+  Missionsgegner zeigen immer Design 1.
+- Belohnungen zeigen, was man bekommt: eine Karte → normales Bild, ein
+  Design (`/design-geben`, später Level/Einladung) → das Bild des Designs.
+- Vor Kampf und Mission gibt es **keinen** Wechsel-Knopf: Die Auswahl-Views
+  sind DurableViews, an denen nichts geändert werden sollte. Stattdessen die
+  Textzeile „🎨 Design ändern: /design" — nur für Spieler mit wählbarem Design.
+
+**Nebenbei behoben:**
+- Der Karten-Editor zeigte immer karten.py statt des gespeicherten Stands
+  (`/api/cards` → jetzt `cards.catalog_aktuell()`). Wer eine Karte zweimal
+  speicherte, überschrieb still die erste Änderung.
+- Nach „Wieder wie im Bot" verschwinden `bild_2`/`bild_3` im Bot sofort
+  (`card_store._design_felder_zurueckholen`). **Für alle anderen Felder gilt
+  weiterhin:** Zurücksetzen wirkt im Bot erst nach einem Neustart.
+
+---
+
 ## Was als Nächstes ansteht
+
+**Teil 1, Plan 2** (`docs/dev/TEIL-1_PLAN-2_Level-und-Einladungen.md`):
+Freischaltung über MEE6-Level und Einladungen, bestehende Admin-Befehle
+verstecken. `designs.freischalten(..., quelle="level" | "einladung")` ist
+dafür schon vorbereitet.
 
 Stufe 5 ist abgeschlossen. Offen sind nur noch die Punkte, die schon vorher
 als „wäre als Nächstes sinnvoll" notiert waren:
@@ -390,6 +445,31 @@ PowerShell 5.1 liest ohne `-Encoding` in ANSI: Aus „für" wird „fÃ¼r", und
 deshalb **nie** über die Shell umschreiben. Passiert es doch, ist der
 Rückweg: BOM abschneiden, als Windows-1252 kodieren, als UTF-8 lesen.
 
+**Das Formular schickt immer alle Felder.** `karteneditor.setze()` ersetzt
+den gespeicherten Stand komplett. Zeigt der Editor also einen veralteten
+Wert, wird genau der beim nächsten Speichern zurückgeschrieben. Deshalb muss
+`/api/cards` den gespeicherten Stand liefern (`catalog_aktuell`), nicht
+`catalog()`.
+
+**`anwenden()` legt nur auf, was in einer Änderung steht.** Verschwindet
+eine Änderung (Zurücksetzen), bleibt der alte Wert an der laufenden Karte
+hängen, bis der Bot neu startet. Für die Design-Felder ist das abgefangen,
+für die übrigen Felder nicht.
+
+**Neue Admin-Befehle mit `default_permissions`** sieht nur, wer in Discord
+das Recht *Administrator* hat — nicht automatisch die MFU-Admin- oder
+Dev-Rolle. Freischalten geht ohne Code: Servereinstellungen → Integrationen
+→ Bot → Befehl → Rolle hinzufügen.
+
+**Kartenbilder brauchen direkte, dauerhafte Links** (`https://i.imgur.com/….png`).
+Google-Drive-Freigaben und Discord-Anhang-Links zeigt Discord nicht bzw. nur
+eine Weile.
+
+**`git push` scheitert auf dem Entwicklungsrechner** an einem veralteten
+Credential-Helper in `~/.gitconfig` (zeigt auf eine gelöschte `gh.exe`).
+Einmal-Umweg ohne die Einstellung zu ändern:
+`git -c 'credential.https://github.com.helper=' -c 'credential.https://github.com.helper=!gh auth git-credential' push`
+
 ---
 
 ## Wie der Nutzer arbeitet
@@ -417,7 +497,9 @@ git log --oneline -5
 ```
 
 Erwartung: sauberer Stand, 680 Tests grün, `main` und
-`feature/web-dashboard` auf demselben Commit.
+`feature/web-dashboard` auf demselben Commit. Auf dem Branch
+`opus/teil-1-designs-und-level` (nach Plan 1): **765 Tests** grün. Die
+`.venv` braucht dafür zusätzlich `pytest` und `web/requirements.txt`.
 
 **Und das Wichtigste vor jeder Fehlersuche:** Steht in der Seitenleiste
 „Oberfläche vX · Backend vY" oder ein Balken oben auf der Seite, ist nichts
