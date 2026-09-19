@@ -30,7 +30,29 @@ from db import db_context
 # Angriffsliste ab — nicht nur die geänderten Felder. So kann hier nichts
 # halb angewendet werden, und seltene Felder, die die Website gar nicht
 # anfasst, sind darin bereits enthalten.
-AENDERBAR = ("seltenheit", "hp", "beschreibung", "bild", "attacks")
+#
+# "bild_2" und "bild_3" sind die Bilder der alternativen Designs (siehe
+# services/designs.py). Leer heisst: dieses Design gibt es nicht.
+AENDERBAR = ("seltenheit", "hp", "beschreibung", "bild", "attacks", "bild_2", "bild_3")
+
+# Die Design-Bilder stehen normalerweise gar nicht in karten.py, sondern nur
+# in der Datenbank. Wird eine Karte auf der Website zurückgesetzt, verschwindet
+# ihr Eintrag — und `anwenden()` hätte dann nichts, womit es das Bild an der
+# laufenden Karte wieder entfernt. Deshalb wird hier der Stand aus karten.py
+# festgehalten, bevor irgendetwas die Karten verändert hat.
+DESIGN_FELDER = ("bild_2", "bild_3")
+
+
+def _design_ursprung() -> dict[str, dict]:
+    try:
+        from karten import karten as roh
+    except ImportError:
+        return {}
+    return {str(k.get("name")): {f: k[f] for f in DESIGN_FELDER if f in k}
+            for k in roh if isinstance(k, dict)}
+
+
+_DESIGN_URSPRUNG = _design_ursprung()
 
 
 def _jetzt() -> str:
@@ -131,6 +153,25 @@ async def verlauf(name: str, limit: int = 20) -> list[dict]:
     return out
 
 
+def _design_felder_zurueckholen(karten_liste: list, abweichungen: dict) -> None:
+    """Design-Bilder, die keine Abweichung mehr haben, auf karten.py zurückstellen.
+
+    Nur für die Design-Felder: Bei allen anderen Feldern bleibt es wie bisher.
+    """
+    for karte in karten_liste:
+        if not isinstance(karte, dict):
+            continue
+        aenderung = abweichungen.get(karte.get("name")) or {}
+        ursprung = _DESIGN_URSPRUNG.get(str(karte.get("name")), {})
+        for feld in DESIGN_FELDER:
+            if feld in aenderung:
+                continue
+            if feld in ursprung:
+                karte[feld] = ursprung[feld]
+            else:
+                karte.pop(feld, None)
+
+
 async def anwenden(karten_liste: list) -> int:
     """Die Abweichungen auf die laufende Kartenliste legen.
 
@@ -141,6 +182,7 @@ async def anwenden(karten_liste: list) -> int:
     Gibt zurück, wie viele Karten angepasst wurden.
     """
     abweichungen = await alle()
+    _design_felder_zurueckholen(karten_liste, abweichungen)
     if not abweichungen:
         return 0
     getroffen = 0

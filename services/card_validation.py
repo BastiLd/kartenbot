@@ -442,6 +442,36 @@ def _validate_attack(attack, path: str, issues: list[str], seen_attack_names: di
                 _validate_effect(effect, f"{path}.effect[{effect_index}]", issues)
 
 
+DESIGN_IMAGE_FIELDS = ("bild_2", "bild_3")
+DESIGN_IMAGE_MAX_LENGTH = 500
+
+
+def _validate_design_images(card: dict, path: str, issues: list[str]) -> None:
+    """Bilder der alternativen Designs: optional, aber wenn gesetzt, gültig.
+
+    Leer (oder gar nicht da) heisst, das Design gibt es nicht. Lücken sind
+    nicht erlaubt: Design 3 nur, wenn es auch Design 2 gibt.
+    """
+    filled: dict[str, bool] = {}
+    for field in DESIGN_IMAGE_FIELDS:
+        value = card.get(field)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            filled[field] = False
+            continue
+        filled[field] = True
+        if not isinstance(value, str):
+            issues.append(f"{path}: {field} ist kein Text")
+            continue
+        text = value.strip()
+        lowered = text.lower()
+        if not lowered.startswith("http://") and not lowered.startswith("https://"):
+            issues.append(f"{path}: {field} ist ungueltig")
+        elif len(text) > DESIGN_IMAGE_MAX_LENGTH:
+            issues.append(f"{path}: {field} ist zu lang (hoechstens {DESIGN_IMAGE_MAX_LENGTH} Zeichen)")
+    if filled.get("bild_3") and not filled.get("bild_2"):
+        issues.append(f"{path}: bild_3 ohne bild_2 (Design 3 braucht Design 2)")
+
+
 def validate_cards(cards) -> list[str]:
     if not isinstance(cards, list):
         return ["karten ist keine Liste"]
@@ -472,6 +502,8 @@ def validate_cards(cards) -> list[str]:
             image_text = str(image).strip().lower()
             if not image_text.startswith("http://") and not image_text.startswith("https://"):
                 issues.append(f"{path}: bild ist ungueltig")
+
+        _validate_design_images(card, path, issues)
 
         rarity = card.get("seltenheit")
         if not _is_non_empty_string(rarity):

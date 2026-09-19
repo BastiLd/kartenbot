@@ -76,3 +76,44 @@ class CardValidationTests(unittest.TestCase):
         self.assertTrue(any("multi_hit.hits" in issue for issue in issues))
         self.assertTrue(any("multi_hit.hit_chance" in issue for issue in issues))
         self.assertTrue(any("multi_hit.per_hit_damage" in issue for issue in issues))
+
+    # --- Alternative Designs (bild_2, bild_3) --------------------------------
+
+    def test_design_images_are_optional(self) -> None:
+        card = _make_valid_card()
+        self.assertEqual(validate_cards([card]), [])
+        card["bild_2"] = ""
+        card["bild_3"] = "   "
+        self.assertEqual(validate_cards([card]), [])
+
+    def test_valid_design_images_pass(self) -> None:
+        card = _make_valid_card()
+        card["bild_2"] = "https://i.imgur.com/abc.png"
+        self.assertEqual(validate_cards([card]), [])
+        card["bild_3"] = "http://i.imgur.com/def.png"
+        self.assertEqual(validate_cards([card]), [])
+
+    def test_design_image_without_http_fails(self) -> None:
+        card = _make_valid_card()
+        card["bild_2"] = "i.imgur.com/abc.png"
+        self.assertIn("1: bild_2 ist ungueltig", validate_cards([card]))
+
+    def test_design_image_too_long_fails(self) -> None:
+        card = _make_valid_card()
+        card["bild_2"] = "https://i.imgur.com/" + "a" * 500
+        issues = validate_cards([card])
+        self.assertTrue(any("bild_2 ist zu lang" in issue for issue in issues))
+
+    def test_design_image_must_be_text(self) -> None:
+        card = _make_valid_card()
+        card["bild_2"] = 42
+        self.assertIn("1: bild_2 ist kein Text", validate_cards([card]))
+
+    def test_design_3_without_design_2_fails(self) -> None:
+        card = _make_valid_card()
+        card["bild_3"] = "https://i.imgur.com/def.png"
+        issues = validate_cards([card])
+        self.assertTrue(any("bild_3 ohne bild_2" in issue for issue in issues))
+        card["bild_2"] = ""
+        issues = validate_cards([card])
+        self.assertTrue(any("bild_3 ohne bild_2" in issue for issue in issues))
