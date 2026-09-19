@@ -238,7 +238,7 @@ FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
 
-__version__ = "2.3.20"
+__version__ = "2.4.0"
 
 
 class CardCatalog:
