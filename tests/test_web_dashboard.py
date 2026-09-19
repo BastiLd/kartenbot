@@ -480,3 +480,64 @@ def test_umwandlung_laesst_text_und_leerwerte_in_ruhe():
     zeile = db._ids_als_text({"user_id": "schon-text", "guild_id": None})
     assert zeile["user_id"] == "schon-text"
     assert zeile["guild_id"] is None
+
+
+# --------------------------------------------------------------------------
+# Karten-Editor: zeigt den gespeicherten Stand, nicht nur karten.py
+# --------------------------------------------------------------------------
+def _web_modul(name):
+    import importlib, sys, pathlib
+    import pytest
+    pytest.importorskip("httpx", reason="Web-Abhaengigkeiten nur im Web-Container")
+    pfad = str(pathlib.Path(__file__).resolve().parents[1] / "web")
+    if pfad not in sys.path:
+        sys.path.insert(0, pfad)
+    return importlib.import_module(f"app.{name}")
+
+
+def _editor_mit_testdb(tmp_path, monkeypatch):
+    import sqlite3
+    database = _web_modul("database")
+    schema = _web_modul("schema")
+    pfad = tmp_path / "test.db"
+    sqlite3.connect(str(pfad)).close()
+    monkeypatch.setattr(database.config, "DB_PATH", str(pfad))
+    with database.write_connection() as con:
+        schema.init_schema(con)
+    return _web_modul("karteneditor")
+
+
+def _gespeichert(editor):
+    return {name: e["aenderungen"] for name, e in editor.alle().items()}
+
+
+def test_katalog_zeigt_gespeicherte_aenderungen(tmp_path, monkeypatch):
+    cards = _web_modul("cards")
+    editor = _editor_mit_testdb(tmp_path, monkeypatch)
+    karte = cards.catalog()[0]
+    editor.setze(karte["name"], {"hp": 777, "beschreibung": "Neu"})
+
+    aktuell = next(k for k in cards.catalog_aktuell(_gespeichert(editor)) if k["name"] == karte["name"])
+    assert aktuell["hp"] == 777
+    assert aktuell["beschreibung"] == "Neu"
+    assert aktuell["angriffe"] == karte["angriffe"]
+    # karten.py selbst bleibt unberührt.
+    assert cards.catalog()[0]["hp"] == karte["hp"]
+
+
+def test_katalog_zeigt_gespeicherte_angriffe(tmp_path, monkeypatch):
+    cards = _web_modul("cards")
+    editor = _editor_mit_testdb(tmp_path, monkeypatch)
+    karte = cards.catalog()[0]
+    angriffe = [{"name": a["name"]} for a in karte["angriffe"]]
+    angriffe[0]["name"] = "Umbenannt"
+    editor.setze(karte["name"], {"attacks": angriffe})
+
+    aktuell = next(k for k in cards.catalog_aktuell(_gespeichert(editor)) if k["name"] == karte["name"])
+    assert aktuell["angriffe"][0]["name"] == "Umbenannt"
+    assert aktuell["angriffe"][0]["schaden"] == karte["angriffe"][0]["schaden"]
+
+
+def test_ohne_aenderungen_ist_der_katalog_wie_vorher():
+    cards = _web_modul("cards")
+    assert cards.catalog_aktuell({}) == cards.catalog()

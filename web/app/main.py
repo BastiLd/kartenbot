@@ -219,7 +219,14 @@ async def api_player(user_id: str, _: auth.Caller = Depends(auth.require_login))
 
 @app.get("/api/cards")
 def api_cards(_: auth.Caller = Depends(auth.require_login)):
-    return {"verfuegbar": cards.available(), "karten": cards.catalog(),
+    # Mit den gespeicherten Änderungen: Der Editor soll zeigen, was der Bot
+    # benutzt — sonst überschreibt das nächste Speichern die letzte Änderung.
+    try:
+        aenderungen = {name: e["aenderungen"] for name, e in karteneditor.alle().items()}
+    except Exception:                                              # noqa: BLE001
+        logging.exception("Kartenänderungen nicht lesbar - Katalog ohne sie")
+        aenderungen = {}
+    return {"verfuegbar": cards.available(), "karten": cards.catalog_aktuell(aenderungen),
             "seltenheiten": {k: len(v) for k, v in cards.rarities().items()}}
 
 

@@ -34,45 +34,66 @@ def available() -> bool:
 
 
 def catalog() -> list[dict]:
-    """Alle Karten mit ihren Varianten, aufbereitet für die Oberfläche."""
+    """Alle Karten mit ihren Varianten, aufbereitet für die Oberfläche.
+
+    Der Stand aus karten.py — ohne die Änderungen, die über die Website
+    gespeichert wurden. Für die Anzeige im Editor: `catalog_aktuell()`.
+    """
+    cards, iter_variants = _load()
+    return [_eintrag(card, iter_variants) for card in cards]
+
+
+def catalog_aktuell(aenderungen: dict[str, dict]) -> list[dict]:
+    """Wie `catalog()`, aber mit den gespeicherten Änderungen darüber gelegt.
+
+    So sieht der Editor, was der Bot wirklich benutzt. Ohne das zeigte er
+    immer karten.py, und wer eine Karte zweimal speicherte, überschrieb still
+    die erste Änderung. ``aenderungen`` ist Kartenname -> gespeicherte Felder
+    (dasselbe, was der Bot in card_store.anwenden() auflegt).
+    """
     cards, iter_variants = _load()
     out = []
     for card in cards:
-        entry = {
-            "name": card.get("name"),
-            "seltenheit": card.get("seltenheit"),
-            "hp": card.get("hp"),
-            "beschreibung": card.get("beschreibung"),
-            "bild": card.get("bild"),
-            # Alles, was der Editor zum Bearbeiten braucht. "wirkungen" sind
-            # nur die Namen der Nebenwirkungen — bearbeitet werden sie nicht,
-            # aber man soll sehen, dass es welche gibt.
-            "angriffe": [
-                {"name": a.get("name"),
-                 "schaden": a.get("damage") or a.get("schaden"),
-                 "info": a.get("info"),
-                 "abklingzeit": a.get("cooldown_turns"),
-                 "knopf": a.get("button_style") or "grey",
-                 "standard": bool(a.get("is_standard_attack")),
-                 "heilung": a.get("heal"),
-                 "selbstschaden": a.get("self_damage"),
-                 "wirkungen": [e.get("type") for e in (a.get("effects") or [])
-                               if isinstance(e, dict) and e.get("type")]}
-                for a in (card.get("attacks") or [])
-            ],
-            "varianten": [],
-        }
-        if iter_variants:
-            try:
-                for variant in iter_variants(card):
-                    entry["varianten"].append({
-                        "name": variant.get("name") if isinstance(variant, dict) else str(variant),
-                        "nur_admin": bool(variant.get("admin_only")) if isinstance(variant, dict) else False,
-                    })
-            except Exception:                                      # noqa: BLE001
-                pass
-        out.append(entry)
+        aenderung = aenderungen.get(str(card.get("name"))) or {}
+        out.append(_eintrag({**card, **aenderung} if aenderung else card, iter_variants))
     return out
+
+
+def _eintrag(card: dict, iter_variants) -> dict:
+    entry = {
+        "name": card.get("name"),
+        "seltenheit": card.get("seltenheit"),
+        "hp": card.get("hp"),
+        "beschreibung": card.get("beschreibung"),
+        "bild": card.get("bild"),
+        # Alles, was der Editor zum Bearbeiten braucht. "wirkungen" sind
+        # nur die Namen der Nebenwirkungen — bearbeitet werden sie nicht,
+        # aber man soll sehen, dass es welche gibt.
+        "angriffe": [
+            {"name": a.get("name"),
+             "schaden": a.get("damage") or a.get("schaden"),
+             "info": a.get("info"),
+             "abklingzeit": a.get("cooldown_turns"),
+             "knopf": a.get("button_style") or "grey",
+             "standard": bool(a.get("is_standard_attack")),
+             "heilung": a.get("heal"),
+             "selbstschaden": a.get("self_damage"),
+             "wirkungen": [e.get("type") for e in (a.get("effects") or [])
+                           if isinstance(e, dict) and e.get("type")]}
+            for a in (card.get("attacks") or [])
+        ],
+        "varianten": [],
+    }
+    if iter_variants:
+        try:
+            for variant in iter_variants(card):
+                entry["varianten"].append({
+                    "name": variant.get("name") if isinstance(variant, dict) else str(variant),
+                    "nur_admin": bool(variant.get("admin_only")) if isinstance(variant, dict) else False,
+                })
+        except Exception:                                      # noqa: BLE001
+            pass
+    return entry
 
 
 @lru_cache(maxsize=1)
