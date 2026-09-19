@@ -541,3 +541,74 @@ def test_katalog_zeigt_gespeicherte_angriffe(tmp_path, monkeypatch):
 def test_ohne_aenderungen_ist_der_katalog_wie_vorher():
     cards = _web_modul("cards")
     assert cards.catalog_aktuell({}) == cards.catalog()
+
+
+# --------------------------------------------------------------------------
+# Design-Felder (bild_2, bild_3) im Karten-Editor
+# --------------------------------------------------------------------------
+def test_aenderbare_felder_passen_zum_bot():
+    from services import card_store
+    editor = _web_modul("karteneditor")
+    assert editor.AENDERBAR == card_store.AENDERBAR
+
+
+def test_design_links_werden_angenommen():
+    editor = _web_modul("karteneditor")
+    sauber = editor.pruefe({"bild_2": " https://i.imgur.com/a.png ", "bild_3": "https://i.imgur.com/b.png"})
+    assert sauber == {"bild_2": "https://i.imgur.com/a.png", "bild_3": "https://i.imgur.com/b.png"}
+    assert editor.pruefe({"bild_2": "", "bild_3": ""}) == {"bild_2": "", "bild_3": ""}
+
+
+def test_design_link_ohne_http_wird_verstaendlich_abgelehnt():
+    import pytest
+    editor = _web_modul("karteneditor")
+    with pytest.raises(editor.EditorFehler, match="Adresse für Design 2 muss mit http"):
+        editor.pruefe({"bild_2": "i.imgur.com/a.png"})
+    with pytest.raises(editor.EditorFehler, match="Adresse für Design 3 muss mit http"):
+        editor.pruefe({"bild_2": "https://i.imgur.com/a.png", "bild_3": "www.x.de/b.png"})
+    # Die bisherige Meldung für das normale Bild bleibt wortgleich.
+    with pytest.raises(editor.EditorFehler, match="^Die Bildadresse muss mit http:// oder https:// beginnen.$"):
+        editor.pruefe({"bild": "kein-link"})
+
+
+def test_design_link_zu_lang():
+    import pytest
+    editor = _web_modul("karteneditor")
+    with pytest.raises(editor.EditorFehler, match="Design 2 darf höchstens 500"):
+        editor.pruefe({"bild_2": "https://i.imgur.com/" + "a" * 500})
+
+
+def test_design_3_nur_mit_design_2():
+    import pytest
+    editor = _web_modul("karteneditor")
+    with pytest.raises(editor.EditorFehler, match="Design 3 geht nur zusammen mit Design 2"):
+        editor.pruefe({"bild_2": "", "bild_3": "https://i.imgur.com/b.png"})
+    with pytest.raises(editor.EditorFehler, match="Design 3 geht nur zusammen mit Design 2"):
+        editor.pruefe({"bild_3": "https://i.imgur.com/b.png"})
+
+
+def test_ohne_design_links_liefert_der_katalog_leere_felder():
+    cards = _web_modul("cards")
+    for karte in cards.catalog():
+        assert karte["bild_2"] == "" and karte["bild_3"] == ""
+
+
+def test_design_link_speichern_und_im_katalog_sehen(tmp_path, monkeypatch):
+    cards = _web_modul("cards")
+    editor = _editor_mit_testdb(tmp_path, monkeypatch)
+    name = cards.catalog()[0]["name"]
+    editor.setze(name, {"bild_2": "https://i.imgur.com/a.png"})
+    aktuell = next(k for k in cards.catalog_aktuell(_gespeichert(editor)) if k["name"] == name)
+    assert aktuell["bild_2"] == "https://i.imgur.com/a.png"
+    assert aktuell["bild_3"] == ""
+
+
+def test_verlauf_haelt_die_design_links_fest(tmp_path, monkeypatch):
+    """Rücknahme über den Verlauf: der alte Stand enthält die Design-Links mit."""
+    cards = _web_modul("cards")
+    editor = _editor_mit_testdb(tmp_path, monkeypatch)
+    name = cards.catalog()[0]["name"]
+    editor.setze(name, {"bild_2": "https://i.imgur.com/a.png", "bild_3": "https://i.imgur.com/b.png"})
+    editor.setze(name, {"bild_2": "", "bild_3": ""})
+    vorher = editor.verlauf(name)[0]["aenderungen"]
+    assert vorher == {"bild_2": "https://i.imgur.com/a.png", "bild_3": "https://i.imgur.com/b.png"}

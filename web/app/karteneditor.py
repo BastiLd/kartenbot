@@ -16,8 +16,14 @@ from datetime import datetime, timezone
 
 from . import cards, database
 
-# Muss zur Liste in services/card_store.py passen.
-AENDERBAR = ("seltenheit", "hp", "beschreibung", "bild", "attacks")
+# Muss zur Liste in services/card_store.py passen (Inhalt und Reihenfolge).
+# "bild_2"/"bild_3" sind die Bilder der alternativen Designs; leer heisst,
+# das Design gibt es nicht.
+AENDERBAR = ("seltenheit", "hp", "beschreibung", "bild", "attacks", "bild_2", "bild_3")
+
+# Wie die Bildfelder in Fehlermeldungen heissen — "bild_2" sagt niemandem was.
+BILDFELDER = {"bild": "Die Bildadresse", "bild_2": "Die Adresse für Design 2",
+              "bild_3": "Die Adresse für Design 3"}
 
 # Felder eines Angriffs, die sich bearbeiten lassen. Bewusst nur die
 # haeufigen: Es gibt 26 verschiedene Angriffsfelder, viele davon kommen genau
@@ -34,6 +40,8 @@ GRENZEN = {
     "hp": (1, 10000),
     "beschreibung": (0, 500),
     "bild": (0, 500),
+    "bild_2": (0, 500),
+    "bild_3": (0, 500),
 }
 
 
@@ -204,13 +212,19 @@ def pruefe(aenderungen: dict) -> dict:
         text = str(wert or "").strip()
         oben = GRENZEN.get(feld, (0, 500))[1]
         if len(text) > oben:
+            if feld in ("bild_2", "bild_3"):
+                raise EditorFehler(f"{BILDFELDER[feld]} darf höchstens {oben} Zeichen haben.")
             raise EditorFehler(f"„{feld}“ darf höchstens {oben} Zeichen haben.")
-        if feld == "bild" and text and not text.startswith(("http://", "https://")):
-            raise EditorFehler("Die Bildadresse muss mit http:// oder https:// beginnen.")
+        if feld in BILDFELDER and text and not text.startswith(("http://", "https://")):
+            raise EditorFehler(f"{BILDFELDER[feld]} muss mit http:// oder https:// beginnen.")
         if feld == "seltenheit" and text and text not in _seltenheiten():
             raise EditorFehler(f"Die Seltenheit „{text}“ gibt es nicht. "
                                f"Möglich: {', '.join(sorted(_seltenheiten()))}")
         sauber[feld] = text
+    # Keine Lücken: Design 3 nur zusammen mit Design 2 (so prüft es auch der Bot).
+    if sauber.get("bild_3") and not sauber.get("bild_2"):
+        raise EditorFehler("Design 3 geht nur zusammen mit Design 2 — bitte zuerst "
+                           "die Adresse für Design 2 eintragen.")
     return sauber
 
 

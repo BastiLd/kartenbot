@@ -66,6 +66,9 @@ def _eintrag(card: dict, iter_variants) -> dict:
         "hp": card.get("hp"),
         "beschreibung": card.get("beschreibung"),
         "bild": card.get("bild"),
+        # Bilder der alternativen Designs; "" heisst, es gibt das Design nicht.
+        "bild_2": card.get("bild_2") or "",
+        "bild_3": card.get("bild_3") or "",
         # Alles, was der Editor zum Bearbeiten braucht. "wirkungen" sind
         # nur die Namen der Nebenwirkungen — bearbeitet werden sie nicht,
         # aber man soll sehen, dass es welche gibt.

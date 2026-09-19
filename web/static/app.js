@@ -13,7 +13,7 @@
    aktualisiert. Siehe zeigeVersion() ganz unten.
 
    Beim Ausliefern mit web/VERSION gleichziehen. */
-const OBERFLAECHE_VERSION = '1.4.1';
+const OBERFLAECHE_VERSION = '1.5.0';
 
 /* ------------------------------------------------------------- Werkzeuge -- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -1011,6 +1011,7 @@ RENDER.karten = async (ziel, optionen = {}) => {
               <strong>${esc(k.name)}</strong>
               <span class="muted">${esc(k.seltenheit || '?')} · ${num(k.hp)} HP</span>
               ${geaendert[k.name] ? '<span class="tag accent">geändert</span>' : ''}
+              ${designKennzeichen(k)}
             </div>
           </button>`).join('')}</div>`
       : treffer.map((k) => `
@@ -1018,7 +1019,8 @@ RENDER.karten = async (ziel, optionen = {}) => {
             <span class="name"><strong>${esc(k.name)}</strong>
               <span class="muted"> · ${esc(k.seltenheit || '?')} · ${num(k.hp)} HP
               · ${k.angriffe.length} Angriffe</span>
-              ${geaendert[k.name] ? '<span class="tag accent">geändert</span>' : ''}</span>
+              ${geaendert[k.name] ? '<span class="tag accent">geändert</span>' : ''}
+              ${designKennzeichen(k)}</span>
             <span class="val">›</span>
           </div>`).join('');
 
@@ -1231,7 +1233,8 @@ async function zeichneEinzelkarte(ziel, k, aenderung, seltenheiten) {
           <h2>${esc(k.name)}</h2>
           <p class="muted">${esc(k.seltenheit || '?')} · ${num(k.hp)} Lebenspunkte
             · ${k.angriffe.length} Angriffe
-            ${k.varianten.length ? ` · ${k.varianten.length} Varianten` : ''}</p>
+            ${k.varianten.length ? ` · ${k.varianten.length} Varianten` : ''}
+            ${designKennzeichen(k)}</p>
           ${k.beschreibung ? `<p>${esc(k.beschreibung)}</p>` : ''}
           ${aenderung ? `<p class="hint">Geändert am ${zeitpunkt(aenderung.geaendert_am)}${
             aenderung.geaendert_von ? ` von ${esc(aenderung.geaendert_von)}` : ''}.</p>` : ''}
@@ -1267,6 +1270,20 @@ async function zeichneEinzelkarte(ziel, k, aenderung, seltenheiten) {
         <textarea rows="2" data-feld="beschreibung">${esc(k.beschreibung || '')}</textarea></label>
       <label class="field" style="margin-top:10px"><span>Bildadresse</span>
         <input data-feld="bild" value="${esc(k.bild || '')}" placeholder="https://..."></label>
+      <div class="form-row" style="margin-top:10px">
+        ${[[2, 'Design 2 (alternatives Bild)'], [3, 'Design 3']].map(([n, titel]) => `
+          <label class="field"><span>${titel}</span>
+            <input data-feld="bild_${n}" data-design-vorschau="${n}"
+                   value="${esc(k[`bild_${n}`] || '')}" placeholder="https://i.imgur.com/….png">
+            <img class="design-mini" data-design-bild="${n}" alt="Vorschau Design ${n}"
+                 ${k[`bild_${n}`] ? `src="${esc(k[`bild_${n}`])}"` : 'hidden'}></label>`).join('')}
+      </div>
+      <p class="hint" style="margin-top:6px">Direktlink von imgur
+        (<code>https://i.imgur.com/….png</code>). Google-Drive-Freigaben und
+        Discord-Anhänge taugen nicht — Discord zeigt sie nicht dauerhaft an.
+        Design 3 geht nur zusammen mit Design 2. Ein Design ist nur ein anderes
+        Aussehen; Spieler sehen es erst, wenn es ihnen freigeschaltet wurde
+        (im Discord mit <code>/design-geben</code>).</p>
     </div>
 
     <div class="panel">
@@ -1319,6 +1336,18 @@ async function zeichneEinzelkarte(ziel, k, aenderung, seltenheiten) {
   });
 
   $('#kVorschau', ziel).addEventListener('click', () => zeigeVorschau(k));
+
+  // Kleine Vorschau neben den Design-Feldern: zeigt sofort, ob der Link ein
+  // Bild ist. Laedt es nicht, verschwindet die Vorschau wieder.
+  $$('[data-design-vorschau]', ziel).forEach((feld) => {
+    const bild = $(`[data-design-bild="${feld.dataset.designVorschau}"]`, ziel);
+    bild.addEventListener('error', () => { bild.hidden = true; });
+    feld.addEventListener('input', () => {
+      const wert = feld.value.trim();
+      bild.hidden = !/^https?:\/\//i.test(wert);
+      if (!bild.hidden) bild.src = wert;
+    });
+  });
   $('#kTestlaufGross', ziel).addEventListener('click', () => frageTestlauf(k));
   $('#kKiKampf', ziel).addEventListener('click', () => frageKiKampf(k));
   bindeBeurteilen(ziel);
@@ -1369,6 +1398,23 @@ async function zeichneEinzelkarte(ziel, k, aenderung, seltenheiten) {
   });
 }
 
+/* Die Bilder aller Designs einer Karte: Standard, dann Design 2 und 3.
+   Ohne Luecken, wie im Bot - Design 3 zaehlt nur, wenn es Design 2 gibt. */
+function designBilder(k) {
+  const bilder = [k.bild || ''];
+  if (k.bild_2) {
+    bilder.push(k.bild_2);
+    if (k.bild_3) bilder.push(k.bild_3);
+  }
+  return bilder;
+}
+
+/* Kleines Kennzeichen "2 Designs" / "3 Designs" - ohne Designs nichts. */
+function designKennzeichen(k) {
+  const anzahl = designBilder(k).length;
+  return anzahl > 1 ? `<span class="tag">${anzahl} Designs</span>` : '';
+}
+
 /* [11, 15] wird zu "11-15", 12 bleibt "12". Umkehrung von schadenAusText. */
 function schadenAlsText(wert) {
   if (Array.isArray(wert)) return `${wert[0]}-${wert[1]}`;
@@ -1385,12 +1431,18 @@ function schadenAusText(text) {
   return Number.isFinite(zahl) ? zahl : roh;
 }
 
-/* Zeigt die Karte so, wie der Bot sie im Discord ausgibt. */
+/* Zeigt die Karte so, wie der Bot sie im Discord ausgibt. Hat sie Designs,
+   laesst sich oben zwischen Design 1, 2 und 3 umschalten. */
 function zeigeVorschau(k) {
+  const bilder = designBilder(k);
   dialog({
     titel: 'So sieht die Karte im Discord aus',
     breit: true,
     inhalt: `
+      ${bilder.length > 1 ? `<div class="dv-umschalter">
+        ${bilder.map((_b, i) => `<button class="btn sm ${i === 0 ? 'primary' : 'ghost'}"
+          data-dv-design="${i}">Design ${i + 1}</button>`).join('')}
+      </div>` : ''}
       <div class="discord-vorschau">
         <div class="dv-balken"></div>
         <div class="dv-inhalt">
@@ -1411,6 +1463,16 @@ function zeigeVorschau(k) {
         Im Kampf steht der Standardangriff oben links.</p>`,
     knoepfe: [{ label: 'Schließen', art: 'primary' }],
   });
+  if (bilder.length < 2) return;
+  const koerper = $('#modalBody');
+  $$('[data-dv-design]', koerper).forEach((knopf) => knopf.addEventListener('click', () => {
+    const bild = $('.dv-bild', koerper);
+    if (bild) bild.src = bilder[Number(knopf.dataset.dvDesign)];
+    $$('[data-dv-design]', koerper).forEach((b) => {
+      b.classList.toggle('primary', b === knopf);
+      b.classList.toggle('ghost', b !== knopf);
+    });
+  }));
 }
 
 /* ---------------------------------------------------------------- Testlauf */
