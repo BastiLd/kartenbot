@@ -9,6 +9,7 @@ from services.card_validation import validate_cards
 EXPECTED_ALPHA_COMMANDS = {
     "anfang",
     "bot-status",
+    "design",
     "eingeladen",
     "entwicklerpanel",
     "geschichte",

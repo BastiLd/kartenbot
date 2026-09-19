@@ -5,6 +5,7 @@ import logging
 import discord
 from discord import app_commands
 
+from botcommands.design_view import DesignView, lade_design_karten
 from botcore.facades import PlayerFacade
 
 
@@ -314,6 +315,24 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
         view = module.VaultView(interaction.user.id, user_karten)
         await module._send_with_visibility(interaction, visibility_key, embed=embed, view=view)
 
+    @bot.tree.command(name="design", description="Wähle das Aussehen (Design) deiner Karten")
+    async def design(interaction: discord.Interaction):
+        if not await module.is_channel_allowed(interaction):
+            return
+        user_id = interaction.user.id
+        user_karten = await module.get_user_karten(user_id)
+        gruppen = module._group_owned_cards_for_current_mode(user_karten) if user_karten else []
+        design_karten = await lade_design_karten(gruppen, module.get_karte_by_name)
+        if not design_karten:
+            await module._send_ephemeral(
+                interaction,
+                content="Für deine Karten gibt es noch keine alternativen Designs.",
+            )
+            return
+        view = DesignView(user_id, design_karten, interaction_checker=module.is_channel_allowed)
+        embed = await view.aufbauen()
+        await module._send_ephemeral(interaction, embed=embed, view=view)
+
     @bot.tree.command(
         name="anfang",
         description="Zeigt das Startmen\u00fc mit Schnellzugriff auf wichtige Funktionen",
@@ -446,6 +465,7 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
         "eingeladen": eingeladen,
         "fuse": fuse,
         "vault": vault,
+        "design": design,
         "anfang": anfang,
     }
 
