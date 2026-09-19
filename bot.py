@@ -18565,6 +18565,8 @@ _admin_commands = register_admin_commands(bot, AdminFacade(_command_api))
 
 
 @bot.tree.command(name="stats_e", description="Nur für Admins!!!")
+@app_commands.default_permissions(administrator=True)
+@app_commands.guild_only()
 async def stats_e(interaction: discord.Interaction):
     if not await is_channel_allowed(interaction):
         return

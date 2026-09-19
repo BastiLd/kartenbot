@@ -9,7 +9,15 @@ from services.card_grant import grant_cards_to_users
 
 
 def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
-    configure_group = app_commands.Group(name="konfigurieren", description="Nur f\u00fcr Admins!!!")
+    # Admin-Befehle sind in Discord versteckt (default_permissions): Wer das
+    # Recht nicht hat, sieht sie nicht. Das ist nur Komfort \u2014 die Pr\u00fcfungen im
+    # Befehl selbst (is_admin, is_config_admin, require_owner_or_dev) bleiben.
+    configure_group = app_commands.Group(
+        name="konfigurieren",
+        description="Nur f\u00fcr Admins!!!",
+        default_permissions=discord.Permissions(manage_guild=True),
+        guild_only=True,
+    )
 
     def _target_label(guild: discord.Guild | None, user_id: int) -> str:
         member = guild.get_member(int(user_id)) if guild is not None else None
@@ -102,6 +110,8 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
         return module.default_variant_name_for_base(selected_value, cards=module.karten)
 
     @bot.tree.command(name="kanal-freigeben", description="Nur f\u00fcr Admins!!!")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.guild_only()
     async def add_channel_shortcut(interaction: discord.Interaction):
         if not await module.is_config_admin(interaction):
             return
@@ -189,6 +199,8 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
     bot.tree.add_command(configure_group)
 
     @bot.tree.command(name="intro-zurücksetzen", description="Nur f\u00fcr Admins!!!")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
     async def reset_intro(interaction: discord.Interaction):
         if not await module.is_admin(interaction):
             await interaction.response.send_message("\u274c Keine Berechtigung.", ephemeral=True)
@@ -197,6 +209,8 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
         await module.send_reset_intro(interaction, visibility_key=visibility_key)
 
     @bot.tree.command(name="sammlung-ansehen", description="Nur f\u00fcr Admins!!!")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
     async def vaultlook(interaction: discord.Interaction):
         visibility_key = module.command_visibility_key_for_interaction(interaction)
         visibility = (
@@ -243,6 +257,8 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
         )
 
     @bot.tree.command(name="test-bericht", description="Nur f\u00fcr Admins!!!")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
     async def test_bericht(interaction: discord.Interaction):
         if not await module.is_channel_allowed(interaction):
             return
@@ -254,6 +270,8 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
         await module.send_test_report(interaction, visibility_key=visibility_key)
 
     @bot.tree.command(name="karte-geben", description="Nur f\u00fcr Admins!!!")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
     @app_commands.describe(modus="Single f\u00fcr einen Nutzer oder Multi f\u00fcr mehrere Nutzer")
     @app_commands.choices(
         modus=[
@@ -459,6 +477,8 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
         await module._send_with_visibility(interaction, visibility_key, embed=result_embed)
 
     @bot.tree.command(name="dust", description="Nur f\u00fcr Admins!!!")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
     @app_commands.describe(modus="Single f\u00fcr einen Nutzer oder Multi f\u00fcr mehrere Nutzer")
     @app_commands.choices(
         modus=[
@@ -479,6 +499,8 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
         await module.run_dust_command_flow(interaction, mode=modus, remove=False)
 
     @bot.tree.command(name="l\u00f6dust", description="Nur f\u00fcr Admins!!!")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
     @app_commands.describe(modus="Single f\u00fcr einen Nutzer oder Multi f\u00fcr mehrere Nutzer")
     @app_commands.choices(
         modus=[
@@ -499,6 +521,8 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
         await module.run_dust_command_flow(interaction, mode=modus, remove=True)
 
     @bot.tree.command(name="invite-limit", description="Nur f\u00fcr Admins: Invite-Altersgrenze in Tagen setzen")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
     @app_commands.describe(tage="Maximales Server-Alter des Eingeladenen in Tagen")
     async def invite_limit(interaction: discord.Interaction, tage: int):
         if not await module.is_channel_allowed(interaction):
@@ -516,6 +540,7 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
         )
 
     @bot.tree.command(name="op-verwaltung", description="Nur f\u00fcr Admins!!!")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.guild_only()
     async def give_op(interaction: discord.Interaction):
         if not await module.is_channel_allowed(interaction):
@@ -772,6 +797,8 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
         await interaction.followup.send("\u274c Unbekannte Aktion. Abgebrochen.", ephemeral=True)
 
     @bot.tree.command(name="entwicklerpanel", description="Nur f\u00fcr Admins!!!")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
     async def panel(interaction: discord.Interaction):
         if not await module.require_owner_or_dev(interaction):
             return
@@ -786,7 +813,12 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
             view=module.PanelHomeView(interaction.user.id),
         )
 
-    balance_group = app_commands.Group(name="statistik", description="Balance-Statistiken")
+    balance_group = app_commands.Group(
+        name="statistik",
+        description="Balance-Statistiken",
+        default_permissions=discord.Permissions(administrator=True),
+        guild_only=True,
+    )
 
     @balance_group.command(name="balance", description="Zeigt Balance-Statistiken")
     async def balance_stats(interaction: discord.Interaction):
@@ -796,6 +828,8 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
     bot.tree.add_command(balance_group)
 
     @bot.tree.command(name="bot-status", description="Nur f\u00fcr Admins!!!")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
     async def bot_status(interaction: discord.Interaction):
         if not await module.require_owner_or_dev(interaction):
             return
