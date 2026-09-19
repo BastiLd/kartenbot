@@ -67,17 +67,17 @@ Ein-Zeilen-Änderung. Es gibt keinen Grund, nur zwei zu bauen.
 
 | Branch | Zweck |
 |---|---|
-| `main` | Gemeinsamer Endstand. **Du fasst ihn nicht an.** Er bekommt Bot- und Website-Teil erst, wenn der Nutzer sagt, dass das jeweilige große Update fertig ist. |
-| `opus/teil-1-designs-und-level` | **Dein Arbeitsbranch** für Teil 1 (beide Pläne). Ist bereits angelegt, Stand wie `claude/helden-verwaltung-plan-afdd7d` — dort liegen diese Pläne. |
-| Bot-Branch (Vorschlag `feature/bot`, existiert evtl. noch nicht) | Sammelt später alles, was zum großen Bot-Update gehört. |
-| `feature/web-dashboard` | Website-Branch, existiert. |
+| `main` | Gemeinsamer Endstand. **Du fasst ihn nicht an.** Er bekommt etwas erst, wenn **alle vier Teile** fertig sind und alles zusammenpasst — das entscheidet der Nutzer. |
+| `opus/teil-1-designs-und-level` | **Dein Arbeitsbranch** zum Erstellen (Teil 1, beide Pläne). Ist bereits angelegt, Stand wie `claude/helden-verwaltung-plan-afdd7d` — dort liegen diese Pläne. |
+| `feature/bot` | Bot-Branch, angelegt (Stand wie `main`). Sammelt die **Bot-Commits** aus den Opus-Branches, sobald der Nutzer sie übernimmt. Erst wenn beim Bot alles passt, geht es weiter nach `main`. |
+| `feature/web-dashboard` | Website-Branch, existiert. Sammelt entsprechend die **Website-Commits**. |
 
 - Du committest und pushst **nur auf deinen Arbeitsbranch.** Nach **jedem** Commit sofort `git push`.
 - **Nie** `--force`, **nie** `--amend` nach einem Push, **nie** die Historie umschreiben. Alles muss zurückgehen können.
 - **Ein Commit pro Schritt oder feiner.** Vor riskanten Schritten ein Tag setzen (`git tag teil1-vor-schritt-4`, pushen).
 - **Bot und Website nie im selben Commit.** Ein Commit berührt entweder nur `web/…` oder nur den Rest. Betreff mit Präfix:
-  `bot:` / `web:` / `docs:`. Grund: Der Nutzer übernimmt den Bot-Teil später in den Bot-Branch und den Website-Teil in den
-  Website-Branch (per Cherry-Pick). Ein gemischter Commit wäre dabei unbrauchbar.
+  `bot:` / `web:` / `docs:`. Grund: Der Nutzer übernimmt den Bot-Teil später in `feature/bot` und den Website-Teil in den
+  Website-Branch `feature/web-dashboard` (per Cherry-Pick). Ein gemischter Commit wäre dabei unbrauchbar.
 - Wo Bot und Website zusammenpassen müssen (`services/card_store.py` ↔ `web/app/karteneditor.py`), kommt der **Bot-Commit
   zuerst**.
 - Gemergt wird nichts von dir. Wenn der Nutzer testen und übernehmen will, sagt er es.

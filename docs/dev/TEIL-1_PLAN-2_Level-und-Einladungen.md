@@ -59,8 +59,10 @@ nichts vorbauen, aber nichts verbauen).
   erneut.
 
 ### Git (Entscheidung des Nutzers)
-- Du arbeitest **nur** auf `opus/teil-1-designs-und-level` (weiter, wo Plan 1 aufgehört hat). `main`,
-  `feature/web-dashboard` und der Bot-Branch werden **nicht** von dir angefasst — der Nutzer übernimmt später.
+- Du arbeitest **nur** auf `opus/teil-1-designs-und-level` (weiter, wo Plan 1 aufgehört hat). `main`, `feature/bot` und
+  `feature/web-dashboard` werden **nicht** von dir angefasst — der Nutzer übernimmt später die Bot-Commits nach `feature/bot`
+  und die Website-Commits nach `feature/web-dashboard`. **`main` bekommt erst etwas, wenn alle vier Teile fertig sind** und alles
+  zusammenpasst.
 - Nach **jedem** Commit `git push`. **Nie** `--force`, **nie** `--amend` nach Push, nie die Historie umschreiben.
   Vor riskanten Schritten ein Tag (z. B. `git tag teil1-vor-schritt-8`).
 - **Ein Commit pro Schritt oder feiner. Bot und Website nie im selben Commit** (Präfix `bot:` / `web:` / `docs:`).
