@@ -11626,6 +11626,7 @@ async def _build_owned_card_detail(
     user_id: int,
     selected_name: str,
     variant_rows: list[tuple[str, int]] | None = None,
+    viewer_id: int | None = None,
 ) -> tuple[discord.Embed, RestrictedView] | None:
     karte = await get_karte_by_name(selected_name)
     if not karte:
@@ -11694,6 +11695,42 @@ async def _build_owned_card_detail(
             row=0 if i < 2 else 1,
         )
         view_buttons.add_item(btn)
+
+    # Knopf "Design wechseln" — nur für den Besitzer selbst und nur, wenn er
+    # zwischen mindestens zwei Designs wählen kann. Sonst bleibt die Ansicht
+    # genau wie vorher.
+    if viewer_id is None or viewer_id == user_id:
+        waehlbar = await designs.waehlbare_designs(user_id, karte)
+        if len(waehlbar) >= 2:
+            aktiv = await designs.aktives_design(user_id, karte)
+            embed.set_footer(text=f"Aktives Design: {aktiv} · {len(waehlbar)} Designs freigeschaltet")
+            wechsel = ui.Button(label="🎨 Design wechseln", style=discord.ButtonStyle.secondary, row=2)
+
+            async def _design_wechseln(interaction: discord.Interaction) -> None:
+                if interaction.user.id != user_id:
+                    await interaction.response.send_message("Das ist nicht dein Button!", ephemeral=True)
+                    return
+                # Beim Klick frisch nachsehen — seit dem Öffnen kann sich die Wahl geändert haben.
+                jetzt_waehlbar = await designs.waehlbare_designs(user_id, karte)
+                jetzt_aktiv = await designs.aktives_design(user_id, karte)
+                if jetzt_aktiv in jetzt_waehlbar:
+                    naechstes = jetzt_waehlbar[(jetzt_waehlbar.index(jetzt_aktiv) + 1) % len(jetzt_waehlbar)]
+                else:
+                    naechstes = 1
+                await designs.waehle(user_id, karte, naechstes)
+                neu = await _build_owned_card_detail(
+                    user_id=user_id,
+                    selected_name=selected_name,
+                    variant_rows=variant_rows,
+                    viewer_id=viewer_id,
+                )
+                if neu is None:
+                    await interaction.response.send_message("Karte nicht gefunden.", ephemeral=True)
+                    return
+                await interaction.response.edit_message(embed=neu[0], view=neu[1])
+
+            wechsel.callback = _design_wechseln
+            view_buttons.add_item(wechsel)
     return embed, view_buttons
 
 
@@ -11718,6 +11755,7 @@ class VaultView(RestrictedView):
                 user_id=self.user_id,
                 selected_name=variant_rows[0][0],
                 variant_rows=variant_rows,
+                viewer_id=self.viewer_id,
             )
             if detail_payload is None:
                 await interaction.response.send_message("Karte nicht gefunden.", ephemeral=True)
@@ -11738,6 +11776,7 @@ class VaultView(RestrictedView):
             user_id=self.user_id,
             selected_name=variant_view.value,
             variant_rows=variant_rows,
+            viewer_id=self.viewer_id,
         )
         if detail_payload is None:
             return

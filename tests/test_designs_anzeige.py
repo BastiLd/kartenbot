@@ -167,3 +167,65 @@ def test_link_entfernt_faellt_still_zurueck(testdb, mit_link, monkeypatch):
 
     karte, danach = _lauf(ablauf())
     assert danach is karte and danach["bild"] == _roh(NORMAL)["bild"]
+
+
+# --------------------------------------------------------------------------
+# Knopf "Design wechseln" in der Sammlung
+# --------------------------------------------------------------------------
+def _wechselknopf(view):
+    return next((c for c in view.children if getattr(c, "label", "") == "🎨 Design wechseln"), None)
+
+
+async def _detail(user_id=SPIELER, viewer_id=None):
+    await db_modul.init_db()
+    return await bot._build_owned_card_detail(user_id=user_id, selected_name=NORMAL, viewer_id=viewer_id)
+
+
+def test_ohne_designs_kein_knopf_und_ansicht_wie_vorher(testdb):
+    embed, view = _lauf(_detail())
+    assert _wechselknopf(view) is None
+    assert embed.footer.text is None
+    assert len(view.children) == min(4, len(_roh(NORMAL)["attacks"]))
+
+
+def test_freigeschaltet_ohne_link_kein_knopf(testdb):
+    async def ablauf():
+        await designs.freischalten(SPIELER, NORMAL, 2)
+        return await _detail()
+
+    _embed, view = _lauf(ablauf())
+    assert _wechselknopf(view) is None
+
+
+def test_fremder_betrachter_bekommt_keinen_knopf(testdb, mit_link):
+    async def ablauf():
+        await designs.freischalten(SPIELER, NORMAL, 2)
+        return await _detail(viewer_id=GEGNER)
+
+    _embed, view = _lauf(ablauf())
+    assert _wechselknopf(view) is None
+
+
+def test_knopf_schaltet_durch_die_designs(testdb, mit_link):
+    from tests.view_harness import make_interaction
+
+    async def ablauf():
+        await designs.freischalten(SPIELER, NORMAL, 2)
+        embed, view = await _detail()
+        assert embed.image.url == _roh(NORMAL)["bild"]
+        assert embed.footer.text == "Aktives Design: 1 · 2 Designs freigeschaltet"
+        bilder = []
+        for _ in range(2):
+            it = make_interaction(SPIELER)
+            await _wechselknopf(view).callback(it)
+            neu = it.response.edit_message.await_args.kwargs
+            bilder.append(neu["embed"].image.url)
+            view = neu["view"]
+        fremd = make_interaction(GEGNER)
+        await _wechselknopf(view).callback(fremd)
+        return bilder, fremd
+
+    bilder, fremd = _lauf(ablauf())
+    assert bilder == [ZWEI, _roh(NORMAL)["bild"]]
+    fremd.response.send_message.assert_awaited()
+    fremd.response.edit_message.assert_not_awaited()
