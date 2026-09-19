@@ -197,7 +197,7 @@ from services.runtime_store import (
 )
 from services.stats_export import build_stats_workbook
 from services.card_grant import grant_cards_to_users
-from services import (bot_versions, card_store, card_testrun, history_scan,
+from services import (bot_versions, card_store, card_testrun, designs, history_scan,
                       ki_gegner, move_log, ollama_bot, role_manager, web_jobs)
 from simulation import loader as simulation_loader
 from services.user_data import (
@@ -3453,6 +3453,44 @@ async def get_karte_by_name(name: str) -> dict[str, Any] | None:
     if runtime_card is not None:
         return runtime_card
     return None
+
+
+async def _design_bild(user_id: int | None, karte: Any) -> str | None:
+    """Bild des gewählten Designs — oder None, wenn das normale Bild gilt.
+
+    Bewusst None statt des normalen Bildes: Die Aufrufer schreiben
+    ``await _design_bild(...) or <wie bisher>``. Ohne Design läuft so exakt
+    der alte Ausdruck, Zeichen für Zeichen. Geht beim Nachsehen etwas schief,
+    ebenfalls None.
+    """
+    if not user_id or not isinstance(karte, dict):
+        return None
+    try:
+        bild = await designs.bild_fuer(int(user_id), karte)
+    except Exception:
+        logging.exception("Design-Bild für %s nicht bestimmbar", user_id)
+        return None
+    if not bild or bild == str(karte.get("bild") or "").strip():
+        return None
+    return bild
+
+
+async def _karte_mit_design(user_id: int | None, karte: Any) -> Any:
+    """Das gewählte Design eines Spielers auf seine Kampfkarte legen.
+
+    Ändert nur das Bild, nie Werte oder Namen. Und nur an einer eigenen Kopie:
+    Die Karten aus get_karte_by_name sind das ohnehin, die gemeinsamen
+    Kartenobjekte (RAW_KARTEN) werden sicherheitshalber nie angefasst. Der
+    Kampf speichert seine Karten mit, deshalb überlebt das Bild auch einen
+    Neustart mitten im Kampf.
+    """
+    bild = await _design_bild(user_id, karte)
+    if bild is None:
+        return karte
+    if any(karte is gemeinsam for gemeinsam in RAW_KARTEN):
+        karte = dict(karte)
+    karte["bild"] = bild
+    return karte
 
 def _sort_user_cards_like_karten(user_cards) -> list[tuple[str, int]]:
     """Sort user-owned exact cards by base-card order and variant order."""
@@ -8644,6 +8682,9 @@ async def _start_fight_battle_from_card_selection(
         )
         await _maybe_delete_fight_thread(thread_id, thread_created)
         return
+    # Jeder zeigt sein gewähltes Design — und der Gegner sieht es auch.
+    challenger_card = await _karte_mit_design(challenger.id, challenger_card)
+    challenged_card = await _karte_mit_design(challenged.id, challenged_card)
     battle_view = BattleView(
         challenger_card,
         challenged_card,
@@ -8841,6 +8882,7 @@ async def _start_mission_wave_in_thread(
             content=f"❌ Die Karte **{selected_card_name}** konnte nicht gefunden werden.",
         )
         return None
+    player_card = await _karte_mit_design(interaction.user.id, player_card)
     wave_num = max(1, int(mission_state.get("next_wave", 1) or 1))
     encounters = _mission_encounters(mission_data)
     total_waves = max(wave_num, len(encounters), int(mission_state.get("total_waves", mission_data.get("waves", 1)) or 1))
@@ -11593,7 +11635,10 @@ async def _build_owned_card_detail(
         description=str(karte.get("beschreibung") or ""),
         color=_card_rarity_color(karte),
     )
-    if karte.get("bild"):
+    design_bild = await _design_bild(user_id, karte)
+    if design_bild:
+        embed.set_image(url=design_bild)
+    elif karte.get("bild"):
         embed.set_image(url=str(karte.get("bild")))
 
     attacks = karte.get("attacks", [])

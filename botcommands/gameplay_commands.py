@@ -206,6 +206,8 @@ def register_gameplay_commands(bot, api: GameplayFacade) -> dict[str, object]:
             target_channel = fight_thread
             alpha_enabled = await api.is_alpha_enabled(interaction.guild_id)
             bot_card = api.random_gameplay_card(api.karten, alpha_enabled=alpha_enabled)
+            # Der Spieler zeigt sein gewähltes Design, der Bot immer das normale Bild.
+            selected_cards[0] = await api._karte_mit_design(interaction.user.id, selected_cards[0])
             battle_view = api.BattleView(
                 selected_cards[0],
                 bot_card,
