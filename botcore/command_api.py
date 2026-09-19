@@ -92,6 +92,7 @@ def build_command_api(global_ns: dict[str, Any]) -> CommandApi:
         "_create_required_private_fight_thread",
         "_create_required_private_mission_thread",
         "_fight_challenge_prompt",
+        "_design_hinweis",
         "_karte_mit_design",
         "_maybe_delete_fight_thread",
         "_safe_send_channel",

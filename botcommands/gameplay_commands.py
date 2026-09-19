@@ -165,8 +165,9 @@ def register_gameplay_commands(bot, api: GameplayFacade) -> dict[str, object]:
             return
 
         card_select_view = api.CardSelectView(interaction.user.id, user_karten, 1)
+        design_hinweis = await api._design_hinweis(interaction.user.id, [name for name, _anzahl in user_karten])
         await interaction.followup.send(
-            "W\u00e4hle deine Karte f\u00fcr den 1v1-Kampf:",
+            f"W\u00e4hle deine Karte f\u00fcr den 1v1-Kampf:{design_hinweis}",
             view=card_select_view,
             ephemeral=True,
         )

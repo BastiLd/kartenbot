@@ -232,6 +232,32 @@ async def waehlbare_designs(user_id: int, karte: Any) -> list[int]:
     return [d for d in verfuegbare_designs(karte) if d in frei]
 
 
+async def hat_waehlbare_designs(user_id: int, karten_namen: Any) -> bool:
+    """Kann der Spieler für mindestens eine dieser Karten ein anderes Design wählen?
+
+    Für Hinweise wie „Design ändern: /design“ — eine einzige Abfrage, und
+    bei jedem Fehler einfach False (dann gibt es eben keinen Hinweis).
+    """
+    try:
+        await ensure_schema()
+        async with db_context() as db:
+            cursor = await db.execute(
+                "SELECT karten_name, design FROM user_designs WHERE user_id = ?", (int(user_id),))
+            zeilen = await cursor.fetchall()
+        if not zeilen:
+            return False
+        frei: dict[str, set[int]] = {}
+        for name, design in zeilen:
+            frei.setdefault(str(name), set()).add(int(design))
+        for name in karten_namen or []:
+            basis = grundname(name)
+            if any(bild_link(basis, d) for d in frei.get(basis, ())):
+                return True
+    except Exception:
+        logging.exception("Designs von %s nicht prüfbar", user_id)
+    return False
+
+
 async def waehle(user_id: int, karten_name: Any, design: int) -> bool:
     """Ein Design als Standard für Sammlung und Kampf setzen.
 

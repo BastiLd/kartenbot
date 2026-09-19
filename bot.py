@@ -3494,6 +3494,21 @@ async def _karte_mit_design(user_id: int | None, karte: Any) -> Any:
     karte["bild"] = bild
     return karte
 
+DESIGN_HINWEIS = "🎨 Design ändern: /design"
+
+
+async def _design_hinweis(user_id: int, karten_namen: Any) -> str:
+    """Zeile „Design ändern: /design“ für die Kartenauswahl vor Kampf und Mission.
+
+    Nur für Spieler, die bei einer ihrer Karten wirklich zwischen Designs
+    wählen können — für alle anderen "" und damit die Nachricht wie bisher.
+    Bewusst Text in der Nachricht statt eines Knopfes: Die Auswahl-Ansichten
+    überleben Neustarts, und an denen wird nichts geändert.
+    """
+    if await designs.hat_waehlbare_designs(user_id, karten_namen):
+        return "\n" + DESIGN_HINWEIS
+    return ""
+
 def _sort_user_cards_like_karten(user_cards) -> list[tuple[str, int]]:
     """Sort user-owned exact cards by base-card order and variant order."""
     order_map = {
@@ -8636,6 +8651,7 @@ async def _start_fight_card_selection_from_challenge(
         content=(
             f"{challenged.mention}, wähle deine Karte für den 1v1 Kampf:\n"
             f"Herausforderer-Karte: **{_fight_challenge_card_label(challenger_card_name)}**"
+            f"{await _design_hinweis(challenged.id, option_names)}"
         ),
         view=gegner_card_select_view,
     ) is None:
@@ -8862,6 +8878,7 @@ async def _begin_mission_thread_flow(interaction: discord.Interaction, mission_d
     intro_embed.description = (
         f"{intro_embed.description or ''}\n\n"
         f"{interaction.user.mention}, wähle jetzt deine Karte für diese Mission."
+        f"{await _design_hinweis(interaction.user.id, [name for name, _amount in user_karten])}"
     ).strip()
     await _safe_send_channel(interaction, thread, embed=intro_embed, view=select_view)
 
@@ -12250,7 +12267,8 @@ class MissionPauseView(DurableView):
                 _filter_owned_cards_for_current_mode(await get_user_karten(self.user_id))
             )
             next_view = MissionNewCardSelectView(self.user_id, user_karten, mission_state=self.mission_state)
-            await _safe_send_channel(interaction, interaction.channel, content="Wähle eine neue Karte:", view=next_view)
+            hinweis = await _design_hinweis(self.user_id, [name for name, _amount in user_karten])
+            await _safe_send_channel(interaction, interaction.channel, content=f"Wähle eine neue Karte:{hinweis}", view=next_view)
         else:
             await _continue_mission_after_pause_or_card_pick(interaction, self.mission_state, self.user_id)
         self.stop()
@@ -12599,6 +12617,7 @@ class MissionEncounterPreviewView(DurableView):
             select_view = MissionNewCardSelectView(self.user_id, user_karten, mission_state=ms)
             content = game_ui_texts.MISSION_SELECT_NEW_CARD_PROMPT
             embed = None
+        content += await _design_hinweis(self.user_id, [name for name, _amount in user_karten])
         await _safe_send_channel(
             interaction,
             interaction.channel,

@@ -229,3 +229,42 @@ def test_knopf_schaltet_durch_die_designs(testdb, mit_link):
     assert bilder == [ZWEI, _roh(NORMAL)["bild"]]
     fremd.response.send_message.assert_awaited()
     fremd.response.edit_message.assert_not_awaited()
+
+
+# --------------------------------------------------------------------------
+# Hinweis "Design ändern: /design" vor Kampf und Mission (Schritt 7)
+# --------------------------------------------------------------------------
+def test_hinweis_nur_fuer_spieler_mit_waehlbarem_design(testdb, monkeypatch):
+    andere = next(k["name"] for k in RAW if not k.get("variants") and k["name"] != NORMAL)
+
+    async def ablauf():
+        ergebnisse = [await bot._design_hinweis(SPIELER, [NORMAL])]            # nichts frei
+        await designs.freischalten(SPIELER, NORMAL, 2)
+        ergebnisse.append(await bot._design_hinweis(SPIELER, [NORMAL]))       # frei, aber kein Link
+        monkeypatch.setitem(_roh(NORMAL), "bild_2", ZWEI)
+        ergebnisse.append(await bot._design_hinweis(SPIELER, [andere]))       # Karte nicht dabei
+        ergebnisse.append(await bot._design_hinweis(GEGNER, [NORMAL]))        # anderer Spieler
+        ergebnisse.append(await bot._design_hinweis(SPIELER, [andere, NORMAL]))
+        return ergebnisse
+
+    assert _lauf(ablauf()) == ["", "", "", "", "\n" + bot.DESIGN_HINWEIS]
+    assert bot.DESIGN_HINWEIS == "🎨 Design ändern: /design"
+
+
+def test_hinweis_iron_man_varianten(testdb, monkeypatch):
+    monkeypatch.setitem(_roh("Iron-Man"), "bild_2", ZWEI)
+    alpha = _roh("Iron-Man")["variants"][-1]["variant_id"]
+
+    async def ablauf():
+        await designs.freischalten(SPIELER, "Iron-Man", 2)
+        return await bot._design_hinweis(SPIELER, [alpha])
+
+    assert _lauf(ablauf()) == "\n" + bot.DESIGN_HINWEIS
+
+
+def test_hinweis_bei_fehler_leer(testdb, monkeypatch):
+    async def kaputt(*_a, **_k):
+        raise RuntimeError("Datenbank weg")
+
+    monkeypatch.setattr(designs, "ensure_schema", kaputt)
+    assert _lauf(bot._design_hinweis(SPIELER, [NORMAL])) == ""
