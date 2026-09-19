@@ -33,6 +33,48 @@ DESIGN_TABLES_SQL = (
     """,
 )
 
+# Level- und Einladungs-Belohnungen (v2.5.0). Logik in services/level_rewards.py.
+# - level_rollen: welche Discord-Rolle welches MEE6-Level bedeutet (je Server).
+# - belohnungs_protokoll: jede Vergabe genau einmal. Der Schlüssel beschreibt
+#   die Belohnung (z. B. 'level:5:design:Black Widow:2'); steht er drin, wird
+#   nie wieder vergeben — außer der Status ist 'entzogen'.
+# - level_rueckfragen: Rolle verloren -> Owner entscheidet Behalten/Entziehen.
+LEVEL_TABLES_SQL = (
+    """
+    CREATE TABLE IF NOT EXISTS level_rollen (
+        guild_id INTEGER NOT NULL,
+        level    INTEGER NOT NULL,
+        role_id  INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, level)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS belohnungs_protokoll (
+        user_id      INTEGER NOT NULL,
+        schluessel   TEXT    NOT NULL,
+        art          TEXT    NOT NULL,
+        quelle       TEXT    NOT NULL,
+        details_json TEXT    NOT NULL DEFAULT '',
+        status       TEXT    NOT NULL DEFAULT 'vergeben',
+        am           TEXT    NOT NULL,
+        PRIMARY KEY (user_id, schluessel)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS level_rueckfragen (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id     INTEGER NOT NULL,
+        user_id      INTEGER NOT NULL,
+        von_stufe    INTEGER NOT NULL,
+        auf_stufe    INTEGER NOT NULL,
+        grund        TEXT    NOT NULL DEFAULT '',
+        status       TEXT    NOT NULL DEFAULT 'offen',
+        nachricht_id INTEGER,
+        erstellt_am  TEXT    NOT NULL
+    )
+    """,
+)
+
 _db = None
 
 
@@ -524,6 +566,10 @@ async def init_db():
     # Alternative Karten-Designs (v2.4.0): welche ein Spieler freigeschaltet
     # und welches er gewählt hat. Logik in services/designs.py.
     for sql in DESIGN_TABLES_SQL:
+        await db.execute(sql)
+
+    # Level- und Einladungs-Belohnungen (v2.5.0), siehe LEVEL_TABLES_SQL.
+    for sql in LEVEL_TABLES_SQL:
         await db.execute(sql)
 
     await db.commit()
