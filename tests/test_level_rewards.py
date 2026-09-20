@@ -57,8 +57,7 @@ def test_stufen_sind_aufsteigend_und_passen_zusammen():
         assert all(isinstance(s, int) and s > 0 for s in stufen)
     assert set(cfg.LEVEL_BELOHNUNGEN) <= set(cfg.LEVEL_STUFEN)
     assert set(cfg.LEVEL_HINWEISE) <= set(cfg.LEVEL_STUFEN)
-    assert max(cfg.EINLADUNG_STUFEN) < cfg.EINLADUNG_AB_STUFE
-    assert cfg.EINLADUNG_STAUB_AB_11 > 0 and cfg.EINGELADENER_STAUB > 0
+    assert cfg.EINLADUNG_STAUB_SONST > 0 and cfg.EINGELADENER_STAUB > 0
 
 
 def test_rollennamen_sind_eindeutig():
@@ -78,7 +77,7 @@ def test_listen_des_nutzers():
         5: [cfg.Design("Spider-Man", 2), cfg.Staub(5)],
         10: [cfg.Design("Scarlet Witch", 2), cfg.Design("Namor", 2), cfg.Staub(10)],
     }
-    assert (cfg.EINLADUNG_AB_STUFE, cfg.EINLADUNG_STAUB_AB_11, cfg.EINGELADENER_STAUB) == (11, 5, 5)
+    assert (cfg.EINLADUNG_STAUB_SONST, cfg.EINGELADENER_STAUB) == (5, 5)
 
 
 # --------------------------------------------------------------------------
@@ -145,12 +144,14 @@ def test_belohnungen_zwischen_zwei_stufen():
     assert lr.belohnungen_zwischen(5, 5) == []
 
 
+# Entscheidung des Nutzers (weicht vom Plan ab): Jede Einladung ohne eigene
+# Stufe bringt 5 Staub - also auch 2, 3, 4, 6, 7, 8 und 9.
 @pytest.mark.parametrize("anzahl,erwartet", [
     (1, ["Design 2 von Captain America"]),
-    (2, []),
-    (4, []),
+    (2, ["5 Infinitydust"]),
+    (4, ["5 Infinitydust"]),
     (5, ["Design 2 von Spider-Man", "5 Infinitydust"]),
-    (9, []),
+    (9, ["5 Infinitydust"]),
     (10, ["Design 2 von Scarlet Witch", "Design 2 von Namor", "10 Infinitydust"]),
     (11, ["5 Infinitydust"]),
     (12, ["5 Infinitydust"]),
@@ -160,19 +161,23 @@ def test_einladungsstufen(anzahl, erwartet):
 
 
 def test_einladung_nachholen():
-    faellig = lr.einladung_faellige(12, [])
+    faellig = lr.einladung_faellige(6, [])
     assert [f.schluessel for f in faellig] == [
         "einladung:1:design:Captain America:2",
+        "einladung:2:staub",
+        "einladung:3:staub",
+        "einladung:4:staub",
         "einladung:5:design:Spider-Man:2",
         "einladung:5:staub",
-        "einladung:10:design:Scarlet Witch:2",
-        "einladung:10:design:Namor:2",
-        "einladung:10:staub",
-        "einladung:11:staub",
-        "einladung:12:staub",
+        "einladung:6:staub",
     ]
-    ohne_staub = lr.einladung_faellige(12, [], mit_staub_ab_11=False)
-    assert not any(s.schluessel.startswith("einladung:11") for s in ohne_staub)
+    ohne_staub = lr.einladung_faellige(6, [], mit_staub=False)
+    assert [f.schluessel for f in ohne_staub] == [
+        "einladung:1:design:Captain America:2",
+        "einladung:5:design:Spider-Man:2",
+    ]
+    schon = {"einladung:2:staub", "einladung:1:design:Captain America:2"}
+    assert [f.schluessel for f in lr.einladung_faellige(3, schon)] == ["einladung:3:staub"]
     assert lr.einladung_faellige(0, []) == []
 
 

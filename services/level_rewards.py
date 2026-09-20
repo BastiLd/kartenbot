@@ -25,8 +25,7 @@ from typing import Any, Iterable, NamedTuple
 from db import db_context
 from level_reward_config import (
     EINGELADENER_STAUB,
-    EINLADUNG_AB_STUFE,
-    EINLADUNG_STAUB_AB_11,
+    EINLADUNG_STAUB_SONST,
     EINLADUNG_STUFEN,
     LEVEL_BELOHNUNGEN,
     LEVEL_HINWEISE,
@@ -145,26 +144,28 @@ def belohnungen_zwischen(von_stufe: int, auf_stufe: int) -> list[Faellig]:
 
 
 def einladung_belohnungen(neue_anzahl: int) -> list[Faellig]:
-    """Was der Einlader für GENAU diese Einladung bekommt."""
+    """Was der Einlader für GENAU diese Einladung bekommt.
+
+    Stufen (1, 5, 10) haben ihre eigene Belohnung, jede andere Einladung
+    bringt Staub (Entscheidung des Nutzers, weicht vom Plan ab).
+    """
     anzahl = int(neue_anzahl or 0)
+    if anzahl <= 0:
+        return []
     if anzahl in EINLADUNG_STUFEN:
         return [_faellig(QUELLE_EINLADUNG, anzahl, b) for b in EINLADUNG_STUFEN[anzahl]]
-    if anzahl >= EINLADUNG_AB_STUFE:
-        return [_faellig(QUELLE_EINLADUNG, anzahl, Staub(EINLADUNG_STAUB_AB_11))]
-    return []
+    return [_faellig(QUELLE_EINLADUNG, anzahl, Staub(EINLADUNG_STAUB_SONST))]
 
 
-def einladung_faellige(anzahl: int, schon: Iterable[str], *, mit_staub_ab_11: bool = True) -> list[Faellig]:
+def einladung_faellige(anzahl: int, schon: Iterable[str], *, mit_staub: bool = True) -> list[Faellig]:
     """Alles, was einem Einlader mit dieser Zahl zusteht und noch fehlt (fürs Nachholen)."""
     erledigt = set(schon or ())
     gesamt = int(anzahl or 0)
     out: list[Faellig] = []
-    for stufe in sorted(EINLADUNG_STUFEN):
-        if stufe <= gesamt:
-            out.extend(_faellig(QUELLE_EINLADUNG, stufe, b) for b in EINLADUNG_STUFEN[stufe])
-    if mit_staub_ab_11:
-        for n in range(EINLADUNG_AB_STUFE, gesamt + 1):
-            out.append(_faellig(QUELLE_EINLADUNG, n, Staub(EINLADUNG_STAUB_AB_11)))
+    for n in range(1, gesamt + 1):
+        for eintrag in einladung_belohnungen(n):
+            if mit_staub or eintrag.art != "staub":
+                out.append(eintrag)
     return [f for f in out if f.schluessel not in erledigt]
 
 
@@ -208,6 +209,19 @@ async def erledigte_schluessel(user_id: int) -> set[str]:
             "SELECT schluessel FROM belohnungs_protokoll WHERE user_id = ? AND status IN (?, ?)",
             (int(user_id), STATUS_VERGEBEN, STATUS_BEHALTEN))
         return {str(z[0]) for z in await cursor.fetchall()}
+
+
+async def alle_einlader() -> list[tuple[int, int]]:
+    """(Nutzer-ID, bestätigte Einladungen) für alle, die jemanden eingeladen haben."""
+    try:
+        async with db_context() as db:
+            cursor = await db.execute(
+                "SELECT user_id, completed_invites FROM invite_stats "
+                "WHERE completed_invites > 0 ORDER BY completed_invites DESC")
+            return [(int(uid), int(anzahl)) for uid, anzahl in await cursor.fetchall()]
+    except Exception:
+        logging.exception("Einladungs-Statistik nicht lesbar")
+        return []
 
 
 async def protokoll_von(user_id: int, *, quelle: str | None = None) -> list[dict[str, Any]]:

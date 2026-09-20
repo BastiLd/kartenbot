@@ -78,9 +78,9 @@ EINLADUNG_STUFEN = {
     10: [Design("Scarlet Witch", 2), Design("Namor", 2), Staub(10)],
 }
 
-# Ab dieser Einladung bekommt der Einlader für JEDE weitere Einladung Staub.
-EINLADUNG_AB_STUFE = 11
-EINLADUNG_STAUB_AB_11 = 5
+# Jede Einladung OHNE eigene Stufe (also 2, 3, 4, 6, 7, 8, 9, 11, 12, …)
+# bringt dem Einlader diesen Staub.
+EINLADUNG_STAUB_SONST = 5
 
 # Der EINGELADENE bekommt bei jeder bestätigten Einladung diesen Staub.
 EINGELADENER_STAUB = 5

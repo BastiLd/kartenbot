@@ -1560,6 +1560,7 @@ ADMIN_SLASH_COMMANDS = {
     "level-einrichten",
     "level-rolle",
     "level-kanal",
+    "level-vorschau",
 }
 
 def prune_admin_slash_commands() -> None:

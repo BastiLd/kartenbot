@@ -10,6 +10,7 @@ import pytest
 from botcommands import level_admin
 from level_reward_config import LEVEL_STUFEN
 from services import db as db_modul
+from services import designs
 from services import level_rewards as lr
 from tests.view_harness import make_interaction
 
@@ -22,6 +23,7 @@ def testdb(tmp_path, monkeypatch):
     asyncio.run(db_modul.close_db())
     monkeypatch.setattr(db_modul, "DB_PATH", str(tmp_path / "test.db"))
     monkeypatch.setattr(lr, "_schema_fuer_pfad", None)
+    monkeypatch.setattr(designs, "_schema_fuer_pfad", None)
 
 
 def _lauf(coro):
@@ -235,3 +237,129 @@ def test_level_ist_standardmaessig_aus(testdb):
         return aus, an, await lr.ist_aktiv(SERVER)
 
     assert _lauf(ablauf()) == (False, True, False)
+
+
+# --------------------------------------------------------------------------
+# /level-vorschau
+# --------------------------------------------------------------------------
+def _meldekanal():
+    """Kanal fuer die Meldungen - hier zaehlt nur, dass gesendet wird."""
+    return SimpleNamespace(id=777, send=AsyncMock())
+
+
+SPIELER = 999_000_901
+EINLADER = 999_000_902
+
+
+def _mitglied(uid, rollen_ids, name="Tester"):
+    return SimpleNamespace(id=uid, bot=False, display_name=name,
+                           roles=[SimpleNamespace(id=r) for r in rollen_ids])
+
+
+def _server_mit_mitgliedern(mitglieder, kanal=None):
+    server = SimpleNamespace(id=SERVER, name="Testserver", roles=[], me=SimpleNamespace(id=1),
+                             members=mitglieder)
+    server.get_channel = lambda _cid: kanal
+    server.get_member = lambda uid: next((m for m in mitglieder if m.id == uid), None)
+    return server
+
+
+async def _einladungen_eintragen(user_id, anzahl):
+    async with db_modul.db_context() as db:
+        await db.execute("INSERT INTO invite_stats (user_id, completed_invites) VALUES (?, ?) "
+                         "ON CONFLICT(user_id) DO UPDATE SET completed_invites = excluded.completed_invites",
+                         (int(user_id), int(anzahl)))
+        await db.commit()
+
+
+async def _vorbereiten(kanal=None):
+    await db_modul.init_db()
+    await lr.setze_zuordnung(SERVER, {5: 105, 15: 115})
+    await _einladungen_eintragen(EINLADER, 6)
+    server = _server_mit_mitgliedern(
+        [_mitglied(SPIELER, [115], "Spieler"), _mitglied(EINLADER, [], "Einlader"),
+         SimpleNamespace(id=3, bot=True, display_name="Bot", roles=[SimpleNamespace(id=115)])],
+        kanal)
+    if kanal is not None:
+        await lr.setze_meldungs_kanal(SERVER, kanal.id)
+    return server
+
+
+def test_vorschau_rechnet_aber_aendert_nichts(testdb):
+    async def ablauf():
+        server = await _vorbereiten()
+        daten = await level_admin.vorschau_sammeln(server)
+        return (daten, await lr.erledigte_schluessel(SPIELER), await lr.erledigte_schluessel(EINLADER),
+                await lr.ist_aktiv(SERVER))
+
+    daten, spieler_erledigt, einlader_erledigt, aktiv = _lauf(ablauf())
+    assert daten["spieler_level"] == 1 and daten["einlader"] == 1
+    # Spieler: Black Widow (5) + Rocket (15). Einlader (6): Cap + Spider-Man + 4x Staub.
+    assert daten["designs"] == 4
+    assert daten["staub"] == 5 + 5 * 4          # Stufe 5 plus die Einladungen 2, 3, 4, 6
+    assert spieler_erledigt == set() and einlader_erledigt == set(), "Vorschau vergibt nichts"
+    assert aktiv is False, "und schaltet nichts ein"
+
+
+def test_vorschau_text_nennt_jeden_eintrag(testdb):
+    async def ablauf():
+        server = await _vorbereiten()
+        return level_admin.vorschau_text(await level_admin.vorschau_sammeln(server))
+
+    text = _lauf(ablauf())
+    assert "Spieler (999000901) — Level 15" in text
+    assert "Einlader (999000902) — 6 Einladungen" in text
+    assert "Design 2 von Rocket" in text
+
+
+def test_vergeben_schaltet_ein_und_meldet_einmal(testdb):
+    async def ablauf():
+        kanal = _meldekanal()
+        server = await _vorbereiten(kanal)
+        daten = await level_admin.vorschau_sammeln(server)
+        text = await level_admin.vergeben_ausfuehren(server, daten, pause=0)
+        zweite = await level_admin.vergeben_ausfuehren(
+            server, await level_admin.vorschau_sammeln(server), pause=0)
+        return (kanal, text, zweite, await lr.ist_aktiv(SERVER),
+                await designs.freigeschaltet(SPIELER, "Rocket"),
+                await designs.freigeschaltet(EINLADER, "Captain America"))
+
+    kanal, text, zweite, aktiv, rocket, cap = _lauf(ablauf())
+    assert aktiv is True
+    assert rocket == {1, 2} and cap == {1, 2}
+    assert "**4** Designs" in text and "Level-System ist jetzt **an**" in text
+    assert kanal.send.await_count == 1, "eine Zusammenfassung, keine Einzelmeldungen"
+    assert "**0** Designs und **0** Infinitydust" in zweite, "beim zweiten Lauf gibt es nichts mehr"
+
+
+def test_knopf_fragt_zweimal(testdb):
+    async def ablauf():
+        kanal = _meldekanal()
+        server = await _vorbereiten(kanal)
+        daten = await level_admin.vorschau_sammeln(server)
+        view = level_admin.VorschauView(ADMIN, server, daten)
+        knopf = next(k for k in view.children if "vergeben" in (k.label or "").lower())
+        erste = _interaktion(server)
+        await knopf.callback(erste)
+        nach_erstem = await lr.ist_aktiv(SERVER)
+        zweite = _interaktion(server)
+        await knopf.callback(zweite)
+        return erste, nach_erstem, await lr.ist_aktiv(SERVER)
+
+    erste, nach_erstem, aktiv = _lauf(ablauf())
+    assert "Noch einmal klicken" in erste.response.edit_message.await_args.kwargs["content"]
+    assert nach_erstem is False, "der erste Klick vergibt noch nichts"
+    assert aktiv is True
+
+
+def test_abbrechen_laesst_alles_aus(testdb):
+    async def ablauf():
+        server = await _vorbereiten()
+        daten = await level_admin.vorschau_sammeln(server)
+        view = level_admin.VorschauView(ADMIN, server, daten)
+        abbrechen = next(k for k in view.children if k.label == "Abbrechen")
+        await abbrechen.callback(_interaktion(server))
+        return await lr.ist_aktiv(SERVER), await lr.erledigte_schluessel(SPIELER)
+
+    aktiv, erledigt = _lauf(ablauf())
+    assert aktiv is False and erledigt == set()
