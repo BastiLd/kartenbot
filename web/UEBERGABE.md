@@ -1,7 +1,8 @@
 # Übergabe — Kartenbot Web
 
-Stand: 7. August 2026, Version 1.4.1 — ergänzt am 19. September 2026 um
-Teil 1, Plan 1 (Designs, Web 1.5.0 / Bot 2.4.0, noch nicht in `main`).
+Stand: 7. August 2026, Version 1.4.1 — ergänzt am 19./20. September 2026 um
+Teil 1, Plan 1 (Designs) und Plan 2 (Level, Einladungen): Web 1.5.0,
+Bot 2.5.0, beides noch nicht in `main`.
 Diese Datei ist für eine neue Sitzung
 gedacht: Sie sagt, wo alles liegt, was fertig ist, was als Nächstes ansteht
 und welche Fallen es gibt.
@@ -300,12 +301,46 @@ sich Designs über den Grundnamen „Iron-Man".
 
 ---
 
-## Was als Nächstes ansteht
+## Teil 1, Plan 2: Level (MEE6) und Einladungen (Bot 2.5.0)
 
-**Teil 1, Plan 2** (`docs/dev/TEIL-1_PLAN-2_Level-und-Einladungen.md`):
-Freischaltung über MEE6-Level und Einladungen, bestehende Admin-Befehle
-verstecken. `designs.freischalten(..., quelle="level" | "einladung")` ist
-dafür schon vorbereitet.
+Stand 20. September 2026, gebaut nach `docs/dev/TEIL-1_PLAN-2_Level-und-Einladungen.md`,
+weiterhin auf `opus/teil-1-designs-und-level` (Tags `teil1-plan2-start`,
+`teil1-plan2-fertig`). **Nur Bot, keine Website.** Noch nicht in `main` oder
+`feature/bot`.
+
+| Teil | Wo |
+|---|---|
+| Belohnungen (einzige Quelle) | `level_reward_config.py` — LEVEL_STUFEN (Titel = MEE6-Rollennamen), LEVEL_BELOHNUNGEN, LEVEL_HINWEISE, EINLADUNG_STUFEN, EINLADUNG_STAUB_SONST, EINGELADENER_STAUB |
+| Logik | `services/level_rewards.py` — Stufe aus Rollen, fällige Belohnungen, Protokoll, Rückfragen, Einstellungen je Server |
+| Tabellen | `level_rollen`, `belohnungs_protokoll`, `level_rueckfragen` (`LEVEL_TABLES_SQL` in `services/db.py`); Einstellungen `level.aktiv.<gid>` / `level.kanal.<gid>` in `bot_settings` |
+| Ereignisse | `bot.py`: `_level_rollenwechsel` (in `on_member_update`, **vor** der Auszeit-Prüfung), `on_member_remove`, `_level_nachholen_beim_start` (höchstens 20) |
+| Rückfragen | `bot.py`: `LevelRueckfrageView`, `_level_verlust`, `_level_rueckfragen_anmelden`, `send_level_offen` |
+| Admin-Befehle | `botcommands/level_admin.py` (+ `admin_commands.py`): `/level-einrichten`, `/level-rolle`, `/level-kanal`, `/level-vorschau`, `/level-offen` |
+| Spieler-Befehle | `botcommands/level_player.py` (+ `player_commands.py`): `/level`, `/einladungen` |
+| Einladungen | `services/invite_store.py` → `level_rewards.einladung_belohnungen`; `invite_reward_config.py` wird nicht mehr genutzt |
+
+**Regeln, die der Code einhält:**
+- **Alles Level-bezogene ist aus**, bis jemand `/level-vorschau` → „Jetzt vergeben und
+  einschalten“ drückt (`level.aktiv.<guild>`, Standard 0).
+- **Höchstens einmal:** erst Platz im `belohnungs_protokoll` belegen, dann vergeben;
+  scheitert die Vergabe, wird der Platz wieder frei. `entzogen` zählt als nicht vergeben,
+  `behalten` als erledigt.
+- Gerechnet wird immer mit der **gesamten Rollenmenge** vorher/nachher — MEE6 gibt und
+  nimmt Rollen einzeln. 5 → 10 ist deshalb kein Verlust.
+- Der Bot **liest** Rollen nur; er vergibt und entfernt keine.
+
+**Zwei Abweichungen vom Plan (beide mit dem Nutzer abgestimmt):**
+1. **Einladungen:** Der Einlader bekommt bei **jeder** Einladung ohne eigene Stufe 5 Staub
+   (also auch 2, 3, 4, 6, 7, 8, 9), nicht erst ab der 11. Beim einmaligen Nachholen wird
+   dieser Staub **rückwirkend** vergeben.
+2. **Rückfrage-Knöpfe:** `durable_view_registry` braucht Guild und Kanal und funktioniert
+   deshalb in DMs nicht. Die Knöpfe tragen stattdessen die Nummer der Rückfrage in ihrer
+   `custom_id`, und `_level_rueckfragen_anmelden()` meldet beim Start alle offenen Fälle
+   wieder an.
+
+---
+
+## Was als Nächstes ansteht
 
 Stufe 5 ist abgeschlossen. Offen sind nur noch die Punkte, die schon vorher
 als „wäre als Nächstes sinnvoll" notiert waren:
@@ -465,6 +500,25 @@ Dev-Rolle. Freischalten geht ohne Code: Servereinstellungen → Integrationen
 Google-Drive-Freigaben und Discord-Anhang-Links zeigt Discord nicht bzw. nur
 eine Weile.
 
+**`on_member_update` steigt sofort aus, wenn sich die Auszeit nicht geändert
+hat** (`if vorher == nachher: return`). Alles, was auf Rollenwechsel reagieren
+soll, muss **davor** stehen — und gekapselt, damit ein Fehler dort die
+Auszeit-Mitschrift nicht verhindert.
+
+**Persistente Knöpfe in privaten Nachrichten** kann `durable_view_registry`
+nicht: Sie speichert Guild, Kanal und Nachricht. Für DMs die Kennung in die
+`custom_id` legen und die Views beim Start mit `bot.add_view(...)` neu
+anmelden (Muster: `LevelRueckfrageView`).
+
+**`bot.guilds` lässt sich in Tests nicht ersetzen** (Property ohne Setter).
+Funktionen, die darüber laufen, nehmen die Liste deshalb als Parameter
+entgegen (`_level_nachholen_beim_start(guilds=None)`).
+
+**`default_permissions` ist keine reine Anzeige:** Discord lässt Mitglieder
+ohne das Recht den Befehl auch nicht mehr aufrufen. Wer im Bot als Admin gilt,
+ohne Discord-Administrator zu sein, braucht eine Freigabe unter
+Servereinstellungen → Integrationen.
+
 **`git push` scheitert auf dem Entwicklungsrechner** an einem veralteten
 Credential-Helper in `~/.gitconfig` (zeigt auf eine gelöschte `gh.exe`).
 Einmal-Umweg ohne die Einstellung zu ändern:
@@ -498,8 +552,9 @@ git log --oneline -5
 
 Erwartung: sauberer Stand, 680 Tests grün, `main` und
 `feature/web-dashboard` auf demselben Commit. Auf dem Branch
-`opus/teil-1-designs-und-level` (nach Plan 1): **765 Tests** grün. Die
-`.venv` braucht dafür zusätzlich `pytest` und `web/requirements.txt`.
+`opus/teil-1-designs-und-level`: nach Plan 1 **765 Tests**, nach Plan 2
+**885 Tests** grün. Die `.venv` braucht dafür zusätzlich `pytest` und
+`web/requirements.txt`.
 
 **Und das Wichtigste vor jeder Fehlersuche:** Steht in der Seitenleiste
 „Oberfläche vX · Backend vY" oder ein Balken oben auf der Seite, ist nichts
