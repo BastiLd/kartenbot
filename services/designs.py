@@ -184,6 +184,20 @@ async def freigeschaltet(user_id: int, karten_name: Any) -> set[int]:
     return out
 
 
+async def anzahl_freigeschaltet(user_id: int) -> int:
+    """Wie viele zusätzliche Designs hat dieser Spieler? (Design 1 zählt nicht mit.)"""
+    try:
+        await ensure_schema()
+        async with db_context() as db:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM user_designs WHERE user_id = ?", (int(user_id),))
+            zeile = await cursor.fetchone()
+        return int(zeile[0]) if zeile else 0
+    except Exception:
+        logging.exception("Anzahl der Designs von %s nicht lesbar", user_id)
+        return 0
+
+
 async def freischalten(user_id: int, karten_name: Any, design: int, quelle: str = "admin") -> bool:
     """Ein Design freischalten. False, wenn es schon frei war oder nicht geht.
 

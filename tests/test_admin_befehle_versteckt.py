@@ -38,7 +38,7 @@ ADMIN_BEFEHLE = {
 # Für alle sichtbar.
 SPIELER_BEFEHLE = {
     "täglich", "eingeladen", "verbessern", "sammlung", "design", "anfang",
-    "mission", "geschichte", "kampf",
+    "mission", "geschichte", "kampf", "level", "einladungen",
 }
 
 

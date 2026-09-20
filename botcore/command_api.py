@@ -63,6 +63,7 @@ def build_command_api(global_ns: dict[str, Any]) -> CommandApi:
         "get_item_by_id",
         "_build_units_collection_field_value",
         "_unit_boss_revive_config",
+        "get_invite_completed_count",
         "get_invite_max_member_age_days",
         "get_karte_by_name",
         "get_latest_anfang_message",

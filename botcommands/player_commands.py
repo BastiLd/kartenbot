@@ -6,6 +6,7 @@ import discord
 from discord import app_commands
 
 from botcommands.design_view import DesignView, lade_design_karten
+from botcommands.level_player import einladungen_anzeigen, level_anzeigen
 from botcore.facades import PlayerFacade
 
 
@@ -333,6 +334,20 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
         embed = await view.aufbauen()
         await module._send_ephemeral(interaction, embed=embed, view=view)
 
+    @bot.tree.command(name="level", description="Zeigt deine Stufe und die nächste Belohnung")
+    @app_commands.guild_only()
+    async def level(interaction: discord.Interaction):
+        if not await module.is_channel_allowed(interaction):
+            return
+        await module._send_ephemeral(interaction, embed=await level_anzeigen(interaction))
+
+    @bot.tree.command(name="einladungen", description="Zeigt deinen Fortschritt bei den Einladungen")
+    async def einladungen(interaction: discord.Interaction):
+        if not await module.is_channel_allowed(interaction):
+            return
+        anzahl = await module.get_invite_completed_count(interaction.user.id)
+        await module._send_ephemeral(interaction, embed=await einladungen_anzeigen(interaction, anzahl))
+
     @bot.tree.command(
         name="anfang",
         description="Zeigt das Startmen\u00fc mit Schnellzugriff auf wichtige Funktionen",
@@ -466,6 +481,8 @@ def register_player_commands(bot, module: PlayerFacade) -> dict[str, object]:
         "fuse": fuse,
         "vault": vault,
         "design": design,
+        "level": level,
+        "einladungen": einladungen,
         "anfang": anfang,
     }
 
