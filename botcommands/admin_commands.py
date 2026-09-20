@@ -3,7 +3,7 @@ from __future__ import annotations
 import discord
 from discord import app_commands
 
-from botcommands import design_admin
+from botcommands import design_admin, level_admin
 from botcore.facades import AdminFacade
 from services.card_grant import grant_cards_to_users
 
@@ -865,7 +865,54 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
     async def _design_karte_vorschlaege(interaction: discord.Interaction, current: str):
         return design_admin.karten_vorschlaege(current)
 
+    # --- Level-Einrichtung (Plan 2). Nichts davon vergibt Rollen; der Bot
+    # liest sie nur. Solange level.aktiv aus ist, passiert ausserdem nichts.
+    @bot.tree.command(name="level-einrichten",
+                      description="Nur für Admins: Level-Rollen automatisch zuordnen")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    async def level_einrichten(interaction: discord.Interaction):
+        if not await module.is_channel_allowed(interaction):
+            return
+        if not await module.is_admin(interaction):
+            await interaction.response.send_message("❌ Keine Berechtigung.", ephemeral=True)
+            return
+        await level_admin.einrichten(interaction, interaction_checker=module.is_channel_allowed)
+
+    @bot.tree.command(name="level-rolle",
+                      description="Nur für Admins: eine Level-Rolle von Hand zuordnen")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    @app_commands.describe(level="Welche Stufe?", rolle="Welche Rolle? Leer lassen = Zuordnung entfernen")
+    @app_commands.choices(level=[
+        app_commands.Choice(name=text, value=wert) for text, wert in level_admin.stufen_auswahl()
+    ])
+    async def level_rolle(interaction: discord.Interaction, level: int,
+                          rolle: discord.Role | None = None):
+        if not await module.is_channel_allowed(interaction):
+            return
+        if not await module.is_admin(interaction):
+            await interaction.response.send_message("❌ Keine Berechtigung.", ephemeral=True)
+            return
+        await level_admin.rolle_setzen(interaction, level, rolle)
+
+    @bot.tree.command(name="level-kanal",
+                      description="Nur für Admins: Kanal für Level-Meldungen festlegen")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    @app_commands.describe(kanal="In welchem Kanal sollen die Meldungen erscheinen?")
+    async def level_kanal(interaction: discord.Interaction, kanal: discord.TextChannel):
+        if not await module.is_channel_allowed(interaction):
+            return
+        if not await module.is_admin(interaction):
+            await interaction.response.send_message("❌ Keine Berechtigung.", ephemeral=True)
+            return
+        await level_admin.kanal_setzen(interaction, kanal)
+
     return {
+        "level_einrichten": level_einrichten,
+        "level_rolle": level_rolle,
+        "level_kanal": level_kanal,
         "design_geben": design_geben,
         "design_entziehen": design_entziehen,
         "configure_group": configure_group,

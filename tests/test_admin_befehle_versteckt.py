@@ -26,6 +26,9 @@ ADMIN_BEFEHLE = {
     "stats_e": "administrator",
     "design-geben": "administrator",
     "design-entziehen": "administrator",
+    "level-einrichten": "administrator",
+    "level-rolle": "administrator",
+    "level-kanal": "administrator",
     "kanal-freigeben": "manage_guild",
     "konfigurieren": "manage_guild",
 }

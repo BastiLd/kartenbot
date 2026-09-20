@@ -1556,6 +1556,9 @@ ADMIN_SLASH_COMMANDS = {
     "bot_log",
     "design-geben",
     "design-entziehen",
+    "level-einrichten",
+    "level-rolle",
+    "level-kanal",
 }
 
 def prune_admin_slash_commands() -> None:

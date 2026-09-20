@@ -330,3 +330,114 @@ async def behalte(user_id: int, belohnungen: Iterable[Faellig]) -> int:
 
 def eingeladener_staub() -> int:
     return int(EINGELADENER_STAUB)
+
+
+# --------------------------------------------------------------------------
+# Einstellungen je Server: Rollen-Zuordnung, Meldungskanal, an/aus
+# --------------------------------------------------------------------------
+AKTIV_SCHLUESSEL = "level.aktiv.{}"
+KANAL_SCHLUESSEL = "level.kanal.{}"
+
+
+def _namensschluessel(name: str) -> str:
+    """Rollennamen vergleichbar machen: Groß/klein egal, Leerzeichen normiert."""
+    return " ".join(str(name or "").split()).casefold()
+
+
+def passende_rollen(rollen: Iterable[tuple[int, str]]) -> dict[int, int]:
+    """Vorschlag Stufe -> Rollen-ID anhand der Rollennamen aus der Konfiguration.
+
+    ``rollen`` ist eine Liste aus (Rollen-ID, Name) des Servers.
+    """
+    nach_name: dict[str, int] = {}
+    for rolle_id, name in rollen or ():
+        nach_name.setdefault(_namensschluessel(name), int(rolle_id))
+    out: dict[int, int] = {}
+    for stufe, titel_text in LEVEL_STUFEN.items():
+        treffer = nach_name.get(_namensschluessel(titel_text))
+        if treffer:
+            out[int(stufe)] = int(treffer)
+    return out
+
+
+async def zuordnung_von(guild_id: int) -> dict[int, int]:
+    """Stufe -> Rollen-ID für diesen Server."""
+    try:
+        await ensure_schema()
+        async with db_context() as db:
+            cursor = await db.execute(
+                "SELECT level, role_id FROM level_rollen WHERE guild_id = ?", (int(guild_id),))
+            return {int(stufe): int(rolle) for stufe, rolle in await cursor.fetchall()}
+    except Exception:
+        logging.exception("Level-Zuordnung für %s nicht lesbar", guild_id)
+        return {}
+
+
+async def setze_zuordnung(guild_id: int, zuordnung: dict[int, int]) -> int:
+    """Die gefundenen Zuordnungen speichern (vorhandene werden überschrieben)."""
+    await ensure_schema()
+    async with db_context() as db:
+        for stufe, rolle_id in (zuordnung or {}).items():
+            await db.execute(
+                "INSERT INTO level_rollen (guild_id, level, role_id) VALUES (?, ?, ?) "
+                "ON CONFLICT(guild_id, level) DO UPDATE SET role_id = excluded.role_id",
+                (int(guild_id), int(stufe), int(rolle_id)))
+        await db.commit()
+    return len(zuordnung or {})
+
+
+async def setze_rolle(guild_id: int, stufe: int, rolle_id: int | None) -> None:
+    """Eine einzelne Zuordnung setzen oder (rolle_id = None) entfernen."""
+    await ensure_schema()
+    async with db_context() as db:
+        if rolle_id is None:
+            await db.execute(
+                "DELETE FROM level_rollen WHERE guild_id = ? AND level = ?",
+                (int(guild_id), int(stufe)))
+        else:
+            await db.execute(
+                "INSERT INTO level_rollen (guild_id, level, role_id) VALUES (?, ?, ?) "
+                "ON CONFLICT(guild_id, level) DO UPDATE SET role_id = excluded.role_id",
+                (int(guild_id), int(stufe), int(rolle_id)))
+        await db.commit()
+
+
+async def _einstellung(schluessel: str) -> str:
+    async with db_context() as db:
+        cursor = await db.execute("SELECT value FROM bot_settings WHERE key = ?", (schluessel,))
+        zeile = await cursor.fetchone()
+    return str(zeile[0]) if zeile else ""
+
+
+async def _setze_einstellung(schluessel: str, wert: str) -> None:
+    async with db_context() as db:
+        await db.execute(
+            "INSERT INTO bot_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (schluessel, str(wert)))
+        await db.commit()
+
+
+async def ist_aktiv(guild_id: int) -> bool:
+    """Standard ist AUS: Ohne ausdrückliches Einschalten passiert nichts."""
+    try:
+        return await _einstellung(AKTIV_SCHLUESSEL.format(int(guild_id))) == "1"
+    except Exception:
+        logging.exception("Level-Schalter für %s nicht lesbar", guild_id)
+        return False
+
+
+async def setze_aktiv(guild_id: int, aktiv: bool) -> None:
+    await _setze_einstellung(AKTIV_SCHLUESSEL.format(int(guild_id)), "1" if aktiv else "0")
+
+
+async def meldungs_kanal(guild_id: int) -> int:
+    try:
+        wert = await _einstellung(KANAL_SCHLUESSEL.format(int(guild_id)))
+        return int(wert) if wert else 0
+    except Exception:
+        logging.exception("Level-Kanal für %s nicht lesbar", guild_id)
+        return 0
+
+
+async def setze_meldungs_kanal(guild_id: int, kanal_id: int) -> None:
+    await _setze_einstellung(KANAL_SCHLUESSEL.format(int(guild_id)), str(int(kanal_id)))
