@@ -160,6 +160,13 @@ class SmokeTests(unittest.TestCase):
         asyncio.run(_run())
 
     def test_invite_reward_uses_configured_fixed_variant(self) -> None:
+        """Alte Einladungs-Belohnung (Iron-Man).
+
+        Seit v2.5.0 wird sie nicht mehr vergeben — die Einladungs-Belohnungen
+        stehen in level_reward_config.py (siehe tests/test_einladungen.py).
+        Die Funktion bleibt nur wegen alter Importe; dieser Test hält fest,
+        dass sie weiterhin sauber auflösbar ist.
+        """
         card = configured_first_invite_reward_card()
         self.assertEqual(card.get("variant_id"), "Standard_Iron-Man")
         self.assertEqual(card.get("name"), "Standard_Iron-Man")

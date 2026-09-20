@@ -11378,15 +11378,16 @@ class InviteConfirmationView(DurableView):
             im = inv_u.mention if inv_u else f"<@{inv_id}>"
             em = exp_u.mention if exp_u else f"<@{exp_id}>"
             summary = result["reward_summary"]
-            if summary.get("kind") == "first":
-                extra = (
-                    f"\n\n🃏 {im} hat die Karte **{summary.get('card_name', '?')}** erhalten.\n"
-                    f"💎 {em} hat **5 Infinitydust** erhalten."
-                )
-            else:
-                extra = f"\n\n💎 {im} und {em} haben je **5 Infinitydust** erhalten."
-            if summary.get("kind") == "first":
-                await _send_private_invite_card_reward(interaction, inv_id, str(summary.get("card_name") or ""))
+            zeilen = [f"Das war Einladung **Nr. {summary.get('anzahl', '?')}** für {im}."]
+            for design in summary.get("designs") or []:
+                zeilen.append(f"🎨 {im} hat **Design {design['nummer']} von {design['karte']}** "
+                              f"freigeschaltet — auswählen mit `/design`.")
+            if summary.get("staub_einlader"):
+                zeilen.append(f"💎 {im} hat **{summary['staub_einlader']} Infinitydust** erhalten.")
+            zeilen.append(f"💎 {em} hat **{summary.get('staub_eingeladener', 0)} Infinitydust** erhalten.")
+            extra = "\n\n" + "\n".join(zeilen)
+            if summary.get("designs"):
+                await _send_private_invite_design_reward(interaction, inv_id, summary["designs"])
             done = discord.Embed(
                 title="🎉 Einladung abgeschlossen",
                 description=game_ui_texts.INVITE_SUCCESS.format(inviter=im, invitee=em) + extra,
@@ -11409,49 +11410,30 @@ class InviteConfirmationView(DurableView):
                 logging.exception("Failed to refresh invite confirmation view")
 
 
-def _build_invite_reward_card_embed(card_name: str) -> discord.Embed:
-    card = _card_by_name_local(card_name) or {"name": card_name}
-    resolved_name = str(card.get("name") or card_name or "Unbekannte Karte")
-    embed = discord.Embed(
-        title=f"Einladungs-Belohnung: {resolved_name}",
-        description=str(card.get("beschreibung") or "Du hast diese Karte für deine erste bestätigte Einladung erhalten."),
-        color=_card_rarity_color(card) or 0x00FF00,
-    )
-    rarity = str(card.get("seltenheit") or "").strip()
-    if rarity:
-        embed.add_field(name="Seltenheit", value=rarity, inline=True)
-    if card.get("hp") is not None:
-        embed.add_field(name="HP", value=str(card.get("hp")), inline=True)
-    attacks = card.get("attacks") if isinstance(card, dict) else None
-    if isinstance(attacks, list) and attacks:
-        lines: list[str] = []
-        for idx, attack in enumerate(attacks[:4], start=1):
-            if not isinstance(attack, dict):
-                continue
-            damage = attack.get("damage")
-            if isinstance(damage, list) and len(damage) >= 2:
-                damage_text = f"{damage[0]}-{damage[1]}"
-            elif damage is not None:
-                damage_text = str(damage)
-            else:
-                damage_text = "-"
-            info = str(attack.get("info") or "").strip()
-            suffix = f" - {info}" if info else ""
-            lines.append(f"{idx}. {attack.get('name', 'Attacke')} ({damage_text}){suffix}")
-        if lines:
-            embed.add_field(name="Attacken", value="\n".join(lines)[:1024], inline=False)
-    image_url = str(card.get("bild") or "").strip()
-    if image_url:
-        embed.set_image(url=image_url)
+def _build_invite_design_embed(designs_liste: list[dict[str, Any]]) -> discord.Embed:
+    """Was der Einlader freigeschaltet hat — mit Bild, sofern eines eingetragen ist."""
+    zeilen = []
+    bilder = []
+    for eintrag in designs_liste:
+        karte, nummer = str(eintrag.get("karte") or ""), int(eintrag.get("nummer") or 2)
+        link = designs.bild_link(karte, nummer)
+        zeilen.append(f"🎨 **Design {nummer} von {karte}**" + ("" if link else " — das Bild folgt."))
+        if link:
+            bilder.append(link)
+    zeilen.append("\nWähle es mit `/design` aus. Ein Design ändert nur das Aussehen — "
+                  "Werte und Angriffe bleiben gleich.")
+    embed = discord.Embed(title="Einladungs-Belohnung", description="\n".join(zeilen), color=0x00FF00)
+    if len(bilder) == 1:
+        embed.set_image(url=bilder[0])
     return embed
 
 
-async def _send_private_invite_card_reward(
+async def _send_private_invite_design_reward(
     interaction: discord.Interaction,
     inviter_id: int,
-    card_name: str,
+    designs_liste: list[dict[str, Any]],
 ) -> None:
-    embed = _build_invite_reward_card_embed(card_name)
+    embed = _build_invite_design_embed(designs_liste)
     if interaction.user.id == int(inviter_id):
         try:
             await interaction.followup.send(embed=embed, ephemeral=True)

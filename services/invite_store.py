@@ -6,8 +6,9 @@ from typing import Any
 from db import db_context
 from invite_reward_config import INVITE_FIRST_REWARD_CARD_VARIANT, INVITE_FIRST_REWARD_FALLBACK_VARIANT
 from karten import karten
+from services import level_rewards
 from services.card_variants import build_runtime_card
-from services.user_data import add_infinitydust, check_and_add_karte
+from services.user_data import add_infinitydust
 
 INVITE_MAX_MEMBER_AGE_DAYS_KEY = "invite.max_member_age_days"
 DEFAULT_INVITE_MAX_MEMBER_AGE_DAYS = 7
@@ -303,15 +304,21 @@ async def finalize_invite_pending_if_ready(pending_id: int, *, alpha_enabled: bo
             await db.rollback()
             raise
 
-    if prior == 0:
-        card = configured_first_invite_reward_card()
-        await check_and_add_karte(inviter_id, card)
-        await add_infinitydust(invitee_id, 5)
-        reward_summary: dict[str, Any] = {"kind": "first", "card_name": str(card.get("name") or "")}
-    else:
-        await add_infinitydust(inviter_id, 5)
-        await add_infinitydust(invitee_id, 5)
-        reward_summary = {"kind": "repeat"}
+    # Belohnungen nach level_reward_config (seit v2.5.0): Der Einlader bekommt
+    # je nach Anzahl ein Design oder Staub, der Eingeladene immer Staub.
+    # Die Karte Iron-Man gibt es hier nicht mehr.
+    neue_anzahl = prior + 1
+    ergebnis = await level_rewards.vergebe(
+        inviter_id, level_rewards.einladung_belohnungen(neue_anzahl), level_rewards.QUELLE_EINLADUNG)
+    eingeladener_staub = level_rewards.eingeladener_staub()
+    await add_infinitydust(invitee_id, eingeladener_staub)
+    reward_summary: dict[str, Any] = {
+        "anzahl": neue_anzahl,
+        "designs": [{"karte": f.belohnung.karte, "nummer": int(f.belohnung.nummer)}
+                    for f in ergebnis.vergeben if f.art == "design"],
+        "staub_einlader": ergebnis.staub,
+        "staub_eingeladener": eingeladener_staub,
+    }
 
     return {
         "inviter_id": inviter_id,

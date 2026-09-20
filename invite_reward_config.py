@@ -1,4 +1,10 @@
 """
+WIRD NICHT MEHR GENUTZT (seit v2.5.0).
+
+Die Einladungs-Belohnungen stehen jetzt in `level_reward_config.py`
+(EINLADUNG_STUFEN und EINLADUNG_STAUB_SONST). Diese Datei bleibt nur, damit
+alte Importe und Tests weiter funktionieren.
+
 Konfiguration für die feste /eingeladen-Belohnung.
 
 Trage hier die genaue Karten-Variante ein, die der Einlader bei seiner
