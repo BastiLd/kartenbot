@@ -198,7 +198,7 @@ from services.runtime_store import (
 from services.stats_export import build_stats_workbook
 from services.card_grant import grant_cards_to_users
 from services import (bot_versions, card_store, card_testrun, designs, history_scan,
-                      ki_gegner, move_log, ollama_bot, role_manager, web_jobs)
+                      ki_gegner, level_rewards, move_log, ollama_bot, role_manager, web_jobs)
 from simulation import loader as simulation_loader
 from services.user_data import (
     add_exact_card_variant_once,
@@ -237,6 +237,7 @@ DUST_MENU_AMOUNTS = [5, 10, 15, 20, 25, 30]
 FIGHT_OPPONENT_ROLE_ID = 1482325886471766090
 _interaction_timestamps = deque()
 _persistent_views_registered = False
+_level_nachholen_erledigt = False
 
 __version__ = "2.4.0"
 
@@ -2580,6 +2581,15 @@ async def on_ready():
             _persistent_views_registered = True
         except Exception:
             logging.exception("Failed to register persistent views")
+    # Aufstiege nachholen, die waehrend einer Auszeit des Bots passiert sind.
+    # Nur einmal je Start und nur, wenn das Level-System eingeschaltet ist.
+    global _level_nachholen_erledigt
+    if not _level_nachholen_erledigt:
+        _level_nachholen_erledigt = True
+        try:
+            await _level_nachholen_beim_start()
+        except Exception:
+            logging.exception("Level-Nachholen beim Start fehlgeschlagen")
     try:
         await _restore_durable_views()
     except Exception:
@@ -2945,6 +2955,140 @@ async def afk_tracker_loop() -> None:
         await asyncio.sleep(300)
 
 
+async def _level_stufen(before: discord.Member, after: discord.Member) -> tuple[int, int]:
+    """Stufe vor und nach dem Rollenwechsel — immer aus der GESAMTEN Rollenmenge.
+
+    MEE6 gibt und nimmt Rollen einzeln; nur der Vergleich der ganzen Menge
+    sagt, ob jemand auf- oder abgestiegen ist.
+    """
+    zuordnung = await level_rewards.zuordnung_von(after.guild.id)
+    if not zuordnung:
+        return 0, 0
+    vorher = level_rewards.stufe_aus_rollen([r.id for r in before.roles], zuordnung)
+    nachher = level_rewards.stufe_aus_rollen([r.id for r in after.roles], zuordnung)
+    return vorher, nachher
+
+
+async def _sende_level_meldung(guild: discord.Guild, member: discord.Member, stufe: int,
+                               ergebnis) -> None:
+    """Meldung im eingestellten Kanal. Fehlt er oder fehlen Rechte: still überspringen."""
+    kanal_id = await level_rewards.meldungs_kanal(guild.id)
+    if not kanal_id:
+        logging.info("Level-Meldung übersprungen: kein Kanal für %s eingestellt", guild.id)
+        return
+    kanal = guild.get_channel(int(kanal_id))
+    if kanal is None:
+        logging.info("Level-Meldung übersprungen: Kanal %s gibt es nicht mehr", kanal_id)
+        return
+    titel_text = level_rewards.titel(stufe) or f"Stufe {stufe}"
+    zeilen = [f"🎖️ {member.mention} ist jetzt **{titel_text}** (Stufe {stufe})"]
+    designs_mit_bild = []
+    for eintrag in ergebnis.vergeben:
+        zeilen.append(f"• {eintrag.text()} freigeschaltet")
+        if eintrag.art == "design":
+            link = designs.bild_link(eintrag.belohnung.karte, int(eintrag.belohnung.nummer))
+            if link:
+                designs_mit_bild.append(link)
+    if ergebnis.vergeben and not designs_mit_bild:
+        # Kein leeres Bild einbetten, wenn der Link noch fehlt.
+        zeilen.append("Das Bild folgt.")
+    zeilen.append("Anschauen und auswählen mit `/design`.")
+    embed = discord.Embed(title="Neue Stufe erreicht", description="\n".join(zeilen), color=0xF1C40F)
+    if len(designs_mit_bild) == 1:
+        embed.set_image(url=designs_mit_bild[0])
+    try:
+        await kanal.send(embed=embed)
+    except Exception:
+        logging.exception("Level-Meldung konnte nicht gesendet werden (Kanal %s)", kanal_id)
+
+
+async def _level_aufstieg(member: discord.Member, stufe: int):
+    """Fällige Belohnungen vergeben und melden. Gibt das Ergebnis zurück."""
+    schon = await level_rewards.erledigte_schluessel(member.id)
+    faellig = level_rewards.faellige_belohnungen(stufe, schon)
+    ergebnis = await level_rewards.vergebe(member.id, faellig, level_rewards.QUELLE_LEVEL)
+    if ergebnis.vergeben:
+        await _sende_level_meldung(member.guild, member, stufe, ergebnis)
+    for eintrag, grund in ergebnis.fehler:
+        logging.warning("Level-Belohnung %s für %s nicht vergeben: %s",
+                        eintrag.schluessel, member.id, grund)
+    return ergebnis
+
+
+LEVEL_NACHHOLEN_MAX = 20
+
+
+async def _level_offene_aufstiege(guild: discord.Guild) -> list[tuple[discord.Member, int]]:
+    """Wer hätte laut seinen Rollen etwas offen? Ändert nichts."""
+    zuordnung = await level_rewards.zuordnung_von(guild.id)
+    if not zuordnung:
+        return []
+    rollen_ids = set(zuordnung.values())
+    offen: list[tuple[discord.Member, int]] = []
+    for member in guild.members:
+        if getattr(member, "bot", False):
+            continue
+        eigene = {r.id for r in member.roles}
+        if not eigene & rollen_ids:
+            continue
+        stufe = level_rewards.stufe_aus_rollen(eigene, zuordnung)
+        if not stufe:
+            continue
+        schon = await level_rewards.erledigte_schluessel(member.id)
+        if level_rewards.faellige_belohnungen(stufe, schon):
+            offen.append((member, stufe))
+    return offen
+
+
+async def _level_nachholen_beim_start(guilds: list[discord.Guild] | None = None) -> None:
+    """Aufstiege nachholen, die der Bot verpasst hat, weil er aus war.
+
+    Nur wenn das Level-System an ist, und höchstens für ein paar Leute — sonst
+    würde nach einer längeren Auszeit eine Meldungsflut losgehen. In dem Fall
+    bekommt der Besitzer eine kurze Nachricht und nutzt /level-vorschau.
+    """
+    for guild in (bot.guilds if guilds is None else guilds):
+        try:
+            if not await level_rewards.ist_aktiv(guild.id):
+                continue
+            offen = await _level_offene_aufstiege(guild)
+            if not offen:
+                continue
+            if len(offen) > LEVEL_NACHHOLEN_MAX:
+                await _send_basti_log_dm(
+                    f"{len(offen)} Spieler warten auf Level-Belohnungen. "
+                    f"Bitte `/level-vorschau` nutzen.",
+                    context_lines=[f"🎖️ Server: {guild.name}"],
+                    title="Level-Belohnungen offen")
+                continue
+            vergeben = 0
+            for member, stufe in offen:
+                ergebnis = await _level_aufstieg(member, stufe)
+                vergeben += len(ergebnis.vergeben)
+                await asyncio.sleep(role_manager.PAUSE_BETWEEN_CALLS)
+            logging.info("Level-Nachholen auf %s: %s Belohnungen für %s Spieler",
+                         guild.id, vergeben, len(offen))
+        except Exception:
+            logging.exception("Level-Nachholen auf %s fehlgeschlagen", guild.id)
+
+
+async def _level_rollenwechsel(before: discord.Member, after: discord.Member) -> None:
+    """Prüft bei jedem Rollenwechsel, ob jemand eine Level-Stufe erreicht hat.
+
+    Ist das Level-System auf diesem Server aus, passiert gar nichts.
+    """
+    if {r.id for r in before.roles} == {r.id for r in after.roles}:
+        return                      # nichts an den Rollen geändert: keine Abfrage
+    vorher, nachher = await _level_stufen(before, after)
+    if vorher == nachher:
+        return
+    if not await level_rewards.ist_aktiv(after.guild.id):
+        logging.debug("Level-System auf %s ist aus — keine Vergabe", after.guild.id)
+        return
+    if nachher > vorher:
+        await _level_aufstieg(after, nachher)
+
+
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
     """Schreibt Auszeiten (Timeouts) mit, sobald sie gesetzt oder aufgehoben werden.
@@ -2953,6 +3097,14 @@ async def on_member_update(before: discord.Member, after: discord.Member):
     ab jetzt festgehalten wird, bleibt dauerhaft nachvollziehbar — egal ob die
     Auszeit über die Website, einen anderen Bot oder von Hand gesetzt wurde.
     """
+    # Zuerst die Level-Prüfung: Die Auszeit-Mitschrift unten steigt sofort aus,
+    # wenn sich die Auszeit nicht geändert hat — ein Rollenwechsel käme dort
+    # nie an. Gekapselt, damit ein Fehler hier die Mitschrift nicht verhindert.
+    try:
+        await _level_rollenwechsel(before, after)
+    except Exception:
+        logging.exception("Level-Prüfung beim Rollenwechsel fehlgeschlagen")
+
     vorher = before.timed_out_until
     nachher = after.timed_out_until
     if vorher == nachher:
