@@ -921,7 +921,20 @@ def register_admin_commands(bot, module: AdminFacade) -> dict[str, object]:
             return
         await level_admin.vorschau(interaction, interaction_checker=module.is_channel_allowed)
 
+    @bot.tree.command(name="level-offen",
+                      description="Nur für Admins: offene Rückfragen zu verlorenen Level-Rollen")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    async def level_offen(interaction: discord.Interaction):
+        if not await module.is_channel_allowed(interaction):
+            return
+        if not await module.is_admin(interaction):
+            await interaction.response.send_message("❌ Keine Berechtigung.", ephemeral=True)
+            return
+        await module.send_level_offen(interaction)
+
     return {
+        "level_offen": level_offen,
         "level_vorschau": level_vorschau,
         "level_einrichten": level_einrichten,
         "level_rolle": level_rolle,

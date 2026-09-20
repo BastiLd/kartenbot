@@ -24,6 +24,7 @@ EXPECTED_ALPHA_COMMANDS = {
     "konfigurieren liste",
     "level-einrichten",
     "level-kanal",
+    "level-offen",
     "level-rolle",
     "level-vorschau",
     "mission",

@@ -347,6 +347,109 @@ def eingeladener_staub() -> int:
 
 
 # --------------------------------------------------------------------------
+# Rückfragen: jemand hat eine Level-Rolle verloren
+# --------------------------------------------------------------------------
+GRUND_ROLLE_VERLOREN = "rolle_verloren"
+GRUND_SERVER_VERLASSEN = "server_verlassen"
+
+
+async def vergebene_schluessel(user_id: int) -> set[str]:
+    """Nur die Belohnungen mit Status „vergeben" — „behalten" wird nie wieder gefragt."""
+    await ensure_schema()
+    async with db_context() as db:
+        cursor = await db.execute(
+            "SELECT schluessel FROM belohnungs_protokoll WHERE user_id = ? AND status = ?",
+            (int(user_id), STATUS_VERGEBEN))
+        return {str(z[0]) for z in await cursor.fetchall()}
+
+
+async def betroffene_belohnungen(user_id: int, von_stufe: int, auf_stufe: int) -> list[Faellig]:
+    """Was dieser Spieler nur wegen der verlorenen Stufen hat (und noch hat)."""
+    vergeben = await vergebene_schluessel(user_id)
+    return [f for f in belohnungen_zwischen(von_stufe, auf_stufe) if f.schluessel in vergeben]
+
+
+async def offene_rueckfrage(guild_id: int, user_id: int) -> dict[str, Any] | None:
+    await ensure_schema()
+    async with db_context() as db:
+        cursor = await db.execute(
+            "SELECT * FROM level_rueckfragen WHERE guild_id = ? AND user_id = ? AND status = 'offen' "
+            "ORDER BY id DESC LIMIT 1", (int(guild_id), int(user_id)))
+        zeile = await cursor.fetchone()
+    return dict(zeile) if zeile else None
+
+
+async def rueckfrage_anlegen(guild_id: int, user_id: int, von_stufe: int, auf_stufe: int,
+                             grund: str) -> int:
+    """Neue Rückfrage — oder die offene erweitern, wenn es schon eine gibt.
+
+    Bei einem MEE6-Reset fallen viele Rollen fast gleichzeitig. Solange eine
+    Rückfrage offen ist, wird sie nur erweitert und nicht neu gestellt.
+    """
+    await ensure_schema()
+    offen = await offene_rueckfrage(guild_id, user_id)
+    async with db_context() as db:
+        if offen:
+            await db.execute(
+                "UPDATE level_rueckfragen SET von_stufe = ?, auf_stufe = ? WHERE id = ?",
+                (max(int(offen["von_stufe"]), int(von_stufe)),
+                 min(int(offen["auf_stufe"]), int(auf_stufe)), int(offen["id"])))
+            await db.commit()
+            return 0                # 0 heisst: schon bekannt, keine neue Nachricht
+        cursor = await db.execute(
+            "INSERT INTO level_rueckfragen (guild_id, user_id, von_stufe, auf_stufe, grund, "
+            "status, erstellt_am) VALUES (?, ?, ?, ?, ?, 'offen', ?)",
+            (int(guild_id), int(user_id), int(von_stufe), int(auf_stufe), str(grund), _jetzt()))
+        neu = int(cursor.lastrowid)
+        await db.commit()
+    return neu
+
+
+async def rueckfrage(rueckfrage_id: int) -> dict[str, Any] | None:
+    await ensure_schema()
+    async with db_context() as db:
+        cursor = await db.execute("SELECT * FROM level_rueckfragen WHERE id = ?", (int(rueckfrage_id),))
+        zeile = await cursor.fetchone()
+    return dict(zeile) if zeile else None
+
+
+async def offene_rueckfragen(guild_id: int | None = None) -> list[dict[str, Any]]:
+    await ensure_schema()
+    sql = "SELECT * FROM level_rueckfragen WHERE status = 'offen'"
+    werte: list[Any] = []
+    if guild_id:
+        sql += " AND guild_id = ?"
+        werte.append(int(guild_id))
+    async with db_context() as db:
+        cursor = await db.execute(sql + " ORDER BY id", tuple(werte))
+        return [dict(z) for z in await cursor.fetchall()]
+
+
+async def rueckfrage_nachricht_setzen(rueckfrage_id: int, nachricht_id: int) -> None:
+    await ensure_schema()
+    async with db_context() as db:
+        await db.execute("UPDATE level_rueckfragen SET nachricht_id = ? WHERE id = ?",
+                         (int(nachricht_id), int(rueckfrage_id)))
+        await db.commit()
+
+
+async def rueckfrage_entscheiden(rueckfrage_id: int, behalten: bool) -> tuple[bool, int]:
+    """Behalten oder Entziehen. Gibt (hat geklappt, Anzahl Belohnungen) zurück."""
+    fall = await rueckfrage(rueckfrage_id)
+    if not fall or str(fall.get("status")) != "offen":
+        return False, 0
+    betroffen = await betroffene_belohnungen(int(fall["user_id"]), int(fall["von_stufe"]),
+                                             int(fall["auf_stufe"]))
+    anzahl = (await behalte(int(fall["user_id"]), betroffen) if behalten
+              else await entziehe(int(fall["user_id"]), betroffen))
+    async with db_context() as db:
+        await db.execute("UPDATE level_rueckfragen SET status = ? WHERE id = ?",
+                         ("behalten" if behalten else "entzogen", int(rueckfrage_id)))
+        await db.commit()
+    return True, anzahl
+
+
+# --------------------------------------------------------------------------
 # Einstellungen je Server: Rollen-Zuordnung, Meldungskanal, an/aus
 # --------------------------------------------------------------------------
 AKTIV_SCHLUESSEL = "level.aktiv.{}"

@@ -1561,6 +1561,7 @@ ADMIN_SLASH_COMMANDS = {
     "level-rolle",
     "level-kanal",
     "level-vorschau",
+    "level-offen",
 }
 
 def prune_admin_slash_commands() -> None:
@@ -2587,6 +2588,7 @@ async def on_ready():
     global _level_nachholen_erledigt
     if not _level_nachholen_erledigt:
         _level_nachholen_erledigt = True
+        await _level_rueckfragen_anmelden()
         try:
             await _level_nachholen_beim_start()
         except Exception:
@@ -3073,6 +3075,135 @@ async def _level_nachholen_beim_start(guilds: list[discord.Guild] | None = None)
             logging.exception("Level-Nachholen auf %s fehlgeschlagen", guild.id)
 
 
+class LevelRueckfrageView(ui.View):
+    """Behalten oder Entziehen, wenn jemand eine Level-Rolle verloren hat.
+
+    Die Nachricht geht als private Nachricht an den Besitzer. Für private
+    Nachrichten gibt es die übliche Neustart-Sicherung (durable_view_registry)
+    nicht — sie braucht Server und Kanal. Deshalb tragen die Knöpfe die
+    Nummer der Rückfrage in ihrer Kennung, und beim Start werden alle offenen
+    Rückfragen wieder angemeldet (_level_rueckfragen_anmelden).
+    """
+
+    def __init__(self, rueckfrage_id: int):
+        super().__init__(timeout=None)
+        self.rueckfrage_id = int(rueckfrage_id)
+        behalten = ui.Button(label="Behalten", style=discord.ButtonStyle.success,
+                             custom_id=f"level_rueckfrage:behalten:{self.rueckfrage_id}")
+        behalten.callback = self._behalten
+        self.add_item(behalten)
+        entziehen = ui.Button(label="Entziehen", style=discord.ButtonStyle.danger,
+                              custom_id=f"level_rueckfrage:entziehen:{self.rueckfrage_id}")
+        entziehen.callback = self._entziehen
+        self.add_item(entziehen)
+
+    async def _darf(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == BASTI_USER_ID or await is_admin(interaction):
+            return True
+        await interaction.response.send_message("❌ Keine Berechtigung.", ephemeral=True)
+        return False
+
+    async def _entscheiden(self, interaction: discord.Interaction, behalten: bool) -> None:
+        if not await self._darf(interaction):
+            return
+        geklappt, anzahl = await level_rewards.rueckfrage_entscheiden(self.rueckfrage_id, behalten)
+        if not geklappt:
+            await interaction.response.edit_message(
+                content="Diese Rückfrage wurde schon entschieden.", embed=None, view=None)
+            return
+        text = (f"✅ **Behalten** — {anzahl} Belohnung(en) bleiben. Es wird nicht mehr nachgefragt."
+                if behalten else
+                f"🗑️ **Entzogen** — {anzahl} Belohnung(en) wurden weggenommen. "
+                f"Erreicht die Person die Stufe erneut, bekommt sie sie wieder.")
+        self.stop()
+        await interaction.response.edit_message(content=text, embed=None, view=None)
+
+    async def _behalten(self, interaction: discord.Interaction) -> None:
+        await self._entscheiden(interaction, True)
+
+    async def _entziehen(self, interaction: discord.Interaction) -> None:
+        await self._entscheiden(interaction, False)
+
+
+def _level_rueckfrage_embed(name: str, user_id: int, fall: dict[str, Any],
+                            betroffen: list) -> discord.Embed:
+    grund = ("hat den Server verlassen"
+             if str(fall.get("grund")) == level_rewards.GRUND_SERVER_VERLASSEN
+             else "hat eine Level-Rolle verloren")
+    zeilen = [
+        f"**{name}** (`{user_id}`) {grund}.",
+        f"Stufe **{fall['von_stufe']} → {fall['auf_stufe']}**.",
+        "",
+        "Dadurch bekommen:",
+        *[f"• {f.text()} (Level {f.stufe})" for f in betroffen],
+        "",
+        "**Behalten** lässt alles so und fragt nie wieder. "
+        "**Entziehen** nimmt genau diese Designs weg; bei erneutem Aufstieg gibt es sie wieder.",
+        "Bis du entscheidest, ändert sich nichts.",
+    ]
+    return discord.Embed(title="🎖️ Level-Rolle verloren", description="\n".join(zeilen), color=0xE67E22)
+
+
+async def _level_verlust(guild: discord.Guild, user_id: int, name: str,
+                         von_stufe: int, auf_stufe: int, grund: str) -> None:
+    """Rückfrage stellen, wenn durch die verlorenen Stufen etwas vergeben wurde."""
+    betroffen = await level_rewards.betroffene_belohnungen(user_id, von_stufe, auf_stufe)
+    if not betroffen:
+        return                       # nichts bekommen, nichts zu fragen
+    neue_id = await level_rewards.rueckfrage_anlegen(guild.id, user_id, von_stufe, auf_stufe, grund)
+    if not neue_id:
+        return                       # es läuft schon eine Rückfrage für diese Person
+    fall = await level_rewards.rueckfrage(neue_id) or {}
+    view = LevelRueckfrageView(neue_id)
+    bot.add_view(view)
+    try:
+        besitzer = bot.get_user(BASTI_USER_ID) or await bot.fetch_user(BASTI_USER_ID)
+        nachricht = await besitzer.send(
+            embed=_level_rueckfrage_embed(name, user_id, fall, betroffen), view=view)
+        await level_rewards.rueckfrage_nachricht_setzen(neue_id, nachricht.id)
+    except Exception:
+        # DMs zu? Der Fall bleibt offen und taucht in /level-offen auf.
+        logging.exception("Level-Rückfrage konnte nicht als DM zugestellt werden (Fall %s)", neue_id)
+
+
+async def send_level_offen(interaction: discord.Interaction) -> None:
+    """/level-offen: offene Rückfragen anzeigen und hier entscheiden lassen.
+
+    Nötig, wenn private Nachrichten geschlossen sind — dann kommt die Frage
+    nicht an, der Fall bleibt aber offen.
+    """
+    guild_id = interaction.guild_id or 0
+    faelle = await level_rewards.offene_rueckfragen(guild_id)
+    if not faelle:
+        await send_interaction_response(interaction, content="✅ Es gibt keine offenen Rückfragen.",
+                                        ephemeral=True)
+        return
+    await interaction.response.send_message(
+        f"🎖️ **{len(faelle)}** offene Rückfrage(n):", ephemeral=True)
+    for fall in faelle[:10]:
+        betroffen = await level_rewards.betroffene_belohnungen(
+            int(fall["user_id"]), int(fall["von_stufe"]), int(fall["auf_stufe"]))
+        if not betroffen:
+            await level_rewards.rueckfrage_entscheiden(int(fall["id"]), True)
+            continue
+        mitglied = interaction.guild.get_member(int(fall["user_id"])) if interaction.guild else None
+        name = getattr(mitglied, "display_name", None) or f"ID {fall['user_id']}"
+        view = LevelRueckfrageView(int(fall["id"]))
+        bot.add_view(view)
+        await interaction.followup.send(
+            embed=_level_rueckfrage_embed(name, int(fall["user_id"]), fall, betroffen),
+            view=view, ephemeral=True)
+
+
+async def _level_rueckfragen_anmelden() -> None:
+    """Offene Rückfragen nach einem Neustart wieder bedienbar machen."""
+    try:
+        for fall in await level_rewards.offene_rueckfragen():
+            bot.add_view(LevelRueckfrageView(int(fall["id"])))
+    except Exception:
+        logging.exception("Offene Level-Rückfragen konnten nicht angemeldet werden")
+
+
 async def _level_rollenwechsel(before: discord.Member, after: discord.Member) -> None:
     """Prüft bei jedem Rollenwechsel, ob jemand eine Level-Stufe erreicht hat.
 
@@ -3088,6 +3219,26 @@ async def _level_rollenwechsel(before: discord.Member, after: discord.Member) ->
         return
     if nachher > vorher:
         await _level_aufstieg(after, nachher)
+    elif level_rewards.verloren_haben(vorher, nachher):
+        await _level_verlust(after.guild, after.id, after.display_name, vorher, nachher,
+                             level_rewards.GRUND_ROLLE_VERLOREN)
+
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    """Wer den Server verlässt, verliert damit auch seine Level-Rollen."""
+    try:
+        if not await level_rewards.ist_aktiv(member.guild.id):
+            return
+        zuordnung = await level_rewards.zuordnung_von(member.guild.id)
+        if not zuordnung:
+            return
+        stufe = level_rewards.stufe_aus_rollen([r.id for r in member.roles], zuordnung)
+        if stufe:
+            await _level_verlust(member.guild, member.id, member.display_name, stufe, 0,
+                                 level_rewards.GRUND_SERVER_VERLASSEN)
+    except Exception:
+        logging.exception("Level-Prüfung beim Verlassen des Servers fehlgeschlagen")
 
 
 @bot.event

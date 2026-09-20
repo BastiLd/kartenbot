@@ -141,6 +141,7 @@ def build_command_api(global_ns: dict[str, Any]) -> CommandApi:
         "run_dust_command_flow",
         "send_balance_stats",
         "send_bot_status",
+        "send_level_offen",
         "send_reset_intro",
         "send_test_report",
         "send_vaultlook",

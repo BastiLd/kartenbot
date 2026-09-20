@@ -30,6 +30,7 @@ ADMIN_BEFEHLE = {
     "level-rolle": "administrator",
     "level-kanal": "administrator",
     "level-vorschau": "administrator",
+    "level-offen": "administrator",
     "kanal-freigeben": "manage_guild",
     "konfigurieren": "manage_guild",
 }
