@@ -239,7 +239,7 @@ _interaction_timestamps = deque()
 _persistent_views_registered = False
 _level_nachholen_erledigt = False
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 
 
 class CardCatalog:
